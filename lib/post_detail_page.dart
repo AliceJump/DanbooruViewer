@@ -1,8 +1,11 @@
-import 'package:danbooru_viewer/full_screen_image_page.dart';
-import 'package:danbooru_viewer/reusable_image_view.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'main.dart';
+import 'package:gal/gal.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import 'full_screen_image_page.dart';
+import 'main.dart';
 
 class PostDetailPage extends StatefulWidget {
   final List<Post> posts;
@@ -38,10 +41,11 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   void _loadHighResImageForIndex(int index) {
+    if (index < 0 || index >= widget.posts.length) return;
     final post = widget.posts[index];
     final highResUrl = post.fileUrl ?? post.largeFileUrl;
 
-    if (highResUrl != null) {
+    if (highResUrl != null && _imageUrls[index] == null) {
       precacheImage(NetworkImage(highResUrl), context).then((_) {
         if (mounted) {
           setState(() {
@@ -56,9 +60,39 @@ class _PostDetailPageState extends State<PostDetailPage> {
     setState(() {
       _currentIndex = index;
     });
+    _loadHighResImageForIndex(index);
+  }
 
-    if (!_imageUrls.containsKey(index)) {
-      _loadHighResImageForIndex(index);
+  Future<void> _saveImage(BuildContext context, String? imageUrl) async {
+    if (imageUrl == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('没有可保存的图片')),
+      );
+      return;
+    }
+
+    try {
+      final hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        final status = await Gal.requestAccess();
+        if (!status) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('需要存储权限来保存图片')),
+          );
+          return;
+        }
+      }
+      final tempDir = await getTemporaryDirectory();
+      final path = '${tempDir.path}/${imageUrl.split('/').last}';
+      await Dio().download(imageUrl, path);
+      await Gal.putImage(path, album: 'danbooru_viewer');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('图片已保存到相册')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('保存失败: $e')),
+      );
     }
   }
 
@@ -137,8 +171,15 @@ class _PostDetailPageState extends State<PostDetailPage> {
                 onPageChanged: _onPageChanged,
                 itemBuilder: (context, index) {
                   final post = widget.posts[index];
-                  final imageUrl = _imageUrls[index] ?? post.previewFileUrl!;
+                  final previewUrl = post.previewFileUrl;
+                  final highResUrlForDetailPage = _imageUrls[index];
+                  final definitiveHighResUrl =
+                      post.fileUrl ?? post.largeFileUrl;
                   final heroTag = 'post_${post.id}';
+
+                  if (previewUrl == null) {
+                    return const Center(child: Icon(Icons.broken_image));
+                  }
 
                   return GestureDetector(
                     onTap: () {
@@ -146,15 +187,44 @@ class _PostDetailPageState extends State<PostDetailPage> {
                         context,
                         MaterialPageRoute(
                           builder: (context) => FullScreenImagePage(
-                            imageUrl: imageUrl,
+                            previewUrl: previewUrl,
+                            highResUrl: definitiveHighResUrl,
                             heroTag: heroTag,
                           ),
                         ),
                       );
                     },
-                    child: ReusableImageView(
-                      imageUrl: imageUrl,
-                      tag: heroTag,
+                    onLongPress: () => _saveImage(
+                        context, definitiveHighResUrl ?? previewUrl),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      alignment: Alignment.center,
+                      children: [
+                        Hero(
+                          tag: heroTag,
+                          child: Image.network(
+                            previewUrl,
+                            fit: BoxFit.contain,
+                            errorBuilder: (context, error, stackTrace) =>
+                                const Icon(Icons.error),
+                          ),
+                        ),
+                        AnimatedOpacity(
+                          opacity: highResUrlForDetailPage != null &&
+                                  highResUrlForDetailPage != previewUrl
+                              ? 1.0
+                              : 0.0,
+                          duration: const Duration(milliseconds: 300),
+                          child: highResUrlForDetailPage != null
+                              ? Image.network(highResUrlForDetailPage,
+                                  fit: BoxFit.contain)
+                              : const SizedBox.shrink(),
+                        ),
+                        if (highResUrlForDetailPage == null &&
+                            (post.fileUrl != null ||
+                                post.largeFileUrl != null))
+                          const Center(child: CircularProgressIndicator()),
+                      ],
                     ),
                   );
                 },
@@ -176,12 +246,12 @@ class _PostDetailPageState extends State<PostDetailPage> {
           )
         ],
       ),
-      floatingActionButton:
-      (currentPostForTags.source != null && currentPostForTags.source!.isNotEmpty)
+      floatingActionButton: (currentPostForTags.source != null &&
+              currentPostForTags.source!.isNotEmpty)
           ? FloatingActionButton(
-        onPressed: () => _launchUrl(currentPostForTags.source),
-        child: const Icon(Icons.link),
-      )
+              onPressed: () => _launchUrl(currentPostForTags.source),
+              child: const Icon(Icons.link),
+            )
           : null,
       floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
     );

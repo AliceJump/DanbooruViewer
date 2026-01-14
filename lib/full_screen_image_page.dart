@@ -4,15 +4,55 @@ import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
 
-class FullScreenImagePage extends StatelessWidget {
-  final String imageUrl;
+class FullScreenImagePage extends StatefulWidget {
+  final String previewUrl;
+  final String? highResUrl;
   final String heroTag;
 
   const FullScreenImagePage({
     super.key,
-    required this.imageUrl,
+    required this.previewUrl,
+    this.highResUrl,
     required this.heroTag,
   });
+
+  @override
+  State<FullScreenImagePage> createState() => _FullScreenImagePageState();
+}
+
+class _FullScreenImagePageState extends State<FullScreenImagePage> {
+  late String _currentImageUrl;
+  ImageProvider? _imageProvider;
+  bool _didLoadHighRes = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _currentImageUrl = widget.previewUrl;
+    _imageProvider = NetworkImage(_currentImageUrl);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_didLoadHighRes) {
+      _loadHighResImage();
+      _didLoadHighRes = true;
+    }
+  }
+
+  void _loadHighResImage() {
+    if (widget.highResUrl != null && widget.highResUrl != widget.previewUrl) {
+      precacheImage(NetworkImage(widget.highResUrl!), context).then((_) {
+        if (mounted) {
+          setState(() {
+            _currentImageUrl = widget.highResUrl!;
+            _imageProvider = NetworkImage(_currentImageUrl);
+          });
+        }
+      });
+    }
+  }
 
   Future<void> _saveImage(BuildContext context) async {
     try {
@@ -28,7 +68,7 @@ class FullScreenImagePage extends StatelessWidget {
       }
       final tempDir = await getTemporaryDirectory();
       final path = '${tempDir.path}/image.jpg';
-      await Dio().download(imageUrl, path);
+      await Dio().download(_currentImageUrl, path);
       await Gal.putImage(path, album: 'danbooru_viewer');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('图片已保存到相册')),
@@ -48,8 +88,8 @@ class FullScreenImagePage extends StatelessWidget {
         onTap: () => Navigator.of(context).pop(),
         onLongPress: () => _saveImage(context),
         child: PhotoView(
-          imageProvider: NetworkImage(imageUrl),
-          heroAttributes: PhotoViewHeroAttributes(tag: heroTag),
+          imageProvider: _imageProvider,
+          heroAttributes: PhotoViewHeroAttributes(tag: widget.heroTag),
           loadingBuilder: (context, event) => Center(
             child: CircularProgressIndicator(
               value: event == null || event.expectedTotalBytes == null
