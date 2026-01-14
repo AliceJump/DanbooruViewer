@@ -1,3 +1,5 @@
+import 'package:danbooru_viewer/full_screen_image_page.dart';
+import 'package:danbooru_viewer/reusable_image_view.dart';
 import 'package:flutter/material.dart';
 import 'main.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -136,28 +138,23 @@ class _PostDetailPageState extends State<PostDetailPage> {
                 itemBuilder: (context, index) {
                   final post = widget.posts[index];
                   final imageUrl = _imageUrls[index] ?? post.previewFileUrl!;
+                  final heroTag = 'post_${post.id}';
 
-                  return Hero(
-                    tag: 'post_${post.id}',
-                    child: InteractiveViewer(
-                      child: Image.network(
-                        imageUrl,
-                        fit: BoxFit.contain,
-                        loadingBuilder: (context, child, loadingProgress) {
-                          if (loadingProgress == null) return child;
-                          return Center(
-                            child: CircularProgressIndicator(
-                              value: loadingProgress.expectedTotalBytes != null
-                                  ? loadingProgress.cumulativeBytesLoaded /
-                                      loadingProgress.expectedTotalBytes!
-                                  : null,
-                            ),
-                          );
-                        },
-                        errorBuilder: (context, error, stackTrace) {
-                          return const Icon(Icons.error);
-                        },
-                      ),
+                  return GestureDetector(
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => FullScreenImagePage(
+                            imageUrl: imageUrl,
+                            heroTag: heroTag,
+                          ),
+                        ),
+                      );
+                    },
+                    child: ReusableImageView(
+                      imageUrl: imageUrl,
+                      tag: heroTag,
                     ),
                   );
                 },
@@ -180,12 +177,12 @@ class _PostDetailPageState extends State<PostDetailPage> {
         ],
       ),
       floatingActionButton:
-          (currentPostForTags.source != null && currentPostForTags.source!.isNotEmpty)
-              ? FloatingActionButton(
-                  onPressed: () => _launchUrl(currentPostForTags.source),
-                  child: const Icon(Icons.link),
-                )
-              : null,
+      (currentPostForTags.source != null && currentPostForTags.source!.isNotEmpty)
+          ? FloatingActionButton(
+        onPressed: () => _launchUrl(currentPostForTags.source),
+        child: const Icon(Icons.link),
+      )
+          : null,
       floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
     );
   }

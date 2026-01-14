@@ -1,8 +1,12 @@
 import 'dart:convert';
 
 import 'package:danbooru_viewer/post_detail_page.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 void main() {
   runApp(const MyApp());
@@ -87,6 +91,10 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _isLoading = false;
   int _page = 1;
 
+  // Multi-select state
+  bool _isMultiSelectMode = false;
+  final Set<int> _selectedItems = {};
+
   Map<String, bool> ratingOptions = {
     "全年龄 (R-0)": true,
     "轻度提示 (R-12)": false,
@@ -111,6 +119,109 @@ class _MyHomePageState extends State<MyHomePage> {
     _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _enterMultiSelectMode(int postId) {
+    setState(() {
+      _isMultiSelectMode = true;
+      _selectedItems.add(postId);
+    });
+  }
+
+  void _exitMultiSelectMode() {
+    setState(() {
+      _isMultiSelectMode = false;
+      _selectedItems.clear();
+    });
+  }
+
+  void _toggleSelection(int postId) {
+    setState(() {
+      if (_selectedItems.contains(postId)) {
+        _selectedItems.remove(postId);
+      } else {
+        _selectedItems.add(postId);
+      }
+      if (_selectedItems.isEmpty) {
+        _isMultiSelectMode = false;
+      }
+    });
+  }
+
+  Future<void> _batchDownload() async {
+    final itemsToDownload = _posts
+        .where((post) => _selectedItems.contains(post.id))
+        .toList();
+
+    if (itemsToDownload.isEmpty) {
+      _exitMultiSelectMode();
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('开始下载 ${_selectedItems.length} 张图片...')),
+    );
+
+    try {
+      final hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        final status = await Gal.requestAccess();
+        if (!status) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('需要存储权限来保存图片')),
+          );
+          return;
+        }
+      }
+
+      int successCount = 0;
+      final tempDir = await getTemporaryDirectory();
+      final dio = Dio();
+
+      for (final post in itemsToDownload) {
+        final imageUrl = post.fileUrl ?? post.largeFileUrl;
+        if (imageUrl != null) {
+          try {
+            final path = '${tempDir.path}/${imageUrl.split('/').last}';
+            await dio.download(imageUrl, path);
+            await Gal.putImage(path, album: 'danbooru_viewer');
+            successCount++;
+          } catch (e) {
+            // Log individual download error if needed
+          }
+        }
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$successCount 张图片已保存到相册')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('下载失败: $e')),
+      );
+    } finally {
+      _exitMultiSelectMode();
+    }
+  }
+
+  void _batchCopyLinks() {
+    final links = _posts
+        .where((post) => _selectedItems.contains(post.id))
+        .map((post) => post.fileUrl ?? post.largeFileUrl)
+        .where((url) => url != null)
+        .join('\n');
+
+    if (links.isNotEmpty) {
+      Clipboard.setData(ClipboardData(text: links));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${_selectedItems.length} 个链接已复制')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('没有可复制的链接')),
+      );
+    }
+    _exitMultiSelectMode();
   }
 
   List<String> getSelectedRatings() {
@@ -147,7 +258,6 @@ class _MyHomePageState extends State<MyHomePage> {
       _page++;
     } else {
       _page = 1;
-      // Scroll to top when performing a new search
       if (_scrollController.hasClients) {
         _scrollController.jumpTo(0);
       }
@@ -176,12 +286,11 @@ class _MyHomePageState extends State<MyHomePage> {
         final List<dynamic> postsJson = json.decode(response.body);
         if (postsJson.isEmpty) {
           if (isLoadMore) {
-            _page--; // No more posts, revert page increment
+            _page--;
           }
           return;
         }
-        final newPosts =
-            postsJson.map((json) => Post.fromJson(json)).toList();
+        final newPosts = postsJson.map((json) => Post.fromJson(json)).toList();
         setState(() {
           if (isLoadMore) {
             _posts.addAll(newPosts);
@@ -203,6 +312,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _navigateToDetail(int index) async {
+    if (_isMultiSelectMode) return;
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
@@ -219,13 +329,37 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  AppBar _buildDefaultAppBar() {
+    return AppBar(
+      backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      title: Text(widget.title),
+    );
+  }
+
+  AppBar _buildMultiSelectAppBar() {
+    return AppBar(
+      leading: IconButton(
+        icon: const Icon(Icons.close),
+        onPressed: _exitMultiSelectMode,
+      ),
+      title: Text('${_selectedItems.length} 已选择'),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.download),
+          onPressed: _batchDownload,
+        ),
+        IconButton(
+          icon: const Icon(Icons.link),
+          onPressed: _batchCopyLinks,
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text(widget.title),
-      ),
+      appBar: _isMultiSelectMode ? _buildMultiSelectAppBar() : _buildDefaultAppBar(),
       body: Column(
         children: [
           Padding(
@@ -278,20 +412,60 @@ class _MyHomePageState extends State<MyHomePage> {
                     itemCount: _posts.length,
                     itemBuilder: (context, index) {
                       final post = _posts[index];
+                      final isSelected = _selectedItems.contains(post.id);
                       if (post.previewFileUrl != null) {
                         return GestureDetector(
-                          onTap: () => _navigateToDetail(index),
-                          child: Hero(
-                            tag: 'post_${post.id}',
-                            child: GridTile(
-                              child: Image.network(
-                                post.previewFileUrl!,
-                                fit: BoxFit.cover,
-                                errorBuilder: (context, error, stackTrace) {
-                                  return const Icon(Icons.error);
-                                },
+                          onTap: () {
+                            if (_isMultiSelectMode) {
+                              _toggleSelection(post.id);
+                            } else {
+                              _navigateToDetail(index);
+                            }
+                          },
+                          onLongPress: () {
+                            if (!_isMultiSelectMode) {
+                              _enterMultiSelectMode(post.id);
+                            }
+                          },
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              Hero(
+                                tag: 'post_${post.id}',
+                                child: Image.network(
+                                  post.previewFileUrl!,
+                                  fit: BoxFit.cover,
+                                  loadingBuilder:
+                                      (context, child, loadingProgress) {
+                                    if (loadingProgress == null) return child;
+                                    return Center(
+                                      child: CircularProgressIndicator(
+                                        value: loadingProgress
+                                                    .expectedTotalBytes !=
+                                                null
+                                            ? loadingProgress
+                                                    .cumulativeBytesLoaded /
+                                                loadingProgress
+                                                    .expectedTotalBytes!
+                                            : null,
+                                      ),
+                                    );
+                                  },
+                                  errorBuilder:
+                                      (context, error, stackTrace) {
+                                    return const Icon(Icons.error);
+                                  },
+                                ),
                               ),
-                            ),
+                              if (isSelected)
+                                Container(
+                                  color: Colors.black.withOpacity(0.5),
+                                  child: const Icon(
+                                    Icons.check_circle,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                            ],
                           ),
                         );
                       } else {
