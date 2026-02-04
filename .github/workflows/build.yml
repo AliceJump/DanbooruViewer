@@ -37,7 +37,7 @@ jobs:
           # Windows
           - os: windows-latest
             build-target: windows
-            output-path: build/windows/runner/Release
+            output-path: build/windows/x64/runner/Release
             artifact-name: danbooru-viewer-windows-release.zip
 
           # Web
@@ -89,8 +89,8 @@ jobs:
         if: matrix.build-target == 'windows'
         run: |
           flutter build windows --release
-          cd build/windows/runner/Release
-          PowerShell -Command "Compress-Archive -Path * -DestinationPath ..\..\..\..\danbooru-viewer-windows-release.zip"
+          cd build/windows/x64/runner/Release
+          PowerShell -Command "Compress-Archive -Path * -DestinationPath ..\..\..\..\..\..\..\danbooru-viewer-windows-release.zip"
 
       - name: Build Web
         if: matrix.build-target == 'web'
