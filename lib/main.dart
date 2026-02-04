@@ -96,7 +96,7 @@ class _MyHomePageState extends State<MyHomePage> {
   final Set<int> _selectedItems = {};
 
   Map<String, bool> ratingOptions = {
-    "全年龄 (R-0)": true,
+    "全年龄 (R-0)": false,
     "轻度提示 (R-12)": false,
     "青少年警告 (R-15)": false,
     "成人限制 (R-18)": false,
@@ -112,6 +112,8 @@ class _MyHomePageState extends State<MyHomePage> {
         _fetchPosts(isLoadMore: true);
       }
     });
+    // 启动时加载一次空搜索
+    _fetchPosts();
   }
 
   @override
@@ -167,9 +169,9 @@ class _MyHomePageState extends State<MyHomePage> {
       if (!hasAccess) {
         final status = await Gal.requestAccess();
         if (!status) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('需要存储权限来保存图片')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
           return;
         }
       }
@@ -192,13 +194,13 @@ class _MyHomePageState extends State<MyHomePage> {
         }
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$successCount 张图片已保存到相册')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('$successCount 张图片已保存到相册')));
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('下载失败: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('下载失败: $e')));
     } finally {
       _exitMultiSelectMode();
     }
@@ -217,9 +219,9 @@ class _MyHomePageState extends State<MyHomePage> {
         SnackBar(content: Text('${_selectedItems.length} 个链接已复制')),
       );
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('没有可复制的链接')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('没有可复制的链接')));
     }
     _exitMultiSelectMode();
   }
@@ -267,8 +269,9 @@ class _MyHomePageState extends State<MyHomePage> {
       String tags = _searchController.text;
       List<String> ratings = getSelectedRatings();
 
-      String ratingTags =
-          ratings.isNotEmpty ? 'rating:${ratings.join(',')}' : '';
+      String ratingTags = ratings.isNotEmpty
+          ? 'rating:${ratings.join(',')}'
+          : '';
       String searchTags = tags.split(' ').where((s) => s.isNotEmpty).join('+');
       String finalTags = searchTags;
       if (ratingTags.isNotEmpty) {
@@ -279,8 +282,11 @@ class _MyHomePageState extends State<MyHomePage> {
         }
       }
 
-      final response = await http.get(Uri.parse(
-          'https://danbooru.donmai.us/posts.json?tags=$finalTags&limit=100&page=$_page'));
+      final response = await http.get(
+        Uri.parse(
+          'https://danbooru.donmai.us/posts.json?tags=$finalTags&limit=100&page=$_page',
+        ),
+      );
 
       if (response.statusCode == 200) {
         final List<dynamic> postsJson = json.decode(response.body);
@@ -301,7 +307,8 @@ class _MyHomePageState extends State<MyHomePage> {
       } else {
         if (isLoadMore) _page--;
         print('Failed to load posts');
-      }    } catch (e) {
+      }
+    } catch (e) {
       if (isLoadMore) _page--;
       print('Error fetching posts: $e');
     } finally {
@@ -316,10 +323,8 @@ class _MyHomePageState extends State<MyHomePage> {
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PostDetailPage(
-          posts: _posts,
-          initialIndex: index,
-        ),
+        builder: (context) =>
+            PostDetailPage(posts: _posts, initialIndex: index),
       ),
     );
 
@@ -344,14 +349,8 @@ class _MyHomePageState extends State<MyHomePage> {
       ),
       title: Text('${_selectedItems.length} 已选择'),
       actions: [
-        IconButton(
-          icon: const Icon(Icons.download),
-          onPressed: _batchDownload,
-        ),
-        IconButton(
-          icon: const Icon(Icons.link),
-          onPressed: _batchCopyLinks,
-        ),
+        IconButton(icon: const Icon(Icons.download), onPressed: _batchDownload),
+        IconButton(icon: const Icon(Icons.link), onPressed: _batchCopyLinks),
       ],
     );
   }
@@ -359,7 +358,9 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: _isMultiSelectMode ? _buildMultiSelectAppBar() : _buildDefaultAppBar(),
+      appBar: _isMultiSelectMode
+          ? _buildMultiSelectAppBar()
+          : _buildDefaultAppBar(),
       body: Column(
         children: [
           Padding(
@@ -405,10 +406,10 @@ class _MyHomePageState extends State<MyHomePage> {
                     controller: _scrollController,
                     gridDelegate:
                         const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      crossAxisSpacing: 4.0,
-                      mainAxisSpacing: 4.0,
-                    ),
+                          crossAxisCount: 3,
+                          crossAxisSpacing: 4.0,
+                          mainAxisSpacing: 4.0,
+                        ),
                     itemCount: _posts.length,
                     itemBuilder: (context, index) {
                       final post = _posts[index];
@@ -437,22 +438,23 @@ class _MyHomePageState extends State<MyHomePage> {
                                   fit: BoxFit.cover,
                                   loadingBuilder:
                                       (context, child, loadingProgress) {
-                                    if (loadingProgress == null) return child;
-                                    return Center(
-                                      child: CircularProgressIndicator(
-                                        value: loadingProgress
-                                                    .expectedTotalBytes !=
-                                                null
-                                            ? loadingProgress
-                                                    .cumulativeBytesLoaded /
+                                        if (loadingProgress == null)
+                                          return child;
+                                        return Center(
+                                          child: CircularProgressIndicator(
+                                            value:
                                                 loadingProgress
-                                                    .expectedTotalBytes!
-                                            : null,
-                                      ),
-                                    );
-                                  },
-                                  errorBuilder:
-                                      (context, error, stackTrace) {
+                                                        .expectedTotalBytes !=
+                                                    null
+                                                ? loadingProgress
+                                                          .cumulativeBytesLoaded /
+                                                      loadingProgress
+                                                          .expectedTotalBytes!
+                                                : null,
+                                          ),
+                                        );
+                                      },
+                                  errorBuilder: (context, error, stackTrace) {
                                     return const Icon(Icons.error);
                                   },
                                 ),
