@@ -357,133 +357,141 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: _isMultiSelectMode
-          ? _buildMultiSelectAppBar()
-          : _buildDefaultAppBar(),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                hintText: '搜索...',
-                border: const OutlineInputBorder(),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.search),
-                  onPressed: () => _fetchPosts(),
-                ),
-              ),
-              onSubmitted: (_) => _fetchPosts(),
-            ),
-          ),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16.0),
-            child: Row(
-              children: ratingOptions.keys.map((key) {
-                return Padding(
-                  padding: const EdgeInsets.only(right: 8.0),
-                  child: FilterChip(
-                    label: Text(key),
-                    selected: ratingOptions[key]!,
-                    onSelected: (bool selected) {
-                      setState(() {
-                        ratingOptions[key] = selected;
-                      });
-                      _fetchPosts();
-                    },
+    return PopScope(
+      canPop: !_isMultiSelectMode,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && _isMultiSelectMode) {
+          _exitMultiSelectMode();
+        }
+      },
+      child: Scaffold(
+        appBar: _isMultiSelectMode
+            ? _buildMultiSelectAppBar()
+            : _buildDefaultAppBar(),
+        body: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: TextField(
+                controller: _searchController,
+                decoration: InputDecoration(
+                  hintText: '搜索...',
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.search),
+                    onPressed: () => _fetchPosts(),
                   ),
-                );
-              }).toList(),
+                ),
+                onSubmitted: (_) => _fetchPosts(),
+              ),
             ),
-          ),
-          Expanded(
-            child: (_isLoading && _posts.isEmpty)
-                ? const Center(child: CircularProgressIndicator())
-                : GridView.builder(
-                    controller: _scrollController,
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 3,
-                          crossAxisSpacing: 4.0,
-                          mainAxisSpacing: 4.0,
-                        ),
-                    itemCount: _posts.length,
-                    itemBuilder: (context, index) {
-                      final post = _posts[index];
-                      final isSelected = _selectedItems.contains(post.id);
-                      if (post.previewFileUrl != null) {
-                        return GestureDetector(
-                          onTap: () {
-                            if (_isMultiSelectMode) {
-                              _toggleSelection(post.id);
-                            } else {
-                              _navigateToDetail(index);
-                            }
-                          },
-                          onLongPress: () {
-                            if (!_isMultiSelectMode) {
-                              _enterMultiSelectMode(post.id);
-                            }
-                          },
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              Hero(
-                                tag: 'post_${post.id}',
-                                child: Image.network(
-                                  post.previewFileUrl!,
-                                  fit: BoxFit.cover,
-                                  loadingBuilder:
-                                      (context, child, loadingProgress) {
-                                        if (loadingProgress == null)
-                                          return child;
-                                        return Center(
-                                          child: CircularProgressIndicator(
-                                            value:
-                                                loadingProgress
-                                                        .expectedTotalBytes !=
-                                                    null
-                                                ? loadingProgress
-                                                          .cumulativeBytesLoaded /
-                                                      loadingProgress
-                                                          .expectedTotalBytes!
-                                                : null,
-                                          ),
-                                        );
-                                      },
-                                  errorBuilder: (context, error, stackTrace) {
-                                    return const Icon(Icons.error);
-                                  },
-                                ),
-                              ),
-                              if (isSelected)
-                                Container(
-                                  color: Colors.black.withOpacity(0.5),
-                                  child: const Icon(
-                                    Icons.check_circle,
-                                    color: Colors.white,
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Row(
+                children: ratingOptions.keys.map((key) {
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8.0),
+                    child: FilterChip(
+                      label: Text(key),
+                      selected: ratingOptions[key]!,
+                      onSelected: (bool selected) {
+                        setState(() {
+                          ratingOptions[key] = selected;
+                        });
+                        _fetchPosts();
+                      },
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+            Expanded(
+              child: (_isLoading && _posts.isEmpty)
+                  ? const Center(child: CircularProgressIndicator())
+                  : GridView.builder(
+                      controller: _scrollController,
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            crossAxisSpacing: 4.0,
+                            mainAxisSpacing: 4.0,
+                          ),
+                      itemCount: _posts.length,
+                      itemBuilder: (context, index) {
+                        final post = _posts[index];
+                        final isSelected = _selectedItems.contains(post.id);
+                        if (post.previewFileUrl != null) {
+                          return GestureDetector(
+                            onTap: () {
+                              if (_isMultiSelectMode) {
+                                _toggleSelection(post.id);
+                              } else {
+                                _navigateToDetail(index);
+                              }
+                            },
+                            onLongPress: () {
+                              if (!_isMultiSelectMode) {
+                                _enterMultiSelectMode(post.id);
+                              }
+                            },
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                Hero(
+                                  tag: 'post_${post.id}',
+                                  child: Image.network(
+                                    post.previewFileUrl!,
+                                    fit: BoxFit.cover,
+                                    loadingBuilder:
+                                        (context, child, loadingProgress) {
+                                          if (loadingProgress == null)
+                                            return child;
+                                          return Center(
+                                            child: CircularProgressIndicator(
+                                              value:
+                                                  loadingProgress
+                                                          .expectedTotalBytes !=
+                                                      null
+                                                  ? loadingProgress
+                                                            .cumulativeBytesLoaded /
+                                                        loadingProgress
+                                                            .expectedTotalBytes!
+                                                  : null,
+                                            ),
+                                          );
+                                        },
+                                    errorBuilder: (context, error, stackTrace) {
+                                      return const Icon(Icons.error);
+                                    },
                                   ),
                                 ),
-                            ],
-                          ),
-                        );
-                      } else {
-                        return const GridTile(
-                          child: Icon(Icons.image_not_supported),
-                        );
-                      }
-                    },
-                  ),
-          ),
-          if (_isLoading && _posts.isNotEmpty)
-            const Padding(
-              padding: EdgeInsets.all(8.0),
-              child: CircularProgressIndicator(),
+                                if (isSelected)
+                                  Container(
+                                    color: Colors.black.withOpacity(0.5),
+                                    child: const Icon(
+                                      Icons.check_circle,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          );
+                        } else {
+                          return const GridTile(
+                            child: Icon(Icons.image_not_supported),
+                          );
+                        }
+                      },
+                    ),
             ),
-        ],
+            if (_isLoading && _posts.isNotEmpty)
+              const Padding(
+                padding: EdgeInsets.all(8.0),
+                child: CircularProgressIndicator(),
+              ),
+          ],
+        ),
       ),
     );
   }
