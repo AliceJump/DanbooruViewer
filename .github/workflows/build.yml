@@ -3,52 +3,37 @@ name: Build Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 env:
-  FLUTTER_VERSION: '3.38.9'
+  FLUTTER_VERSION: "3.38.9"
 
 jobs:
   build:
-    name: Build Release Artifacts
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Android
-          - os: ubuntu-latest
-            build-target: android
-            output-path: build/app/outputs/flutter-apk/app-release.apk
-            artifact-name: danbooru-viewer-android-release.apk
+          - target: android
+            os: ubuntu-latest
 
-          # iOS
-          - os: macos-latest
-            build-target: ios
-            output-path: build/ios/iphoneos/Runner.app
-            artifact-name: danbooru-viewer-ios-release.ipa
+          - target: linux
+            os: ubuntu-latest
 
-          # Linux
-          - os: ubuntu-latest
-            build-target: linux
-            output-path: build/linux/x64/release/bundle
-            artifact-name: danbooru-viewer-linux-release.tar.gz
+          - target: web
+            os: ubuntu-latest
 
-          # Windows
-          - os: windows-latest
-            build-target: windows
-            output-path: build/windows/x64/runner/Release
-            artifact-name: danbooru-viewer-windows-release.zip
+          - target: windows
+            os: windows-latest
 
-          # Web
-          - os: ubuntu-latest
-            build-target: web
-            output-path: build/web
-            artifact-name: danbooru-viewer-web-release.tar.gz
+          - target: ios
+            os: macos-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -56,110 +41,105 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
-      - name: Get Flutter dependencies
+      - name: Kill Flutter Daemon
+        run: pkill -f dart || true
+
+      - name: Install dependencies
         run: flutter pub get
 
-      - name: Analyze code
-        run: flutter analyze
-
-      - name: Build APK (Android)
-        if: matrix.build-target == 'android'
+      # ---------------- ANDROID ----------------
+      - name: Build Android APK
+        if: matrix.target == 'android'
         run: flutter build apk --release --split-per-abi
 
-      - name: Build iOS IPA
-        if: matrix.build-target == 'ios'
-        run: |
-          flutter build ios --release --no-codesign
-          cd build/ios/iphoneos
-          mkdir -p Payload
-          mv Runner.app Payload/
-          zip -r -q app.ipa Payload
-          mv app.ipa ../../..
+      - name: Upload Android
+        if: matrix.target == 'android'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: build/app/outputs/flutter-apk/*.apk
 
-      - name: Build Linux
-        if: matrix.build-target == 'linux'
+      # ---------------- LINUX ----------------
+      - name: Install Linux deps
+        if: matrix.target == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake git ninja-build pkg-config libgtk-3-dev
-          flutter build linux --release
-          cd build/linux/x64/release/bundle
-          tar czf ../../../../danbooru-viewer-linux-release.tar.gz *
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev
 
+      - name: Build Linux
+        if: matrix.target == 'linux'
+        run: |
+          flutter build linux --release
+          tar -czf danbooru-viewer-linux-release.tar.gz \
+            -C build/linux/x64/release bundle
+
+      - name: Upload Linux
+        if: matrix.target == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: danbooru-viewer-linux-release.tar.gz
+
+      # ---------------- WINDOWS ----------------
       - name: Build Windows
-        if: matrix.build-target == 'windows'
+        if: matrix.target == 'windows'
+        shell: powershell
         run: |
           flutter build windows --release
-          cd build/windows/x64/runner/Release
-          PowerShell -Command "Compress-Archive -Path * -DestinationPath ..\..\..\..\..\..\..\danbooru-viewer-windows-release.zip"
+          Compress-Archive `
+            -Path build/windows/x64/runner/Release/* `
+            -DestinationPath danbooru-viewer-windows-release.zip
 
+      - name: Upload Windows
+        if: matrix.target == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: danbooru-viewer-windows-release.zip
+
+      # ---------------- WEB ----------------
       - name: Build Web
-        if: matrix.build-target == 'web'
+        if: matrix.target == 'web'
         run: |
           flutter build web --release
-          cd build/web
-          tar czf ../../danbooru-viewer-web-release.tar.gz *
+          tar -czf danbooru-viewer-web-release.tar.gz -C build web
 
-      - name: Upload Android APK
-        if: matrix.build-target == 'android'
+      - name: Upload Web
+        if: matrix.target == 'web'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact-name }}
-          path: build/app/outputs/flutter-apk/app-release*.apk
-          retention-days: 30
-
-      - name: Upload iOS IPA
-        if: matrix.build-target == 'ios'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact-name }}
-          path: app.ipa
-          retention-days: 30
-
-      - name: Upload Linux Release
-        if: matrix.build-target == 'linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact-name }}
-          path: danbooru-viewer-linux-release.tar.gz
-          retention-days: 30
-
-      - name: Upload Windows Release
-        if: matrix.build-target == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact-name }}
-          path: danbooru-viewer-windows-release.zip
-          retention-days: 30
-
-      - name: Upload Web Release
-        if: matrix.build-target == 'web'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact-name }}
+          name: web-release
           path: danbooru-viewer-web-release.tar.gz
-          retention-days: 30
 
-  create-release:
+      # ---------------- IOS ----------------
+      - name: Build iOS
+        if: matrix.target == 'ios'
+        run: |
+          flutter build ios --release --no-codesign
+          mkdir Payload
+          mv build/ios/iphoneos/Runner.app Payload/
+          zip -r app.ipa Payload
+
+      - name: Upload iOS
+        if: matrix.target == 'ios'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release
+          path: app.ipa
+
+  release:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    if: success()
     permissions:
       contents: write
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          draft: false
-          prerelease: false
           files: artifacts/**/*
-          token: ${{ secrets.GITHUB_TOKEN }}

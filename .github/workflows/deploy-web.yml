@@ -2,37 +2,45 @@ name: Deploy Web to GitHub Pages
 
 on:
   push:
-    tags:
-      - 'v*'
     branches:
       - main
 
 env:
-  FLUTTER_VERSION: '3.38.9'
+  FLUTTER_VERSION: "3.38.9"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
-  deploy:
-    name: Deploy Web to GitHub Pages
+  build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
-      - name: Get Flutter dependencies
-        run: flutter pub get
+      - run: pkill -f dart || true
+      - run: flutter pub get
 
-      - name: Build Web Release
-        run: flutter build web --release --base-href /danbooru-viewer/
+      - name: Build Web
+        run: |
+          flutter build web --release \
+            --base-href "/${{ github.event.repository.name }}/"
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
+      - uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./build/web
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/deploy-pages@v4
