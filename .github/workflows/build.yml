@@ -1,0 +1,165 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  FLUTTER_VERSION: '3.10.7'
+
+jobs:
+  build:
+    name: Build Release Artifacts
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Android
+          - os: ubuntu-latest
+            build-target: android
+            output-path: build/app/outputs/flutter-apk/app-release.apk
+            artifact-name: danbooru-viewer-android-release.apk
+
+          # iOS
+          - os: macos-latest
+            build-target: ios
+            output-path: build/ios/iphoneos/Runner.app
+            artifact-name: danbooru-viewer-ios-release.ipa
+
+          # Linux
+          - os: ubuntu-latest
+            build-target: linux
+            output-path: build/linux/x64/release/bundle
+            artifact-name: danbooru-viewer-linux-release.tar.gz
+
+          # Windows
+          - os: windows-latest
+            build-target: windows
+            output-path: build/windows/runner/Release
+            artifact-name: danbooru-viewer-windows-release.zip
+
+          # Web
+          - os: ubuntu-latest
+            build-target: web
+            output-path: build/web
+            artifact-name: danbooru-viewer-web-release.tar.gz
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Analyze code
+        run: flutter analyze
+
+      - name: Build APK (Android)
+        if: matrix.build-target == 'android'
+        run: flutter build apk --release --split-per-abi
+
+      - name: Build iOS IPA
+        if: matrix.build-target == 'ios'
+        run: |
+          flutter build ios --release --no-codesign
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          mv Runner.app Payload/
+          zip -r -q app.ipa Payload
+          mv app.ipa ../../..
+
+      - name: Build Linux
+        if: matrix.build-target == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake git ninja-build pkg-config libgtk-3-dev
+          flutter build linux --release
+          cd build/linux/x64/release/bundle
+          tar czf ../../../../danbooru-viewer-linux-release.tar.gz *
+
+      - name: Build Windows
+        if: matrix.build-target == 'windows'
+        run: |
+          flutter build windows --release
+          cd build/windows/runner/Release
+          PowerShell -Command "Compress-Archive -Path * -DestinationPath ..\..\..\..\danbooru-viewer-windows-release.zip"
+
+      - name: Build Web
+        if: matrix.build-target == 'web'
+        run: |
+          flutter build web --release
+          cd build/web
+          tar czf ../../danbooru-viewer-web-release.tar.gz *
+
+      - name: Upload Android APK
+        if: matrix.build-target == 'android'
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: build/app/outputs/flutter-apk/app-release*.apk
+          retention-days: 30
+
+      - name: Upload iOS IPA
+        if: matrix.build-target == 'ios'
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: app.ipa
+          retention-days: 30
+
+      - name: Upload Linux Release
+        if: matrix.build-target == 'linux'
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: danbooru-viewer-linux-release.tar.gz
+          retention-days: 30
+
+      - name: Upload Windows Release
+        if: matrix.build-target == 'windows'
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: danbooru-viewer-windows-release.zip
+          retention-days: 30
+
+      - name: Upload Web Release
+        if: matrix.build-target == 'web'
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: danbooru-viewer-web-release.tar.gz
+          retention-days: 30
+
+  create-release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
