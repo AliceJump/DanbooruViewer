@@ -144,6 +144,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: success()
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -159,7 +161,5 @@ jobs:
         with:
           draft: false
           prerelease: false
-          files: |
-            artifacts/**/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: artifacts/**/*
+          token: ${{ secrets.GITHUB_TOKEN }}
