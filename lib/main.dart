@@ -19,11 +19,11 @@ class Post {
   final String? fileUrl;
   final String? largeFileUrl;
   final String? previewFileUrl;
-  final String? tag_string_general;
-  final String? tag_string_artist;
-  final String? tag_string_character;
-  final String? tag_string_copyright;
-  final String? tag_string_meta;
+  final String? tagStringGeneral;
+  final String? tagStringArtist;
+  final String? tagStringCharacter;
+  final String? tagStringCopyright;
+  final String? tagStringMeta;
   final String? source;
 
   Post({
@@ -33,11 +33,11 @@ class Post {
     this.fileUrl,
     this.largeFileUrl,
     this.previewFileUrl,
-    this.tag_string_general,
-    this.tag_string_artist,
-    this.tag_string_character,
-    this.tag_string_copyright,
-    this.tag_string_meta,
+    this.tagStringGeneral,
+    this.tagStringArtist,
+    this.tagStringCharacter,
+    this.tagStringCopyright,
+    this.tagStringMeta,
     this.source,
   });
 
@@ -49,11 +49,11 @@ class Post {
       fileUrl: json['file_url'],
       largeFileUrl: json['large_file_url'],
       previewFileUrl: json['preview_file_url'],
-      tag_string_general: json['tag_string_general'],
-      tag_string_artist: json['tag_string_artist'],
-      tag_string_character: json['tag_string_character'],
-      tag_string_copyright: json['tag_string_copyright'],
-      tag_string_meta: json['tag_string_meta'],
+      tagStringGeneral: json['tag_string_general'],
+      tagStringArtist: json['tag_string_artist'],
+      tagStringCharacter: json['tag_string_character'],
+      tagStringCopyright: json['tag_string_copyright'],
+      tagStringMeta: json['tag_string_meta'],
       source: json['source'],
     );
   }
@@ -169,6 +169,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (!hasAccess) {
         final status = await Gal.requestAccess();
         if (!status) {
+          if (!mounted) return;
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
@@ -194,10 +195,12 @@ class _MyHomePageState extends State<MyHomePage> {
         }
       }
 
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('$successCount 张图片已保存到相册')));
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('下载失败: $e')));
@@ -306,11 +309,11 @@ class _MyHomePageState extends State<MyHomePage> {
         });
       } else {
         if (isLoadMore) _page--;
-        print('Failed to load posts');
+        debugPrint('Failed to load posts');
       }
     } catch (e) {
       if (isLoadMore) _page--;
-      print('Error fetching posts: $e');
+      debugPrint('Error fetching posts: $e');
     } finally {
       setState(() {
         _isLoading = false;
@@ -445,8 +448,9 @@ class _MyHomePageState extends State<MyHomePage> {
                                     fit: BoxFit.cover,
                                     loadingBuilder:
                                         (context, child, loadingProgress) {
-                                          if (loadingProgress == null)
+                                          if (loadingProgress == null) {
                                             return child;
+                                          }
                                           return Center(
                                             child: CircularProgressIndicator(
                                               value:
@@ -468,7 +472,7 @@ class _MyHomePageState extends State<MyHomePage> {
                                 ),
                                 if (isSelected)
                                   Container(
-                                    color: Colors.black.withOpacity(0.5),
+                                    color: Colors.black.withValues(alpha: 0.5),
                                     child: const Icon(
                                       Icons.check_circle,
                                       color: Colors.white,

@@ -88,12 +88,13 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
     }
   }
 
-  Future<void> _saveImage(BuildContext context) async {
+  Future<void> _saveImage() async {
     try {
       final hasAccess = await Gal.hasAccess();
       if (!hasAccess) {
         final status = await Gal.requestAccess();
         if (!status) {
+          if (!mounted) return;
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
@@ -104,10 +105,12 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
       final path = '${tempDir.path}/image.jpg';
       await Dio().download(_currentImageUrl, path);
       await Gal.putImage(path, album: 'danbooru_viewer');
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
@@ -133,7 +136,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
             Navigator.of(context).pop();
           }
         },
-        onLongPress: () => _saveImage(context),
+        onLongPress: () => _saveImage(),
         child: Center(
           child: _isVideo && _videoController != null
               ? Stack(
@@ -147,7 +150,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
                       Icon(
                         Icons.play_circle_outline,
                         size: 80,
-                        color: Colors.white.withOpacity(0.7),
+                        color: Colors.white.withValues(alpha: 0.7),
                       ),
                   ],
                 )

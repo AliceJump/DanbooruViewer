@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 
-class ReusableImageView extends StatelessWidget {
+class ReusableImageView extends StatefulWidget {
   final String imageUrl;
   final String tag;
   final BoxFit fit;
@@ -15,12 +15,18 @@ class ReusableImageView extends StatelessWidget {
     this.fit = BoxFit.contain,
   });
 
-  Future<void> _saveImage(BuildContext context) async {
+  @override
+  State<ReusableImageView> createState() => _ReusableImageViewState();
+}
+
+class _ReusableImageViewState extends State<ReusableImageView> {
+  Future<void> _saveImage() async {
     try {
       final hasAccess = await Gal.hasAccess();
       if (!hasAccess) {
         final status = await Gal.requestAccess();
         if (!status) {
+          if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('需要存储权限来保存图片')),
           );
@@ -29,12 +35,14 @@ class ReusableImageView extends StatelessWidget {
       }
       final tempDir = await getTemporaryDirectory();
       final path = '${tempDir.path}/image.jpg';
-      await Dio().download(imageUrl, path);
+      await Dio().download(widget.imageUrl, path);
       await Gal.putImage(path, album: 'danbooru_viewer');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('图片已保存到相册')),
       );
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('保存失败: $e')),
       );
@@ -44,12 +52,12 @@ class ReusableImageView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onLongPress: () => _saveImage(context),
+      onLongPress: () => _saveImage(),
       child: Hero(
-        tag: tag,
+        tag: widget.tag,
         child: Image.network(
-          imageUrl,
-          fit: fit,
+          widget.imageUrl,
+          fit: widget.fit,
           loadingBuilder: (context, child, loadingProgress) {
             if (loadingProgress == null) return child;
             return Center(

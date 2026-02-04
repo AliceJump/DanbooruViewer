@@ -102,8 +102,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
     _loadHighResImageForIndex(index);
   }
 
-  Future<void> _saveImage(BuildContext context, String? imageUrl) async {
+  Future<void> _saveImage(String? imageUrl) async {
     if (imageUrl == null) {
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('没有可保存的图片')));
@@ -115,6 +116,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
       if (!hasAccess) {
         final status = await Gal.requestAccess();
         if (!status) {
+          if (!mounted) return;
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
@@ -125,10 +127,12 @@ class _PostDetailPageState extends State<PostDetailPage> {
       final path = '${tempDir.path}/${imageUrl.split('/').last}';
       await Dio().download(imageUrl, path);
       await Gal.putImage(path, album: 'danbooru_viewer');
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
@@ -186,6 +190,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
         mode: LaunchMode.externalApplication,
       );
     } else {
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('无法打开链接: $urlString')));
@@ -234,7 +239,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                       );
                     },
                     onLongPress: () =>
-                        _saveImage(context, definitiveHighResUrl ?? previewUrl),
+                        _saveImage(definitiveHighResUrl ?? previewUrl),
                     child: Stack(
                       fit: StackFit.expand,
                       alignment: Alignment.center,
@@ -261,7 +266,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                                     child: Icon(
                                       Icons.play_circle_outline,
                                       size: 60,
-                                      color: Colors.white.withOpacity(0.7),
+                                      color: Colors.white.withValues(alpha: 0.7),
                                     ),
                                   ),
                                 ],
@@ -302,22 +307,22 @@ class _PostDetailPageState extends State<PostDetailPage> {
               const SizedBox(height: 16),
               _buildTagSection(
                 '作者',
-                currentPostForTags.tag_string_artist,
+                currentPostForTags.tagStringArtist,
                 context,
               ),
               _buildTagSection(
                 '版权',
-                currentPostForTags.tag_string_copyright,
+                currentPostForTags.tagStringCopyright,
                 context,
               ),
               _buildTagSection(
                 '角色',
-                currentPostForTags.tag_string_character,
+                currentPostForTags.tagStringCharacter,
                 context,
               ),
               _buildTagSection(
                 '普通',
-                currentPostForTags.tag_string_general,
+                currentPostForTags.tagStringGeneral,
                 context,
               ),
             ]),
