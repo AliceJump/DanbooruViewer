@@ -61,7 +61,7 @@ jobs:
         run: flutter build apk --debug
 
       - name: Upload Android Debug APK
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: android-debug-apk
           path: build/app/outputs/flutter-apk/app-debug.apk
@@ -88,7 +88,7 @@ jobs:
         run: flutter build web --debug
 
       - name: Upload Web Debug
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: web-debug
           path: build/web

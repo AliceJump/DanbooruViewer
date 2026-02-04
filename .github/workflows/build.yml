@@ -101,7 +101,7 @@ jobs:
 
       - name: Upload Android APK
         if: matrix.build-target == 'android'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
           path: build/app/outputs/flutter-apk/app-release*.apk
@@ -109,7 +109,7 @@ jobs:
 
       - name: Upload iOS IPA
         if: matrix.build-target == 'ios'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
           path: app.ipa
@@ -117,7 +117,7 @@ jobs:
 
       - name: Upload Linux Release
         if: matrix.build-target == 'linux'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
           path: danbooru-viewer-linux-release.tar.gz
@@ -125,7 +125,7 @@ jobs:
 
       - name: Upload Windows Release
         if: matrix.build-target == 'windows'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
           path: danbooru-viewer-windows-release.zip
@@ -133,7 +133,7 @@ jobs:
 
       - name: Upload Web Release
         if: matrix.build-target == 'web'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
           path: danbooru-viewer-web-release.tar.gz
@@ -150,7 +150,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
