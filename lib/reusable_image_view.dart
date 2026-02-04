@@ -27,9 +27,9 @@ class _ReusableImageViewState extends State<ReusableImageView> {
         final status = await Gal.requestAccess();
         if (!status) {
           if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('需要存储权限来保存图片')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
           return;
         }
       }
@@ -38,14 +38,14 @@ class _ReusableImageViewState extends State<ReusableImageView> {
       await Dio().download(widget.imageUrl, path);
       await Gal.putImage(path, album: 'danbooru_viewer');
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('图片已保存到相册')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('保存失败: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
     }
   }
 
@@ -64,7 +64,7 @@ class _ReusableImageViewState extends State<ReusableImageView> {
               child: CircularProgressIndicator(
                 value: loadingProgress.expectedTotalBytes != null
                     ? loadingProgress.cumulativeBytesLoaded /
-                        loadingProgress.expectedTotalBytes!
+                          loadingProgress.expectedTotalBytes!
                     : null,
               ),
             );

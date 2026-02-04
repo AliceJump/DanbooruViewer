@@ -266,7 +266,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
                                     child: Icon(
                                       Icons.play_circle_outline,
                                       size: 60,
-                                      color: Colors.white.withValues(alpha: 0.7),
+                                      color: Colors.white.withValues(
+                                        alpha: 0.7,
+                                      ),
                                     ),
                                   ),
                                 ],
