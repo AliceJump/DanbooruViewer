@@ -1,6 +1,5 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -29,17 +28,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
   final Map<int, String> _imageUrls = {};
   final Map<int, VideoPlayerController> _videoControllers = {};
   bool _didChangeDependenciesRun = false;
-
-  // 拖拽和长按相关状态
-  bool _isLongPressing = false;
-  Offset _dragStartOffset = Offset.zero;
-  Offset _currentDragOffset = Offset.zero;
-  DateTime _longPressStartTime = DateTime.now();
-
-  // Platform channel
-  static const platform = MethodChannel(
-    'com.example.danbooru_viewer/drag_drop',
-  );
 
   @override
   void initState() {
@@ -151,67 +139,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
     }
   }
 
-  Future<void> _startDragShare(String imageUrl) async {
-    try {
-      // 下载图片到临时文件
-      final tempDir = await getTemporaryDirectory();
-      final fileName = imageUrl.split('/').last;
-      final tempFile = '${tempDir.path}/$fileName';
-
-      // 下载图片
-      await Dio().download(imageUrl, tempFile);
-
-      // 调用 Android 原生方法启动拖拽
-      final result = await platform.invokeMethod('startDragDrop', {
-        'imagePath': tempFile,
-        'mimeType': 'image/*',
-      });
-
-      debugPrint('Drag result: $result');
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('拖拽分享失败: $e')));
-    }
-  }
-
-  void _handleDragAction(Offset dragOffset) {
-    // 根据拖拽方向判断操作
-    // 向左拖拽 -> 下载
-    // 向右拖拽 -> 分享
-    // 向上拖拽 -> 复制链接
-    final dx = dragOffset.dx - _dragStartOffset.dx;
-    final dy = dragOffset.dy - _dragStartOffset.dy;
-    final distance = dragOffset.distance;
-
-    if (distance > 100) {
-      // 判断主要方向
-      if (dx.abs() > dy.abs()) {
-        // 水平拖拽
-        if (dx < -50) {
-          // 向左拖拽 -> 下载
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('准备下载 ⬅️')));
-        } else if (dx > 50) {
-          // 向右拖拽 -> 分享
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('准备分享 ➡️')));
-        }
-      } else {
-        // 竖直拖拽
-        if (dy < -50) {
-          // 向上拖拽 -> 复制链接
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('准备复制链接 ⬆️')));
-        }
-      }
-    }
-  }
-
   Widget _buildTagSection(String title, String? tags, BuildContext context) {
     if (tags == null || tags.trim().isEmpty) {
       return const SizedBox.shrink();
@@ -311,12 +238,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
                         ),
                       );
                     },
-                    onLongPress: () {
-                      // 长按触发拖拽分享
-                      if (definitiveHighResUrl != null || previewUrl != null) {
-                        _startDragShare(definitiveHighResUrl ?? previewUrl);
-                      }
-                    },
+                    onLongPress: () =>
+                        _saveImage(definitiveHighResUrl ?? previewUrl),
                     child: Stack(
                       fit: StackFit.expand,
                       alignment: Alignment.center,

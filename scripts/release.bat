@@ -1,39 +1,39 @@
 @echo off
 REM Danbooru Viewer - Release Helper Script (Windows)
-REM æ­¤è„šæœ¬å¸®åŠ©å¿«é€Ÿå‘å¸ƒæ–°ç‰ˆæœ¬
+REM ´Ë½Å±¾°ïÖú¿ìËÙ·¢²¼ĞÂ°æ±¾
 
 setlocal enabledelayedexpansion
 
 echo.
-echo â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—
-echo â•‘ Danbooru Viewer Release Helper Script  â•‘
-echo â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+echo ¨X¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨[
+echo ¨U Danbooru Viewer Release Helper Script  ¨U
+echo ¨^¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨a
 echo.
 
-REM æ£€æŸ¥ git
+REM ¼ì²é git
 where git >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
-    echo ? é”™è¯¯: æœªæ‰¾åˆ° git å‘½ä»¤
+    echo ? ´íÎó: Î´ÕÒµ½ git ÃüÁî
     exit /b 1
 )
 
-REM è·å–å½“å‰ç‰ˆæœ¬
+REM »ñÈ¡µ±Ç°°æ±¾
 for /f "tokens=2" %%A in ('findstr "^version:" pubspec.yaml') do (
     set CURRENT_VERSION=%%A
     goto :found_version
 )
 :found_version
 
-echo å½“å‰ç‰ˆæœ¬: %CURRENT_VERSION%
+echo µ±Ç°°æ±¾: %CURRENT_VERSION%
 echo.
 
-echo é€‰æ‹©è¦æ‰§è¡Œçš„æ“ä½œ:
-echo 1) å‘å¸ƒæ–° Release ç‰ˆæœ¬
-echo 2) å‘å¸ƒ Alpha/Beta æµ‹è¯•ç‰ˆæœ¬
-echo 3) æŸ¥çœ‹æœ€è¿‘çš„ Tags
-echo 4) æŸ¥çœ‹ Git æ—¥å¿—
+echo Ñ¡ÔñÒªÖ´ĞĞµÄ²Ù×÷:
+echo 1) ·¢²¼ĞÂ Release °æ±¾
+echo 2) ·¢²¼ Alpha/Beta ²âÊÔ°æ±¾
+echo 3) ²é¿´×î½üµÄ Tags
+echo 4) ²é¿´ Git ÈÕÖ¾
 echo.
-set /p choice="è¯·é€‰æ‹© (1-4): "
+set /p choice="ÇëÑ¡Ôñ (1-4): "
 
 if "%choice%"=="1" goto release
 if "%choice%"=="2" goto prerelease
@@ -44,18 +44,18 @@ goto invalid
 :release
 cls
 echo.
-echo === å‘å¸ƒæ–° Release ç‰ˆæœ¬ ===
+echo === ·¢²¼ĞÂ Release °æ±¾ ===
 echo.
-set /p new_version="è¾“å…¥æ–°ç‰ˆæœ¬å· (ä¸éœ€è¦ 'v' å‰ç¼€, ä¾‹: 1.1.0): "
+set /p new_version="ÊäÈëĞÂ°æ±¾ºÅ (²»ĞèÒª 'v' Ç°×º, Àı: 1.1.0): "
 
-REM ç®€å•çš„ç‰ˆæœ¬å·éªŒè¯ - ä½¿ç”¨æ›´ç®€å•çš„æ–¹æ³•
+REM ¼òµ¥µÄ°æ±¾ºÅÑéÖ¤ - Ê¹ÓÃ¸ü¼òµ¥µÄ·½·¨
 for /f "tokens=1,2,3 delims=." %%a in ("%new_version%") do (
     if "%%a"=="" goto version_error
     if "%%b"=="" goto version_error
     if "%%c"=="" goto version_error
 )
 
-REM æ£€æŸ¥æ˜¯å¦å…¨æ˜¯æ•°å­—
+REM ¼ì²éÊÇ·ñÈ«ÊÇÊı×Ö
 for %%a in (%new_version:.= %) do (
     for /f "delims=0123456789" %%i in ("%%a") do (
         if not "%%i"=="" goto version_error
@@ -65,7 +65,7 @@ for %%a in (%new_version:.= %) do (
 goto version_ok
 
 :version_error
-echo ? é”™è¯¯: ç‰ˆæœ¬å·æ ¼å¼æ— æ•ˆ (åº”ä¸º X.Y.Zï¼Œä¾‹å¦‚ 1.0.0)
+echo ? ´íÎó: °æ±¾ºÅ¸ñÊ½ÎŞĞ§ (Ó¦Îª X.Y.Z£¬ÀıÈç 1.0.0)
 exit /b 1
 
 :version_ok
@@ -73,96 +73,96 @@ exit /b 1
 set tag=v%new_version%
 
 echo.
-echo å‡†å¤‡å‘å¸ƒ:
-echo   ç‰ˆæœ¬å·: %new_version%
+echo ×¼±¸·¢²¼:
+echo   °æ±¾ºÅ: %new_version%
 echo   Git Tag: %tag%
 echo.
-set /p confirm="ç»§ç»­? (y/n): "
+set /p confirm="¼ÌĞø? (y/n): "
 
 if /i not "%confirm%"=="y" (
-    echo å·²å–æ¶ˆ
+    echo ÒÑÈ¡Ïû
     exit /b 0
 )
 
 echo.
-echo ? åˆ›å»º Tag...
+echo ? ´´½¨ Tag...
 git tag %tag%
 if %ERRORLEVEL% NEQ 0 (
-    echo ? é”™è¯¯: åˆ›å»º Tag å¤±è´¥
+    echo ? ´íÎó: ´´½¨ Tag Ê§°Ü
     exit /b 1
 )
 
-echo ? æ¨é€ Tag...
+echo ? ÍÆËÍ Tag...
 git push origin %tag%
 if %ERRORLEVEL% NEQ 0 (
-    echo ? é”™è¯¯: æ¨é€ Tag å¤±è´¥
+    echo ? ´íÎó: ÍÆËÍ Tag Ê§°Ü
     exit /b 1
 )
 
 echo.
-echo ? æˆåŠŸ!
+echo ? ³É¹¦!
 echo.
-echo GitHub Actions ç°åœ¨ä¼šè‡ªåŠ¨æ„å»ºä½ çš„åº”ç”¨ã€‚
-echo ç›‘æ§è¿›åº¦: https://github.com/YOUR_USERNAME/danbooru-viewer/actions
+echo GitHub Actions ÏÖÔÚ»á×Ô¶¯¹¹½¨ÄãµÄÓ¦ÓÃ¡£
+echo ¼à¿Ø½ø¶È: https://github.com/YOUR_USERNAME/danbooru-viewer/actions
 echo.
-echo æ„å»ºå®ŒæˆåæŸ¥çœ‹å‘å¸ƒ: https://github.com/YOUR_USERNAME/danbooru-viewer/releases
+echo ¹¹½¨Íê³Éºó²é¿´·¢²¼: https://github.com/YOUR_USERNAME/danbooru-viewer/releases
 goto end
 
 :prerelease
 cls
 echo.
-echo === å‘å¸ƒæµ‹è¯•ç‰ˆæœ¬ ===
+echo === ·¢²¼²âÊÔ°æ±¾ ===
 echo.
-echo é€‰æ‹©ç‰ˆæœ¬ç±»å‹:
+echo Ñ¡Ôñ°æ±¾ÀàĞÍ:
 echo 1) Alpha
 echo 2) Beta
 echo 3) RC (Release Candidate)
 echo.
-set /p type_choice="è¯·é€‰æ‹© (1-3): "
+set /p type_choice="ÇëÑ¡Ôñ (1-3): "
 
 if "%type_choice%"=="1" set pre_type=alpha
 if "%type_choice%"=="2" set pre_type=beta
 if "%type_choice%"=="3" set pre_type=rc
 
 if not defined pre_type (
-    echo ? æ— æ•ˆé€‰æ‹©
+    echo ? ÎŞĞ§Ñ¡Ôñ
     exit /b 1
 )
 
-set /p test_version="è¾“å…¥æµ‹è¯•ç‰ˆæœ¬å· (ä¾‹: 1.1.0-%pre_type%.1): "
+set /p test_version="ÊäÈë²âÊÔ°æ±¾ºÅ (Àı: 1.1.0-%pre_type%.1): "
 
 set tag=v%test_version%
 
 echo.
-echo å‡†å¤‡å‘å¸ƒ:
-echo   ç‰ˆæœ¬å·: %test_version%
+echo ×¼±¸·¢²¼:
+echo   °æ±¾ºÅ: %test_version%
 echo   Git Tag: %tag%
 echo.
-set /p confirm="ç»§ç»­? (y/n): "
+set /p confirm="¼ÌĞø? (y/n): "
 
 if /i not "%confirm%"=="y" (
-    echo å·²å–æ¶ˆ
+    echo ÒÑÈ¡Ïû
     exit /b 0
 )
 
 echo.
-echo ? åˆ›å»º Tag...
+echo ? ´´½¨ Tag...
 git tag %tag%
 
-echo ? æ¨é€ Tag...
+echo ? ÍÆËÍ Tag...
 git push origin %tag%
 
 echo.
-echo ? æˆåŠŸ!
+echo ? ³É¹¦!
 echo.
-echo è¿™ä¸ªæµ‹è¯•ç‰ˆæœ¬ä¼šè¢«æ ‡è®°ä¸º prerelease
-echo ç›‘æ§è¿›åº¦: https://github.com/YOUR_USERNAME/danbooru-viewer/actions
+echo Õâ¸ö²âÊÔ°æ±¾»á±»±ê¼ÇÎª prerelease
+echo ¼à¿Ø½ø¶È: https://github.com/YOUR_USERNAME/danbooru-viewer/actions
 goto end
 
 :tags
 cls
 echo.
-echo === æœ€è¿‘çš„ Tags ===
+echo === ×î½üµÄ Tags ===
 echo.
 git tag -l "v*" --sort=-version:refname
 goto end
@@ -170,17 +170,17 @@ goto end
 :log
 cls
 echo.
-echo === Git æ—¥å¿— (æœ€å 10 æ¡æäº¤) ===
+echo === Git ÈÕÖ¾ (×îºó 10 ÌõÌá½») ===
 echo.
 git log --oneline -10
 goto end
 
 :invalid
-echo ? æ— æ•ˆé€‰æ‹©
+echo ? ÎŞĞ§Ñ¡Ôñ
 exit /b 1
 
 :end
 echo.
-echo â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+echo ¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T¨T
 echo.
 pause
