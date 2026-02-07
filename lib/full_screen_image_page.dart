@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
@@ -24,6 +27,7 @@ class FullScreenImagePage extends StatefulWidget {
 class _FullScreenImagePageState extends State<FullScreenImagePage> {
   late String _currentImageUrl;
   ImageProvider? _imageProvider;
+  File? _cachedImageFile;
   VideoPlayerController? _videoController;
   bool _didLoadHighRes = false;
   bool _isVideo = false;
@@ -46,45 +50,60 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_didLoadHighRes) {
-      _loadHighResImage();
+      _loadHighResMedia();
       _didLoadHighRes = true;
     }
   }
 
-  void _loadHighResImage() {
-    if (widget.highResUrl != null && widget.highResUrl != widget.previewUrl) {
-      // 先尝试作为图片加载
-      precacheImage(NetworkImage(widget.highResUrl!), context)
-          .then((_) {
-            if (mounted && !_isVideo) {
-              setState(() {
-                _currentImageUrl = widget.highResUrl!;
-                _imageProvider = NetworkImage(_currentImageUrl);
-              });
-            }
-          })
-          .catchError((_) {
-            // 图片加载失败，尝试作为视频加载
-            if (mounted && !_isVideo) {
-              final videoController = VideoPlayerController.networkUrl(
-                Uri.parse(widget.highResUrl!),
-              );
-              videoController
-                  .initialize()
-                  .then((_) {
-                    if (mounted) {
-                      setState(() {
-                        _videoController = videoController;
-                        _isVideo = true;
-                      });
-                    }
-                  })
-                  .catchError((_) {
-                    // 视频加载也失败，保持使用预览图
-                    videoController.dispose();
-                  });
-            }
+  bool _isVideoUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.endsWith('.mp4') ||
+        lower.endsWith('.webm') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.m4v');
+  }
+
+  Future<File> _getCachedFile(String url, {int retries = 2}) async {
+    var attempt = 0;
+    while (true) {
+      try {
+        return await DefaultCacheManager().getSingleFile(url);
+      } catch (_) {
+        if (attempt++ >= retries) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 300 * attempt));
+      }
+    }
+  }
+
+  Future<void> _loadHighResMedia() async {
+    final highResUrl = widget.highResUrl;
+    if (highResUrl == null || highResUrl == widget.previewUrl) return;
+
+    try {
+      if (_isVideoUrl(highResUrl)) {
+        final file = await _getCachedFile(highResUrl);
+        final controller = VideoPlayerController.file(file);
+        await controller.initialize();
+        if (mounted) {
+          setState(() {
+            _videoController = controller;
+            _isVideo = true;
           });
+        }
+      } else {
+        final file = await _getCachedFile(highResUrl);
+        if (mounted) {
+          setState(() {
+            _currentImageUrl = highResUrl;
+            _cachedImageFile = file;
+            _imageProvider = FileImage(file);
+          });
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {});
+      }
     }
   }
 
@@ -101,10 +120,14 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
           return;
         }
       }
-      final tempDir = await getTemporaryDirectory();
-      final path = '${tempDir.path}/image.jpg';
-      await Dio().download(_currentImageUrl, path);
-      await Gal.putImage(path, album: 'danbooru_viewer');
+      if (_cachedImageFile != null) {
+        await Gal.putImage(_cachedImageFile!.path, album: 'danbooru_viewer');
+      } else {
+        final tempDir = await getTemporaryDirectory();
+        final path = '${tempDir.path}/image.jpg';
+        await Dio().download(_currentImageUrl, path);
+        await Gal.putImage(path, album: 'danbooru_viewer');
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -166,7 +189,6 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
                     ),
                   ),
                   errorBuilder: (context, error, stackTrace) {
-                    // 图片加载失败，显示预览图
                     return const SizedBox.shrink();
                   },
                 ),

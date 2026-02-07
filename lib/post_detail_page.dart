@@ -1,5 +1,10 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -25,9 +30,13 @@ class PostDetailPage extends StatefulWidget {
 class _PostDetailPageState extends State<PostDetailPage> {
   late PageController _pageController;
   late int _currentIndex;
-  final Map<int, String> _imageUrls = {};
+  final Map<int, File> _imageFiles = {};
   final Map<int, VideoPlayerController> _videoControllers = {};
   bool _didChangeDependenciesRun = false;
+
+  Timer? _dragTimer;
+  bool _isDragging = false;
+  static const platform = MethodChannel('com.alicejump.danbooru_viewer/drag');
 
   @override
   void initState() {
@@ -38,7 +47,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   @override
   void dispose() {
-    // 清理所有视频控制器
+    _dragTimer?.cancel();
     for (var controller in _videoControllers.values) {
       controller.dispose();
     }
@@ -49,49 +58,60 @@ class _PostDetailPageState extends State<PostDetailPage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_didChangeDependenciesRun) {
-      _loadHighResImageForIndex(_currentIndex);
+      _loadHighResForIndex(_currentIndex);
       _didChangeDependenciesRun = true;
     }
   }
 
-  void _loadHighResImageForIndex(int index) {
+  bool _isVideoUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.endsWith('.mp4') ||
+        lower.endsWith('.webm') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.m4v');
+  }
+
+  Future<File> _getCachedFile(String url, {int retries = 2}) async {
+    var attempt = 0;
+    while (true) {
+      try {
+        return await DefaultCacheManager().getSingleFile(url);
+      } catch (_) {
+        if (attempt++ >= retries) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 300 * attempt));
+      }
+    }
+  }
+
+  Future<void> _loadHighResForIndex(int index) async {
     if (index < 0 || index >= widget.posts.length) return;
     final post = widget.posts[index];
     final highResUrl = post.fileUrl ?? post.largeFileUrl;
+    if (highResUrl == null) return;
+    if (_imageFiles[index] != null || _videoControllers[index] != null) return;
 
-    if (highResUrl != null &&
-        _imageUrls[index] == null &&
-        _videoControllers[index] == null) {
-      // 先尝试作为图片加载
-      precacheImage(NetworkImage(highResUrl), context)
-          .then((_) {
-            if (mounted) {
-              setState(() {
-                _imageUrls[index] = highResUrl;
-              });
-            }
-          })
-          .catchError((_) {
-            // 图片加载失败，尝试作为视频加载
-            if (mounted && _videoControllers[index] == null) {
-              final videoController = VideoPlayerController.networkUrl(
-                Uri.parse(highResUrl),
-              );
-              videoController
-                  .initialize()
-                  .then((_) {
-                    if (mounted) {
-                      setState(() {
-                        _videoControllers[index] = videoController;
-                      });
-                    }
-                  })
-                  .catchError((_) {
-                    // 视频加载也失败，不做任何处理，保持使用预览图
-                    videoController.dispose();
-                  });
-            }
+    try {
+      if (_isVideoUrl(highResUrl)) {
+        final file = await _getCachedFile(highResUrl);
+        final controller = VideoPlayerController.file(file);
+        await controller.initialize();
+        if (mounted) {
+          setState(() {
+            _videoControllers[index] = controller;
           });
+        }
+      } else {
+        final file = await _getCachedFile(highResUrl);
+        if (mounted) {
+          setState(() {
+            _imageFiles[index] = file;
+          });
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {});
+      }
     }
   }
 
@@ -99,7 +119,20 @@ class _PostDetailPageState extends State<PostDetailPage> {
     setState(() {
       _currentIndex = index;
     });
-    _loadHighResImageForIndex(index);
+    _loadHighResForIndex(index);
+  }
+
+  Future<void> _downloadWithRetry(String url, String path, {int retries = 2}) async {
+    var attempt = 0;
+    while (true) {
+      try {
+        await Dio().download(url, path);
+        return;
+      } catch (_) {
+        if (attempt++ >= retries) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 400 * attempt));
+      }
+    }
   }
 
   Future<void> _saveImage(String? imageUrl) async {
@@ -125,7 +158,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
       }
       final tempDir = await getTemporaryDirectory();
       final path = '${tempDir.path}/${imageUrl.split('/').last}';
-      await Dio().download(imageUrl, path);
+      await _downloadWithRetry(imageUrl, path);
       await Gal.putImage(path, album: 'danbooru_viewer');
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -182,18 +215,34 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Future<void> _launchUrl(String? urlString) async {
-    if (urlString != null &&
-        urlString.isNotEmpty &&
-        await canLaunchUrl(Uri.parse(urlString))) {
+    if (urlString == null || urlString.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('链接无效')));
+      return;
+    }
+
+    final Uri url = Uri.parse(urlString);
+
+    try {
       await launchUrl(
-        Uri.parse(urlString),
+        url,
         mode: LaunchMode.externalApplication,
       );
-    } else {
+    } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('无法打开链接: $urlString')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('无法打开链接: $e')));
+    }
+  }
+
+  void _startDrag(Post post) {
+    if (!_isDragging) {
+      _isDragging = true;
+      final imageUrl = post.fileUrl ?? post.largeFileUrl ?? post.previewFileUrl;
+      if (imageUrl != null) {
+        platform.invokeMethod('startDrag', {'url': imageUrl});
+      }
     }
   }
 
@@ -215,7 +264,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                 itemBuilder: (context, index) {
                   final post = widget.posts[index];
                   final previewUrl = post.previewFileUrl;
-                  final highResUrlForDetailPage = _imageUrls[index];
+                  final highResFile = _imageFiles[index];
                   final videoController = _videoControllers[index];
                   final definitiveHighResUrl =
                       post.fileUrl ?? post.largeFileUrl;
@@ -238,8 +287,22 @@ class _PostDetailPageState extends State<PostDetailPage> {
                         ),
                       );
                     },
-                    onLongPress: () =>
-                        _saveImage(definitiveHighResUrl ?? previewUrl),
+                    onLongPressStart: (_) {
+                      _isDragging = false;
+                      _dragTimer = Timer(const Duration(seconds: 1), () {
+                        _startDrag(post);
+                      });
+                    },
+                    onLongPressUp: () {
+                      _dragTimer?.cancel();
+                      if (!_isDragging) {
+                        _saveImage(definitiveHighResUrl);
+                      }
+                    },
+                    onLongPressMoveUpdate: (details) {
+                      _dragTimer?.cancel();
+                      _startDrag(post);
+                    },
                     child: Stack(
                       fit: StackFit.expand,
                       alignment: Alignment.center,
@@ -253,7 +316,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
                                 const Icon(Icons.error),
                           ),
                         ),
-                        // 显示视频
                         if (videoController != null)
                           Center(
                             child: AspectRatio(
@@ -266,34 +328,27 @@ class _PostDetailPageState extends State<PostDetailPage> {
                                     child: Icon(
                                       Icons.play_circle_outline,
                                       size: 60,
-                                      color: Colors.white.withValues(
-                                        alpha: 0.7,
-                                      ),
+                                      color: Colors.white.withOpacity(0.7),
                                     ),
                                   ),
                                 ],
                               ),
                             ),
                           ),
-                        // 显示高分辨率图片
-                        if (highResUrlForDetailPage != null &&
-                            videoController == null)
+                        if (highResFile != null && videoController == null)
                           AnimatedOpacity(
-                            opacity: highResUrlForDetailPage != previewUrl
-                                ? 1.0
-                                : 0.0,
+                            opacity: 1.0,
                             duration: const Duration(milliseconds: 300),
-                            child: Image.network(
-                              highResUrlForDetailPage,
+                            child: Image.file(
+                              highResFile,
                               fit: BoxFit.contain,
+                              gaplessPlayback: true,
                               errorBuilder: (context, error, stackTrace) {
-                                // 高分辨率图片加载失败，显示预览图
                                 return const SizedBox.shrink();
                               },
                             ),
                           ),
-                        // 显示加载中指示器
-                        if (highResUrlForDetailPage == null &&
+                        if (highResFile == null &&
                             videoController == null &&
                             (post.fileUrl != null || post.largeFileUrl != null))
                           const Center(child: CircularProgressIndicator()),
@@ -333,12 +388,12 @@ class _PostDetailPageState extends State<PostDetailPage> {
       ),
       floatingActionButton:
           (currentPostForTags.source != null &&
-              currentPostForTags.source!.isNotEmpty)
-          ? FloatingActionButton(
-              onPressed: () => _launchUrl(currentPostForTags.source),
-              child: const Icon(Icons.link),
-            )
-          : null,
+                  currentPostForTags.source!.isNotEmpty)
+              ? FloatingActionButton(
+                  onPressed: () => _launchUrl(currentPostForTags.source),
+                  child: const Icon(Icons.link),
+                )
+              : null,
       floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
     );
   }
