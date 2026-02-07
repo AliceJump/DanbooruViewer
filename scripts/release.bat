@@ -1,6 +1,6 @@
 @echo off
 REM Danbooru Viewer - Release Helper Script (Windows)
-REM 此脚本帮助快速发布新版本
+REM 自动获取 GitHub URL，方便监控和查看发布
 
 setlocal enabledelayedexpansion
 
@@ -13,9 +13,17 @@ echo.
 REM 检查 git
 where git >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
-    echo ? 错误: 未找到 git 命令
+    echo ❌ 错误: 未找到 git 命令
     exit /b 1
 )
+
+REM 获取远程仓库 URL
+for /f "tokens=*" %%A in ('git remote get-url origin') do set REMOTE_URL=%%A
+REM 去掉结尾 .git
+set REPO_URL=%REMOTE_URL:.git=%
+
+echo 当前远程仓库: %REPO_URL%
+echo.
 
 REM 获取当前版本
 for /f "tokens=2" %%A in ('findstr "^version:" pubspec.yaml') do (
@@ -29,7 +37,7 @@ echo.
 
 echo 选择要执行的操作:
 echo 1) 发布新 Release 版本
-echo 2) 发布 Alpha/Beta 测试版本
+echo 2) 发布 Alpha/Beta/RC 测试版本
 echo 3) 查看最近的 Tags
 echo 4) 查看 Git 日志
 echo.
@@ -48,7 +56,7 @@ echo === 发布新 Release 版本 ===
 echo.
 set /p new_version="输入新版本号 (不需要 'v' 前缀, 例: 1.1.0): "
 
-REM 简单的版本号验证 - 使用更简单的方法
+REM 简单版本号验证
 for /f "tokens=1,2,3 delims=." %%a in ("%new_version%") do (
     if "%%a"=="" goto version_error
     if "%%b"=="" goto version_error
@@ -65,11 +73,10 @@ for %%a in (%new_version:.= %) do (
 goto version_ok
 
 :version_error
-echo ? 错误: 版本号格式无效 (应为 X.Y.Z，例如 1.0.0)
+echo ❌ 错误: 版本号格式无效 (应为 X.Y.Z，例如 1.0.0)
 exit /b 1
 
 :version_ok
-
 echo.
 echo 更新 pubspec.yaml 版本号...
 
@@ -85,38 +92,31 @@ for /f "tokens=2 delims= " %%A in ('findstr "^version:" pubspec.yaml') do (
 
 REM 生成新文件
 (for /f "usebackq delims=" %%L in ("pubspec.yaml") do (
-
     echo %%L | findstr /b "version:" >nul
-
     if !ERRORLEVEL! EQU 0 (
-
         if defined OLD_BUILD (
             echo version: %new_version%+!OLD_BUILD!
         ) else (
             echo version: %new_version%
         )
-
     ) else (
         echo %%L
     )
-
 )) > %TMP_FILE%
 
 move /y %TMP_FILE% pubspec.yaml >nul
-
 if %ERRORLEVEL% NEQ 0 (
-    echo ? 错误: 更新 pubspec.yaml 失败
+    echo ❌ 错误: 更新 pubspec.yaml 失败
     exit /b 1
 )
 
 if defined OLD_BUILD (
-    echo ? pubspec.yaml 已更新为 version: %new_version%+%OLD_BUILD%
+    echo ✅ pubspec.yaml 已更新为 version: %new_version%+%OLD_BUILD%
 ) else (
-    echo ? pubspec.yaml 已更新为 version: %new_version%
+    echo ✅ pubspec.yaml 已更新为 version: %new_version%
 )
 
 set tag=v%new_version%
-
 
 echo.
 echo 准备发布:
@@ -131,27 +131,25 @@ if /i not "%confirm%"=="y" (
 )
 
 echo.
-echo ? 创建 Tag...
+echo ⏳ 创建 Tag...
 git tag %tag%
 if %ERRORLEVEL% NEQ 0 (
-    echo ? 错误: 创建 Tag 失败
+    echo ❌ 错误: 创建 Tag 失败
     exit /b 1
 )
 
-echo ? 推送 Tag...
+echo ⏳ 推送 Tag...
 git push origin %tag%
 if %ERRORLEVEL% NEQ 0 (
-    echo ? 错误: 推送 Tag 失败
+    echo ❌ 错误: 推送 Tag 失败
     exit /b 1
 )
 
 echo.
-echo ? 成功!
+echo ✅ 成功!
 echo.
-echo GitHub Actions 现在会自动构建你的应用。
-echo 监控进度: https://github.com/YOUR_USERNAME/danbooru-viewer/actions
-echo.
-echo 构建完成后查看发布: https://github.com/YOUR_USERNAME/danbooru-viewer/releases
+echo 监控进度: %REPO_URL%/actions
+echo 查看发布: %REPO_URL%/releases
 goto end
 
 :prerelease
@@ -171,12 +169,11 @@ if "%type_choice%"=="2" set pre_type=beta
 if "%type_choice%"=="3" set pre_type=rc
 
 if not defined pre_type (
-    echo ? 无效选择
+    echo ❌ 无效选择
     exit /b 1
 )
 
 set /p test_version="输入测试版本号 (例: 1.1.0-%pre_type%.1): "
-
 set tag=v%test_version%
 
 echo.
@@ -192,17 +189,17 @@ if /i not "%confirm%"=="y" (
 )
 
 echo.
-echo ? 创建 Tag...
+echo ⏳ 创建 Tag...
 git tag %tag%
 
-echo ? 推送 Tag...
+echo ⏳ 推送 Tag...
 git push origin %tag%
 
 echo.
-echo ? 成功!
+echo ✅ 成功!
 echo.
 echo 这个测试版本会被标记为 prerelease
-echo 监控进度: https://github.com/YOUR_USERNAME/danbooru-viewer/actions
+echo 监控进度: %REPO_URL%/actions
 goto end
 
 :tags
@@ -222,7 +219,7 @@ git log --oneline -10
 goto end
 
 :invalid
-echo ? 无效选择
+echo ❌ 无效选择
 exit /b 1
 
 :end

@@ -40,6 +40,15 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+      # ---------------- 缓存 ----------------
+      - name: Cache Flutter, Gradle & Android SDK
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.pub-cache
+            ~/.gradle
+            ~/.android
+          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}
 
       - name: Install dependencies
         run: flutter pub get
