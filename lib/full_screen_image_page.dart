@@ -1,12 +1,15 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:gal/gal.dart';
+import 'package:http/http.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:video_player/video_player.dart';
+import 'media_utils.dart';
 
 class FullScreenImagePage extends StatefulWidget {
   final String previewUrl;
@@ -23,6 +26,9 @@ class FullScreenImagePage extends StatefulWidget {
   @override
   State<FullScreenImagePage> createState() => _FullScreenImagePageState();
 }
+
+Timer? pressTimer;
+DateTime? pressStartTime;
 
 class _FullScreenImagePageState extends State<FullScreenImagePage> {
   late String _currentImageUrl;
@@ -107,59 +113,77 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
     }
   }
 
-  Future<void> _saveImage() async {
-    try {
-      final hasAccess = await Gal.hasAccess();
-      if (!hasAccess) {
-        final status = await Gal.requestAccess();
-        if (!status) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
-          return;
-        }
-      }
-      if (_cachedImageFile != null) {
-        await Gal.putImage(_cachedImageFile!.path, album: 'danbooru_viewer');
-      } else {
-        final tempDir = await getTemporaryDirectory();
-        final path = '${tempDir.path}/image.jpg';
-        await Dio().download(_currentImageUrl, path);
-        await Gal.putImage(path, album: 'danbooru_viewer');
-      }
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
+
       body: GestureDetector(
-        onTap: () {
-          if (_isVideo && _videoController != null) {
-            setState(() {
-              if (_videoIsPlaying) {
-                _videoController!.pause();
+        onTapDown: (_) {
+          pressStartTime = DateTime.now();
+          pressTimer = Timer(const Duration(seconds: 1), () {
+            pressTimer = null; // Timer 已触发，拖拽开始
+            String? url;
+
+            if (_isVideo && _videoController != null) {
+              // 如果是视频，用 highResUrl
+              url = widget.highResUrl ?? widget.previewUrl;
+            } else {
+              // 图片，优先用缓存文件路径
+              url =
+                  _cachedImageFile?.path ??
+                      widget.highResUrl ??
+                      widget.previewUrl;
+            }
+            startDrag(context,url);
+          });
+        },
+        onTapUp: (_) {
+          if (pressTimer != null && pressTimer!.isActive) {
+            pressTimer?.cancel();
+            pressTimer = null;
+
+            // 计算按住时长
+            final elapsed = DateTime.now()
+                .difference(pressStartTime!)
+                .inMilliseconds;
+
+            if (elapsed >= 300) {
+              // 按住至少0.3s → 下载
+              String? url;
+
+              if (_isVideo && _videoController != null) {
+                // 如果是视频，用 highResUrl
+                url = widget.highResUrl ?? widget.previewUrl;
               } else {
-                _videoController!.play();
+                // 图片，优先用缓存文件路径
+                url =
+                    _cachedImageFile?.path ??
+                    widget.highResUrl ??
+                    widget.previewUrl;
               }
-              _videoIsPlaying = !_videoIsPlaying;
-            });
-          } else {
-            Navigator.of(context).pop();
+              saveMediaToGallery(context, url);
+            } else {
+              if (_isVideo && _videoController != null) {
+                setState(() {
+                  if (_videoIsPlaying) {
+                    _videoController!.pause();
+                  } else {
+                    _videoController!.play();
+                  }
+                  _videoIsPlaying = !_videoIsPlaying;
+                });
+              } else {
+                Navigator.of(context).pop();
+              }
+            }
           }
         },
-        onLongPress: () => _saveImage(),
+
+        onTapCancel: () {
+          pressTimer?.cancel();
+          pressTimer = null;
+        },
         child: Center(
           child: _isVideo && _videoController != null
               ? Stack(

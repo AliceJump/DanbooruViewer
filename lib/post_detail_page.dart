@@ -2,16 +2,15 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:danbooru_viewer/DragHelper.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:gal/gal.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
 import 'full_screen_image_page.dart';
 import 'main.dart';
+import 'media_utils.dart';
 
 class PostDetailPage extends StatefulWidget {
   final List<Post> posts;
@@ -71,17 +70,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
         lower.endsWith('.m4v');
   }
 
-  Future<File> _getCachedFile(String url, {int retries = 2}) async {
-    var attempt = 0;
-    while (true) {
-      try {
-        return await DefaultCacheManager().getSingleFile(url);
-      } catch (_) {
-        if (attempt++ >= retries) rethrow;
-        await Future<void>.delayed(Duration(milliseconds: 300 * attempt));
-      }
-    }
-  }
 
   Future<void> _loadHighResForIndex(int index) async {
     if (index < 0 || index >= widget.posts.length) return;
@@ -92,7 +80,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
     try {
       if (_isVideoUrl(highResUrl)) {
-        final file = await _getCachedFile(highResUrl);
+        final file = await getCachedFile(highResUrl);
         final controller = VideoPlayerController.file(file);
         await controller.initialize();
         if (mounted) {
@@ -101,7 +89,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
           });
         }
       } else {
-        final file = await _getCachedFile(highResUrl);
+        final file = await getCachedFile(highResUrl);
         if (mounted) {
           setState(() {
             _imageFiles[index] = file;
@@ -122,56 +110,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
     _loadHighResForIndex(index);
   }
 
-  Future<void> _downloadWithRetry(String url, String path,
-      {int retries = 2}) async {
-    var attempt = 0;
-    while (true) {
-      try {
-        await Dio().download(url, path);
-        return;
-      } catch (_) {
-        if (attempt++ >= retries) rethrow;
-        await Future<void>.delayed(Duration(milliseconds: 400 * attempt));
-      }
-    }
-  }
 
-  Future<void> _saveImage(String? imageUrl) async {
-    if (imageUrl == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('没有可保存的图片')));
-      return;
-    }
-
-    try {
-      final hasAccess = await Gal.hasAccess();
-      if (!hasAccess) {
-        final status = await Gal.requestAccess();
-        if (!status) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
-          return;
-        }
-      }
-      final tempDir = await getTemporaryDirectory();
-      final path = '${tempDir.path}/${imageUrl.split('/').last}';
-      await _downloadWithRetry(imageUrl, path);
-      await Gal.putImage(path, album: 'danbooru_viewer');
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
-    }
-  }
 
   Widget _buildTagSection(String title, String? tags, BuildContext context) {
     if (tags == null || tags.trim().isEmpty) {
@@ -237,21 +176,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
     }
   }
 
-  Future<void> _startDrag(Post post) async {
-    final imageUrl = post.fileUrl ?? post.largeFileUrl ?? post.previewFileUrl;
-    if (imageUrl != null) {
-      final type = _isVideoUrl(imageUrl) ? "video" : "image";
-      try {
-        final file = await _getCachedFile(imageUrl);
-        await DragHelper.startDrag(file.path, type: type);
-      } catch (e) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('无法拖拽: $e')),
-        );
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -280,41 +204,47 @@ class _PostDetailPageState extends State<PostDetailPage> {
                   if (previewUrl == null) {
                     return const Center(child: Icon(Icons.broken_image));
                   }
-
+                  Timer? pressTimer;
+                  DateTime? pressStartTime;
                   return GestureDetector(
                     onTapDown: (_) {
-                      _pressStopwatch.reset();
-                      _pressStopwatch.start();
-                      _pressTimer = Timer(const Duration(seconds: 1), () {
-                        _startDrag(post);
+                      pressStartTime = DateTime.now();
+                      pressTimer = Timer(const Duration(seconds: 1), () {
+                        pressTimer = null; // Timer 已触发，拖拽开始
+                        startDrag(context,post.fileUrl as String);
                       });
                     },
                     onTapUp: (_) {
-                      _pressTimer?.cancel();
-                      _pressStopwatch.stop();
-                      final elapsed = _pressStopwatch.elapsedMilliseconds;
-                      if (elapsed < 300) {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => FullScreenImagePage(
-                              previewUrl: previewUrl,
-                              highResUrl: definitiveHighResUrl,
-                              heroTag: heroTag,
+                      if (pressTimer != null && pressTimer!.isActive) {
+                        pressTimer?.cancel();
+                        pressTimer = null;
+
+                        // 计算按住时长
+                        final elapsed =
+                            DateTime.now().difference(pressStartTime!).inMilliseconds;
+
+                        if (elapsed >= 300) {
+                          // 按住至少0.3s → 下载
+                          saveMediaToGallery(context,definitiveHighResUrl!);
+                        }else{
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => FullScreenImagePage(
+                                previewUrl: previewUrl,
+                                highResUrl: definitiveHighResUrl,
+                                heroTag: heroTag,
+                              ),
                             ),
-                          ),
-                        );
-                      } else if (elapsed < 1000) {
-                        _saveImage(definitiveHighResUrl);
+                          );
+                        }
+
                       }
                     },
+
                     onTapCancel: () {
-                      _pressTimer?.cancel();
-                      _pressStopwatch.stop();
-                    },
-                    onLongPressMoveUpdate: (_) {
-                      _pressTimer?.cancel();
-                      _startDrag(post);
+                      pressTimer?.cancel();
+                      pressTimer = null;
                     },
                     child: Stack(
                       fit: StackFit.expand,
@@ -368,6 +298,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                       ],
                     ),
                   );
+
                 },
               ),
             ),
