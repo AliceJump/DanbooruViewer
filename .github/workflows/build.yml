@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+  # 添加手动触发用于测试
+  workflow_dispatch:
 
 env:
   FLUTTER_VERSION: "3.38.9"
@@ -35,25 +37,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 🔍 调试信息
+      - name: Debug - Print cache info
+        run: |
+          echo "Runner OS: ${{ runner.os }}"
+          echo "Flutter Version: ${{ env.FLUTTER_VERSION }}"
+          echo "pubspec.lock exists: $(test -f pubspec.lock && echo 'YES' || echo 'NO')"
+          echo "pubspec.lock hash: ${{ hashFiles('**/pubspec.lock') }}"
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-      # ---------------- 缓存 ----------------
-      - name: Cache Flutter, Gradle & Android SDK
-        uses: actions/cache@v3
+          cache: true  # 这个已经缓存了 Flutter SDK
+
+      # Pub 缓存（移除 Flutter SDK 缓存，因为上面已经处理）
+      - name: Cache Pub dependencies
+        uses: actions/cache@v4
         with:
-          path: |
-            ~/.pub-cache
-            ~/.gradle
-            ~/.android
-          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
 
       - name: Install dependencies
         run: flutter pub get
 
       # ---------------- ANDROID ----------------
+      - name: Cache Gradle
+        if: matrix.target == 'android'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       - name: Build Android APK
         if: matrix.target == 'android'
         run: flutter build apk --release --split-per-abi
@@ -77,7 +98,7 @@ jobs:
         run: |
           flutter build linux --release
           tar -czf danbooru-viewer-linux-release.tar.gz \
-            -C build/linux/x64/release bundle
+            -C build/linux/x64/release/bundle .
 
       - name: Upload Linux
         if: matrix.target == 'linux'
