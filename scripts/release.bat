@@ -70,7 +70,53 @@ exit /b 1
 
 :version_ok
 
+echo.
+echo 更新 pubspec.yaml 版本号...
+
+set TMP_FILE=pubspec.tmp
+set OLD_BUILD=
+
+REM 先读取旧 build number（如果存在）
+for /f "tokens=2 delims= " %%A in ('findstr "^version:" pubspec.yaml') do (
+    for /f "tokens=2 delims=+" %%B in ("%%A") do (
+        set OLD_BUILD=%%B
+    )
+)
+
+REM 生成新文件
+(for /f "usebackq delims=" %%L in ("pubspec.yaml") do (
+
+    echo %%L | findstr /b "version:" >nul
+
+    if !ERRORLEVEL! EQU 0 (
+
+        if defined OLD_BUILD (
+            echo version: %new_version%+!OLD_BUILD!
+        ) else (
+            echo version: %new_version%
+        )
+
+    ) else (
+        echo %%L
+    )
+
+)) > %TMP_FILE%
+
+move /y %TMP_FILE% pubspec.yaml >nul
+
+if %ERRORLEVEL% NEQ 0 (
+    echo ? 错误: 更新 pubspec.yaml 失败
+    exit /b 1
+)
+
+if defined OLD_BUILD (
+    echo ? pubspec.yaml 已更新为 version: %new_version%+%OLD_BUILD%
+) else (
+    echo ? pubspec.yaml 已更新为 version: %new_version%
+)
+
 set tag=v%new_version%
+
 
 echo.
 echo 准备发布:
