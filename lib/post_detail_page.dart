@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:danbooru_viewer/DragHelper.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
@@ -34,9 +34,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
   final Map<int, VideoPlayerController> _videoControllers = {};
   bool _didChangeDependenciesRun = false;
 
-  Timer? _dragTimer;
-  bool _isDragging = false;
-  static const platform = MethodChannel('com.alicejump.danbooru_viewer/drag');
+  Timer? _pressTimer;
+  final Stopwatch _pressStopwatch = Stopwatch();
 
   @override
   void initState() {
@@ -47,7 +46,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   @override
   void dispose() {
-    _dragTimer?.cancel();
+    _pressTimer?.cancel();
+    _pressStopwatch.stop();
     for (var controller in _videoControllers.values) {
       controller.dispose();
     }
@@ -122,7 +122,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
     _loadHighResForIndex(index);
   }
 
-  Future<void> _downloadWithRetry(String url, String path, {int retries = 2}) async {
+  Future<void> _downloadWithRetry(String url, String path,
+      {int retries = 2}) async {
     var attempt = 0;
     while (true) {
       try {
@@ -236,12 +237,18 @@ class _PostDetailPageState extends State<PostDetailPage> {
     }
   }
 
-  void _startDrag(Post post) {
-    if (!_isDragging) {
-      _isDragging = true;
-      final imageUrl = post.fileUrl ?? post.largeFileUrl ?? post.previewFileUrl;
-      if (imageUrl != null) {
-        platform.invokeMethod('startDrag', {'url': imageUrl});
+  Future<void> _startDrag(Post post) async {
+    final imageUrl = post.fileUrl ?? post.largeFileUrl ?? post.previewFileUrl;
+    if (imageUrl != null) {
+      final type = _isVideoUrl(imageUrl) ? "video" : "image";
+      try {
+        final file = await _getCachedFile(imageUrl);
+        await DragHelper.startDrag(file.path, type: type);
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('无法拖拽: $e')),
+        );
       }
     }
   }
@@ -275,32 +282,38 @@ class _PostDetailPageState extends State<PostDetailPage> {
                   }
 
                   return GestureDetector(
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => FullScreenImagePage(
-                            previewUrl: previewUrl,
-                            highResUrl: definitiveHighResUrl,
-                            heroTag: heroTag,
-                          ),
-                        ),
-                      );
-                    },
-                    onLongPressStart: (_) {
-                      _isDragging = false;
-                      _dragTimer = Timer(const Duration(seconds: 1), () {
+                    onTapDown: (_) {
+                      _pressStopwatch.reset();
+                      _pressStopwatch.start();
+                      _pressTimer = Timer(const Duration(seconds: 1), () {
                         _startDrag(post);
                       });
                     },
-                    onLongPressUp: () {
-                      _dragTimer?.cancel();
-                      if (!_isDragging) {
+                    onTapUp: (_) {
+                      _pressTimer?.cancel();
+                      _pressStopwatch.stop();
+                      final elapsed = _pressStopwatch.elapsedMilliseconds;
+                      if (elapsed < 300) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => FullScreenImagePage(
+                              previewUrl: previewUrl,
+                              highResUrl: definitiveHighResUrl,
+                              heroTag: heroTag,
+                            ),
+                          ),
+                        );
+                      } else if (elapsed < 1000) {
                         _saveImage(definitiveHighResUrl);
                       }
                     },
-                    onLongPressMoveUpdate: (details) {
-                      _dragTimer?.cancel();
+                    onTapCancel: () {
+                      _pressTimer?.cancel();
+                      _pressStopwatch.stop();
+                    },
+                    onLongPressMoveUpdate: (_) {
+                      _pressTimer?.cancel();
                       _startDrag(post);
                     },
                     child: Stack(
@@ -386,14 +399,13 @@ class _PostDetailPageState extends State<PostDetailPage> {
           ),
         ],
       ),
-      floatingActionButton:
-          (currentPostForTags.source != null &&
-                  currentPostForTags.source!.isNotEmpty)
-              ? FloatingActionButton(
-                  onPressed: () => _launchUrl(currentPostForTags.source),
-                  child: const Icon(Icons.link),
-                )
-              : null,
+      floatingActionButton: (currentPostForTags.source != null &&
+              currentPostForTags.source!.isNotEmpty)
+          ? FloatingActionButton(
+              onPressed: () => _launchUrl(currentPostForTags.source),
+              child: const Icon(Icons.link),
+            )
+          : null,
       floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
     );
   }
