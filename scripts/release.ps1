@@ -166,24 +166,26 @@ switch ($choice) {
 
         if (-not $existingTag) {
             # 最新 commit 无 tag → 自动生成版本号
-            $new_version = Get-CurrentVersion
-            Write-Host "最新 commit 无 tag，自动生成版本号: $new_version"
+            $currentVersion = Get-CurrentVersion
+            $new_version = Get-NextVersion100
+            Write-Host "最新 commit 无 tag，自动生成版本号: $currentVersion"
             # 如果 pubspec.yaml 有改动，则更新并 commit
             if (-not (git diff --quiet)) {
                 Update-PubspecVersion $new_version
                 Commit-Changes -new_version $new_version
             }
             # 为最新 commit 打 tag
-            $tag = "v$new_version"
+            $tag = "v$currentVersion"
             Create-Tag -tag $tag -commit $latestCommit
             Push-Changes
         } else {
             # 最新 commit 已有 tag → 按之前逻辑创建 Bump commit
-            $new_version = Get-CurrentVersion
+            $currentVersion = Get-CurrentVersion
+            $new_version = Get-NextVersion100
             Update-PubspecVersion $new_version
             Commit-Changes -new_version $new_version
             $latestCommit = git rev-parse HEAD
-            $tag = "v$new_version"
+            $tag = "v$currentVersion"
             Create-Tag -tag $tag -commit $latestCommit
             Push-Changes
         }
