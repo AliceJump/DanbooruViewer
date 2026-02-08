@@ -28,8 +28,64 @@ function Get-RemoteUrl {
 function Get-CurrentVersion {
     $pubspec = Get-Content pubspec.yaml
     $line = $pubspec | Where-Object { $_ -match '^version:' }
-    return ($line -split ' ')[1]
+    $currentVersion = ($line -split ' ')[1]
+
+    # 解析 base 版本（去掉 +build）
+    if ($currentVersion -match '^(\d+\.\d+\.\d+)') {
+        $baseVersion = $Matches[1]
+    } else {
+        $baseVersion = $currentVersion
+    }
+
+    return $baseVersion
 }
+
+function Get-NextVersion100 {
+    $currentVersion = Get-CurrentVersion
+
+    # 分割 base 版本号
+    $versionParts = $currentVersion.Split('.')
+    $major = [int]$versionParts[0]
+    $minor = [int]$versionParts[1]
+    $patch = [int]$versionParts[2]
+
+    # 100 进制递增
+    $patch++
+    if ($patch -ge 100) { $patch = 0; $minor++ }
+    if ($minor -ge 100) { $minor = 0; $major++ }
+
+    return "$major.$minor.$patch"
+}
+
+function Get-PrevVersion100 {
+    $currentVersion = Get-CurrentVersion
+
+    # 分割 base 版本号
+    $versionParts = $currentVersion.Split('.')
+    $major = [int]$versionParts[0]
+    $minor = [int]$versionParts[1]
+    $patch = [int]$versionParts[2]
+
+    # 100 进制递减
+    $patch--
+    if ($patch -lt 0) {
+        $patch = 99
+        $minor--
+        if ($minor -lt 0) {
+            $minor = 99
+            if ($major -gt 0) {
+                $major--
+            } else {
+                # 已经到 0.0.0，不允许再减
+                $minor = 0
+                $patch = 0
+            }
+        }
+    }
+
+    return "$major.$minor.$patch"
+}
+
 
 function Update-PubspecVersion($newVersion) {
     $pubspec = Get-Content pubspec.yaml
@@ -63,27 +119,7 @@ function Commit-Changes {
     }
 }
 
-function Get-NextVersion100 {
-    $currentVersion = Get-CurrentVersion
 
-    # 去掉 build number
-    if ($currentVersion -match '^\d+\.\d+\.\d+') {
-        $versionParts = $Matches[0].Split('.')
-    } else {
-        $versionParts = $currentVersion.Split('.')
-    }
-
-    # 转 100 进制加 1
-    $major = [int]$versionParts[0]
-    $minor = [int]$versionParts[1]
-    $patch = [int]$versionParts[2]
-
-    $patch++
-    if ($patch -ge 100) { $patch = 0; $minor++ }
-    if ($minor -ge 100) { $minor = 0; $major++ }
-
-    return "$major.$minor.$patch"
-}
 
 function Create-Tag {
     param([string]$tag, [string]$commit)
@@ -108,7 +144,7 @@ $REPO_URL = Get-RemoteUrl
 Write-Host "当前远程仓库: $REPO_URL"
 Write-Host ""
 
-$CURRENT_VERSION = Get-CurrentVersion
+$CURRENT_VERSION = Get-PrevVersion100
 Write-Host "当前版本: $CURRENT_VERSION"
 Write-Host ""
 
@@ -130,7 +166,7 @@ switch ($choice) {
 
         if (-not $existingTag) {
             # 最新 commit 无 tag → 自动生成版本号
-            $new_version = Get-NextVersion100
+            $new_version = Get-CurrentVersion
             Write-Host "最新 commit 无 tag，自动生成版本号: $new_version"
             # 如果 pubspec.yaml 有改动，则更新并 commit
             if (-not (git diff --quiet)) {
@@ -143,7 +179,7 @@ switch ($choice) {
             Push-Changes
         } else {
             # 最新 commit 已有 tag → 按之前逻辑创建 Bump commit
-            $new_version = Get-NextVersion100
+            $new_version = Get-CurrentVersion
             Update-PubspecVersion $new_version
             Commit-Changes -new_version $new_version
             $latestCommit = git rev-parse HEAD
