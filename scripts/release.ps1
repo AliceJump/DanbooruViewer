@@ -4,15 +4,13 @@ Danbooru Viewer Release Helper Script (PowerShell 7)
 
 功能:
 - 自动获取 GitHub URL
-- 自动 100 进制递增版本号
-- 更新 pubspec.yaml 版本号
-- 提交版本号更新
-- 创建 Tag 并推送
-- 支持 Release / Alpha / Beta / RC
+- 自动生成 100 进制版本号
+- 检测最新 commit 是否已有 tag
+- 智能处理自动 commit / tag
+- 支持 Release / Alpha/Beta/RC
 - 查看 Tags / Git 日志
 #>
 
-# 清屏
 Clear-Host
 
 function Check-Git {
@@ -51,26 +49,46 @@ function Update-PubspecVersion($newVersion) {
     }
 
     $pubspecNew | Set-Content pubspec.yaml -Encoding UTF8 -Force
-    return $pubspecNew
+    Write-Host "✅ pubspec.yaml 已更新为版本 $newVersion"
 }
 
-function Commit-Pubspec {
-    git add pubspec.yaml
-    if (-not (git diff --cached --quiet)) {
+function Commit-Changes {
+    param([string]$new_version)
+    if (git diff --quiet) {
+        Write-Host "⚠ 没有未提交的改动，跳过 commit" -ForegroundColor Yellow
+    } else {
+        git add pubspec.yaml
         git commit -m "Bump version to $new_version"
-        Write-Host "✅ pubspec.yaml 已提交"
-    } else {
-        Write-Host "⚠ 没有检测到 pubspec.yaml 改动，跳过提交" -ForegroundColor Yellow
+        Write-Host "✅ 自动提交完成"
     }
 }
 
-function Create-Tag($tag) {
-    if (git tag -l $tag) {
-        Write-Host "⚠ Tag $tag 已存在，跳过创建 Tag" -ForegroundColor Yellow
+function Get-NextVersion100 {
+    $currentVersion = Get-CurrentVersion
+
+    # 去掉 build number
+    if ($currentVersion -match '^\d+\.\d+\.\d+') {
+        $versionParts = $Matches[0].Split('.')
     } else {
-        git tag $tag
-        Write-Host "✅ Tag $tag 已创建"
+        $versionParts = $currentVersion.Split('.')
     }
+
+    # 转 100 进制加 1
+    $major = [int]$versionParts[0]
+    $minor = [int]$versionParts[1]
+    $patch = [int]$versionParts[2]
+
+    $patch++
+    if ($patch -ge 100) { $patch = 0; $minor++ }
+    if ($minor -ge 100) { $minor = 0; $major++ }
+
+    return "$major.$minor.$patch"
+}
+
+function Create-Tag {
+    param([string]$tag, [string]$commit)
+    git tag $tag $commit
+    Write-Host "✅ Tag $tag 已创建 (指向 commit $commit)"
 }
 
 function Push-Changes {
@@ -84,37 +102,7 @@ function Push-Changes {
     Write-Host "✅ 推送成功"
 }
 
-# 100进制版本号递增函数
-function Get-NextVersion100 {
-    $currentVer = Get-CurrentVersion
-
-    if ($currentVer -match '^(\d+)\.(\d+)\.(\d+)(?:\+(\d+))?$') {
-        $major = [int]$Matches[1]
-        $minor = [int]$Matches[2]
-        $patch = [int]$Matches[3]
-        $build = if ($Matches[4]) { [int]$Matches[4] } else { 0 }
-
-        # patch +1
-        $patch += 1
-
-        # 100进制进位
-        if ($patch -ge 100) {
-            $patch = 0
-            $minor += 1
-        }
-        if ($minor -ge 100) {
-            $minor = 0
-            $major += 1
-        }
-
-        return "$major.$minor.$patch"
-    } else {
-        Write-Host "❌ 当前版本号格式不正确: $currentVer" -ForegroundColor Red
-        exit 1
-    }
-}
-
-# 主程序
+# ------------------ 主程序 ------------------
 Check-Git
 $REPO_URL = Get-RemoteUrl
 Write-Host "当前远程仓库: $REPO_URL"
@@ -125,7 +113,7 @@ Write-Host "当前版本: $CURRENT_VERSION"
 Write-Host ""
 
 Write-Host "选择要执行的操作:"
-Write-Host "1) 发布新 Release 版本（自动 patch+1, 100进制）"
+Write-Host "1) 发布新 Release 版本"
 Write-Host "2) 发布 Alpha/Beta/RC 测试版本"
 Write-Host "3) 查看最近的 Tags"
 Write-Host "4) 查看 Git 日志"
@@ -133,40 +121,42 @@ $choice = Read-Host "请选择 (1-4)"
 
 switch ($choice) {
     "1" {
-        # 自动递增 Release
         Clear-Host
         Write-Host "=== 发布新 Release 版本 ==="
 
-        $new_version = Get-NextVersion100
-        Write-Host "自动生成新版本号: $new_version"
+        # 获取最新 commit
+        $latestCommit = git rev-parse HEAD
+        $existingTag = git tag --points-at $latestCommit
 
-        Update-PubspecVersion $new_version
-
-        # 显示 pubspec.yaml 版本确认
-        $pubspec = Get-Content pubspec.yaml
-        $versionLine = $pubspec | Where-Object { $_ -match '^version:' }
-        $newVersionInFile = ($versionLine -split ' ')[1]
-        Write-Host "pubspec.yaml 当前版本号: $newVersionInFile"
-
-        Commit-Pubspec
-
-        $tag = "v$new_version"
-        Write-Host ""
-        Write-Host "准备发布:"
-        Write-Host "  版本号: $new_version"
-        Write-Host "  Git Tag: $tag"
-        $confirm = Read-Host "继续? (y/n)"
-        if ($confirm -ne 'y') { Write-Host "已取消"; exit 0 }
-
-        Create-Tag $tag
-        Push-Changes
+        if (-not $existingTag) {
+            # 最新 commit 无 tag → 自动生成版本号
+            $new_version = Get-NextVersion100
+            Write-Host "最新 commit 无 tag，自动生成版本号: $new_version"
+            # 如果 pubspec.yaml 有改动，则更新并 commit
+            if (-not (git diff --quiet)) {
+                Update-PubspecVersion $new_version
+                Commit-Changes -new_version $new_version
+            }
+            # 为最新 commit 打 tag
+            $tag = "v$new_version"
+            Create-Tag -tag $tag -commit $latestCommit
+            Push-Changes
+        } else {
+            # 最新 commit 已有 tag → 按之前逻辑创建 Bump commit
+            $new_version = Get-NextVersion100
+            Update-PubspecVersion $new_version
+            Commit-Changes -new_version $new_version
+            $latestCommit = git rev-parse HEAD
+            $tag = "v$new_version"
+            Create-Tag -tag $tag -commit $latestCommit
+            Push-Changes
+        }
 
         Write-Host "✅ 发布完成!"
         Write-Host "监控进度: $REPO_URL/actions"
         Write-Host "查看发布: $REPO_URL/releases"
     }
     "2" {
-        # Prerelease
         Clear-Host
         Write-Host "=== 发布测试版本 ==="
         Write-Host "选择版本类型:"
@@ -190,20 +180,18 @@ switch ($choice) {
         $confirm = Read-Host "继续? (y/n)"
         if ($confirm -ne 'y') { Write-Host "已取消"; exit 0 }
 
-        Create-Tag $tag
+        Create-Tag -tag $tag -commit (git rev-parse HEAD)
         Push-Changes
 
         Write-Host "✅ 成功! 这个测试版本会被标记为 prerelease"
         Write-Host "监控进度: $REPO_URL/actions"
     }
     "3" {
-        # Tags
         Clear-Host
         Write-Host "=== 最近的 Tags ==="
         git tag -l "v*" --sort=-version:refname
     }
     "4" {
-        # Git log
         Clear-Host
         Write-Host "=== Git 日志 (最后 10 条提交) ==="
         git log --oneline -10
