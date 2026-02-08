@@ -11,7 +11,7 @@
   - 命令速查表
 
 ### 🟡 15 分钟全面了解
-- **[.github/README.md](.github/README.md)** - 工作流快速开始
+- **[.github/README.md](.github/README_workflow.md)** - 工作流快速开始
   - 工作流概览
   - 平台支持列表
   - 文档导航

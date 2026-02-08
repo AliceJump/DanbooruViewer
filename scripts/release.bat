@@ -115,7 +115,16 @@ if defined OLD_BUILD (
 ) else (
     echo ✅ pubspec.yaml 已更新为 version: %new_version%
 )
+REM <<< 这里是最佳位置，紧跟在更新 pubspec.yaml 后，创建 Tag 之前
+echo ⏳ 提交版本号更新...
+git add pubspec.yaml
+git commit -m "Bump version to %new_version%"
+if %ERRORLEVEL% NEQ 0 (
+    echo ❌ 提交失败
+    exit /b 1
+)
 
+REM 然后再创建 Tag
 set tag=v%new_version%
 
 echo.
