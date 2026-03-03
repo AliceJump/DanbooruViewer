@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/post_detail_page.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +8,8 @@ import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
+
+import 'favorites_manager.dart';
 
 void main() {
   runApp(const MyApp());
@@ -90,6 +93,7 @@ class _MyHomePageState extends State<MyHomePage> {
   List<Post> _posts = [];
   bool _isLoading = false;
   int _page = 1;
+  final _favoritesManager = FavoritesManager();
 
   // Multi-select state
   bool _isMultiSelectMode = false;
@@ -341,6 +345,23 @@ class _MyHomePageState extends State<MyHomePage> {
     return AppBar(
       backgroundColor: Theme.of(context).colorScheme.inversePrimary,
       title: Text(widget.title),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.favorite),
+          onPressed: () async {
+            final result = await Navigator.push<String>(
+              context,
+              MaterialPageRoute(builder: (context) => const FavoritesPage()),
+            );
+            if (result != null && mounted) {
+              // 返回了标签，搜索该标签
+              _searchController.text = result;
+              _fetchPosts();
+            }
+          },
+          tooltip: '我的收藏',
+        ),
+      ],
     );
   }
 

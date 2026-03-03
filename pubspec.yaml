@@ -38,6 +38,7 @@ dependencies:
   dio: ^5.4.3
   video_player: ^2.7.0
   flutter_cache_manager: ^3.3.1
+  shared_preferences: ^2.2.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

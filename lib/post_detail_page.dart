@@ -1,13 +1,14 @@
 import 'dart:async';
-import 'dart:io';
 
-import 'package:danbooru_viewer/DragHelper.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
+import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
 import 'main.dart';
 import 'media_utils.dart';
@@ -29,24 +30,38 @@ class PostDetailPage extends StatefulWidget {
 class _PostDetailPageState extends State<PostDetailPage> {
   late PageController _pageController;
   late int _currentIndex;
-  final Map<int, File> _imageFiles = {};
+  final Map<int, String> _imageUrls = {};
   final Map<int, VideoPlayerController> _videoControllers = {};
   bool _didChangeDependenciesRun = false;
 
-  Timer? _pressTimer;
-  final Stopwatch _pressStopwatch = Stopwatch();
+  final _favoritesManager = FavoritesManager();
+  bool _isFavorite = false;
+
+  static const platform = MethodChannel(
+    'com.example.danbooru_viewer/drag_drop',
+  );
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: _currentIndex);
+    _checkFavoriteStatus();
+  }
+
+  Future<void> _checkFavoriteStatus() async {
+    final currentPost = widget.posts[_currentIndex];
+    final isFav = await _favoritesManager.isFavorite(currentPost.id);
+    if (mounted) {
+      setState(() {
+        _isFavorite = isFav;
+      });
+    }
   }
 
   @override
   void dispose() {
-    _pressTimer?.cancel();
-    _pressStopwatch.stop();
+    // 清理所有视频控制器
     for (var controller in _videoControllers.values) {
       controller.dispose();
     }
@@ -57,49 +72,49 @@ class _PostDetailPageState extends State<PostDetailPage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_didChangeDependenciesRun) {
-      _loadHighResForIndex(_currentIndex);
+      _loadHighResImageForIndex(_currentIndex);
       _didChangeDependenciesRun = true;
     }
   }
 
-  bool _isVideoUrl(String url) {
-    final lower = url.toLowerCase();
-    return lower.endsWith('.mp4') ||
-        lower.endsWith('.webm') ||
-        lower.endsWith('.mov') ||
-        lower.endsWith('.m4v');
-  }
-
-
-  Future<void> _loadHighResForIndex(int index) async {
+  void _loadHighResImageForIndex(int index) {
     if (index < 0 || index >= widget.posts.length) return;
     final post = widget.posts[index];
     final highResUrl = post.fileUrl ?? post.largeFileUrl;
-    if (highResUrl == null) return;
-    if (_imageFiles[index] != null || _videoControllers[index] != null) return;
 
-    try {
-      if (_isVideoUrl(highResUrl)) {
-        final file = await getCachedFile(highResUrl);
-        final controller = VideoPlayerController.file(file);
-        await controller.initialize();
-        if (mounted) {
-          setState(() {
-            _videoControllers[index] = controller;
+    if (highResUrl != null &&
+        _imageUrls[index] == null &&
+        _videoControllers[index] == null) {
+      // 先尝试作为图片加载
+      precacheImage(NetworkImage(highResUrl), context)
+          .then((_) {
+            if (mounted) {
+              setState(() {
+                _imageUrls[index] = highResUrl;
+              });
+            }
+          })
+          .catchError((_) {
+            // 图片加载失败，尝试作为视频加载
+            if (mounted && _videoControllers[index] == null) {
+              final videoController = VideoPlayerController.networkUrl(
+                Uri.parse(highResUrl),
+              );
+              videoController
+                  .initialize()
+                  .then((_) {
+                    if (mounted) {
+                      setState(() {
+                        _videoControllers[index] = videoController;
+                      });
+                    }
+                  })
+                  .catchError((_) {
+                    // 视频加载也失败，不做任何处理，保持使用预览图
+                    videoController.dispose();
+                  });
+            }
           });
-        }
-      } else {
-        final file = await getCachedFile(highResUrl);
-        if (mounted) {
-          setState(() {
-            _imageFiles[index] = file;
-          });
-        }
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {});
-      }
     }
   }
 
@@ -107,9 +122,109 @@ class _PostDetailPageState extends State<PostDetailPage> {
     setState(() {
       _currentIndex = index;
     });
-    _loadHighResForIndex(index);
+    _loadHighResImageForIndex(index);
+    _checkFavoriteStatus();
   }
 
+  Future<void> _saveImage(String? imageUrl) async {
+    if (imageUrl == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('没有可保存的图片')));
+      return;
+    }
+
+    try {
+      final hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        final status = await Gal.requestAccess();
+        if (!status) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
+          return;
+        }
+      }
+      final tempDir = await getTemporaryDirectory();
+      final path = '${tempDir.path}/${imageUrl.split('/').last}';
+      await Dio().download(imageUrl, path);
+      await Gal.putImage(path, album: 'danbooru_viewer');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
+    }
+  }
+
+  Future<void> _startDragShare(String imageUrl) async {
+    try {
+      // 下载图片到临时文件
+      final tempDir = await getTemporaryDirectory();
+      final fileName = imageUrl.split('/').last;
+      final tempFile = '${tempDir.path}/$fileName';
+
+      // 下载图片
+      await Dio().download(imageUrl, tempFile);
+
+      // 调用 Android 原生方法启动拖拽
+      final result = await platform.invokeMethod('startDragDrop', {
+        'imagePath': tempFile,
+        'mimeType': 'image/*',
+      });
+
+      debugPrint('Drag result: $result');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('拖拽分享失败: $e')));
+    }
+  }
+
+  Future<void> _toggleFavorite() async {
+    final currentPost = widget.posts[_currentIndex];
+    final newState = await _favoritesManager.toggleFavorite(currentPost.id);
+    if (mounted) {
+      setState(() {
+        _isFavorite = newState;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(newState ? '已添加到收藏' : '已取消收藏'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    }
+  }
+
+  Future<void> _toggleFavoriteTag(String tag) async {
+    final newState = await _favoritesManager.toggleFavoriteTag(tag);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(newState ? '已收藏标签: $tag' : '已取消收藏标签: $tag'),
+          duration: const Duration(seconds: 1),
+        ),
+      );
+    }
+  }
+
+  void _copyTag(String tag) {
+    Clipboard.setData(ClipboardData(text: tag));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已复制标签: $tag'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
 
 
   Widget _buildTagSection(String title, String? tags, BuildContext context) {
@@ -137,14 +252,19 @@ class _PostDetailPageState extends State<PostDetailPage> {
               spacing: 6.0,
               runSpacing: 4.0,
               children: tagList.map((tag) {
-                return ActionChip(
-                  label: Text(tag),
-                  onPressed: () {
-                    Navigator.pop(context, tag);
+                return GestureDetector(
+                  onLongPress: () {
+                    _showTagMenu(context, tag);
                   },
-                  labelStyle: const TextStyle(fontSize: 12),
-                  padding: const EdgeInsets.all(2.0),
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  child: ActionChip(
+                    label: Text(tag),
+                    onPressed: () {
+                      Navigator.pop(context, tag);
+                    },
+                    labelStyle: const TextStyle(fontSize: 12),
+                    padding: const EdgeInsets.all(2.0),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
                 );
               }).toList(),
             ),
@@ -154,35 +274,83 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
-  Future<void> _launchUrl(String? urlString) async {
-    if (urlString == null || urlString.isEmpty) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('链接无效')));
-      return;
-    }
-
-    final Uri url = Uri.parse(urlString);
-
-    try {
-      await launchUrl(
-        url,
-        mode: LaunchMode.externalApplication,
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('无法打开链接: $e')));
-    }
+  void _showTagMenu(BuildContext context, String tag) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              tag,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            ListTile(
+              leading: const Icon(Icons.search),
+              title: const Text('搜索此标签'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.pop(context, tag);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy),
+              title: const Text('复制标签'),
+              onTap: () {
+                Navigator.pop(context);
+                _copyTag(tag);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.favorite_border),
+              title: const Text('收藏标签'),
+              onTap: () {
+                Navigator.pop(context);
+                _toggleFavoriteTag(tag);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
+  Future<void> _launchUrl(String? urlString) async {
+    if (urlString != null &&
+        urlString.isNotEmpty &&
+        await canLaunchUrl(Uri.parse(urlString))) {
+      await launchUrl(
+        Uri.parse(urlString),
+        mode: LaunchMode.externalApplication,
+      );
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法打开链接: $urlString')));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final currentPostForTags = widget.posts[_currentIndex];
 
     return Scaffold(
-      appBar: AppBar(title: Text('Post #${currentPostForTags.id}')),
+      appBar: AppBar(
+        title: Text('Post #${currentPostForTags.id}'),
+        actions: [
+          IconButton(
+            icon: Icon(
+              _isFavorite ? Icons.favorite : Icons.favorite_border,
+              color: _isFavorite ? Colors.red : null,
+            ),
+            onPressed: _toggleFavorite,
+            tooltip: _isFavorite ? '取消收藏' : '收藏',
+          ),
+        ],
+      ),
       body: CustomScrollView(
         slivers: [
           SliverToBoxAdapter(
@@ -195,7 +363,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                 itemBuilder: (context, index) {
                   final post = widget.posts[index];
                   final previewUrl = post.previewFileUrl;
-                  final highResFile = _imageFiles[index];
+                  final highResUrlForDetailPage = _imageUrls[index];
                   final videoController = _videoControllers[index];
                   final definitiveHighResUrl =
                       post.fileUrl ?? post.largeFileUrl;
@@ -204,8 +372,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                   if (previewUrl == null) {
                     return const Center(child: Icon(Icons.broken_image));
                   }
-                  Timer? pressTimer;
-                  DateTime? pressStartTime;
+
                   return GestureDetector(
                     onTapDown: (_) {
                       pressStartTime = DateTime.now();
@@ -259,6 +426,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                                 const Icon(Icons.error),
                           ),
                         ),
+                        // 显示视频
                         if (videoController != null)
                           Center(
                             child: AspectRatio(
@@ -271,34 +439,40 @@ class _PostDetailPageState extends State<PostDetailPage> {
                                     child: Icon(
                                       Icons.play_circle_outline,
                                       size: 60,
-                                      color: Colors.white.withOpacity(0.7),
+                                      color: Colors.white.withValues(
+                                        alpha: 0.7,
+                                      ),
                                     ),
                                   ),
                                 ],
                               ),
                             ),
                           ),
-                        if (highResFile != null && videoController == null)
+                        // 显示高分辨率图片
+                        if (highResUrlForDetailPage != null &&
+                            videoController == null)
                           AnimatedOpacity(
-                            opacity: 1.0,
+                            opacity: highResUrlForDetailPage != previewUrl
+                                ? 1.0
+                                : 0.0,
                             duration: const Duration(milliseconds: 300),
-                            child: Image.file(
-                              highResFile,
+                            child: Image.network(
+                              highResUrlForDetailPage,
                               fit: BoxFit.contain,
-                              gaplessPlayback: true,
                               errorBuilder: (context, error, stackTrace) {
+                                // 高分辨率图片加载失败，显示预览图
                                 return const SizedBox.shrink();
                               },
                             ),
                           ),
-                        if (highResFile == null &&
+                        // 显示加载中指示器
+                        if (highResUrlForDetailPage == null &&
                             videoController == null &&
                             (post.fileUrl != null || post.largeFileUrl != null))
                           const Center(child: CircularProgressIndicator()),
                       ],
                     ),
                   );
-
                 },
               ),
             ),
@@ -330,7 +504,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
           ),
         ],
       ),
-      floatingActionButton: (currentPostForTags.source != null &&
+      floatingActionButton:
+          (currentPostForTags.source != null &&
               currentPostForTags.source!.isNotEmpty)
           ? FloatingActionButton(
               onPressed: () => _launchUrl(currentPostForTags.source),
