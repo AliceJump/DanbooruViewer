@@ -62,6 +62,30 @@ class Post {
   }
 }
 
+class SearchCompletionSuggestion {
+  final String value;
+  final String insertValue;
+  final String source;
+  final int score;
+
+  SearchCompletionSuggestion({
+    required this.value,
+    required this.insertValue,
+    required this.source,
+    required this.score,
+  });
+
+  factory SearchCompletionSuggestion.fromJson(Map<String, dynamic> json) {
+    return SearchCompletionSuggestion(
+      value: json['value'] as String? ?? '',
+      insertValue:
+          json['insert_value'] as String? ?? json['value'] as String? ?? '',
+      source: json['source'] as String? ?? '',
+      score: json['score'] as int? ?? 0,
+    );
+  }
+}
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
@@ -89,9 +113,14 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
   List<Post> _posts = [];
+  List<SearchCompletionSuggestion> _completionSuggestions = [];
+  List<SearchCompletionSuggestion> _visibleSuggestions = [];
   bool _isLoading = false;
+  bool _isCompletionLoading = true;
+  bool _showSuggestions = false;
   int _page = 1;
   final _favoritesManager = FavoritesManager();
 
@@ -109,6 +138,8 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     super.initState();
+    _searchController.addListener(_refreshCompletionSuggestions);
+    _searchFocusNode.addListener(_handleSearchFocusChanged);
     _scrollController.addListener(() {
       if (_scrollController.position.pixels ==
               _scrollController.position.maxScrollExtent &&
@@ -118,13 +149,92 @@ class _MyHomePageState extends State<MyHomePage> {
     });
     // 启动时加载一次空搜索
     _fetchPosts();
+    _loadCompletionSuggestions();
   }
 
   @override
   void dispose() {
+    _searchController.removeListener(_refreshCompletionSuggestions);
+    _searchFocusNode.removeListener(_handleSearchFocusChanged);
     _searchController.dispose();
+    _searchFocusNode.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadCompletionSuggestions() async {
+    try {
+      final payload =
+          json.decode(
+                await rootBundle.loadString(
+                  'assets/danbooru_completion/oguri_cap__umamusume.json',
+                ),
+              )
+              as Map<String, dynamic>;
+
+      final candidates =
+          (payload['completion_candidates'] as List<dynamic>? ?? [])
+              .whereType<Map<String, dynamic>>()
+              .map(SearchCompletionSuggestion.fromJson)
+              .where((item) => item.value.trim().isNotEmpty)
+              .toList();
+
+      if (!mounted) return;
+      setState(() {
+        _completionSuggestions = candidates;
+        _isCompletionLoading = false;
+      });
+      _refreshCompletionSuggestions();
+    } catch (e) {
+      debugPrint('Failed to load completion suggestions: $e');
+      if (!mounted) return;
+      setState(() {
+        _isCompletionLoading = false;
+        _visibleSuggestions = [];
+        _showSuggestions = false;
+      });
+    }
+  }
+
+  void _handleSearchFocusChanged() {
+    if (!mounted) return;
+    if (_searchFocusNode.hasFocus) {
+      _refreshCompletionSuggestions();
+      return;
+    }
+
+    setState(() {
+      _showSuggestions = false;
+    });
+  }
+
+  void _refreshCompletionSuggestions() {
+    if (!mounted || _isCompletionLoading) return;
+
+    final query = _searchController.text.trim().toLowerCase();
+    final matches = query.isEmpty
+        ? _completionSuggestions.take(10).toList()
+        : _completionSuggestions
+              .where((item) => item.value.toLowerCase().contains(query))
+              .take(10)
+              .toList();
+
+    setState(() {
+      _visibleSuggestions = matches;
+      _showSuggestions = _searchFocusNode.hasFocus && matches.isNotEmpty;
+    });
+  }
+
+  void _applyCompletionSuggestion(String value) {
+    _searchController.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
+    setState(() {
+      _showSuggestions = false;
+    });
+    _searchFocusNode.unfocus();
+    _fetchPosts();
   }
 
   void _enterMultiSelectMode(int postId) {
@@ -395,18 +505,66 @@ class _MyHomePageState extends State<MyHomePage> {
         body: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: TextField(
-                controller: _searchController,
-                decoration: InputDecoration(
-                  hintText: '搜索...',
-                  border: const OutlineInputBorder(),
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.search),
-                    onPressed: () => _fetchPosts(),
+              padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: _searchController,
+                    focusNode: _searchFocusNode,
+                    decoration: InputDecoration(
+                      hintText: '搜索...',
+                      border: const OutlineInputBorder(),
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.search),
+                        onPressed: () {
+                          _searchFocusNode.unfocus();
+                          _fetchPosts();
+                        },
+                      ),
+                    ),
+                    onSubmitted: (_) {
+                      _searchFocusNode.unfocus();
+                      _fetchPosts();
+                    },
                   ),
-                ),
-                onSubmitted: (_) => _fetchPosts(),
+                  if (_showSuggestions)
+                    Container(
+                      constraints: const BoxConstraints(maxHeight: 220),
+                      margin: const EdgeInsets.only(top: 8),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                      ),
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        padding: EdgeInsets.zero,
+                        itemCount: _visibleSuggestions.length,
+                        separatorBuilder: (context, index) =>
+                            const Divider(height: 1),
+                        itemBuilder: (context, index) {
+                          final suggestion = _visibleSuggestions[index];
+                          return ListTile(
+                            dense: true,
+                            title: Text(
+                              suggestion.value,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              '${suggestion.source} · ${suggestion.score}',
+                            ),
+                            onTap: () => _applyCompletionSuggestion(
+                              suggestion.insertValue,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
               ),
             ),
             SingleChildScrollView(

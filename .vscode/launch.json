@@ -1,0 +1,34 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Danbooru Viewer",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "debug",
+      "program": "lib/main.dart",
+      "preLaunchTask": "Flutter: Pub Get"
+    },
+    {
+      "name": "Danbooru Viewer (Debug Only)",
+      "request": "launch",
+      "type": "dart",
+      "flutterMode": "debug",
+      "program": "lib/main.dart"
+    }
+    ,
+    {
+      "name": "Batch: Sync Danbooru Tags",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/batch_sync_tags.py",
+      "console": "integratedTerminal",
+      "args": [],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      },
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false
+    }
+  ]
+}
