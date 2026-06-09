@@ -1,0 +1,20 @@
+{
+  "tag": "yasuyo",
+  "updated_at": "2026-05-19T14:23:21.372297+00:00",
+  "tag_info": {
+    "id": 2632422,
+    "name": "yasuyo",
+    "category": 1,
+    "post_count": 1
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "yasuyo",
+      "insert_value": "yasuyo",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

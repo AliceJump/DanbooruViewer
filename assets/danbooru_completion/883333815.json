@@ -1,0 +1,20 @@
+{
+  "tag": "883333815",
+  "updated_at": "2026-05-19T14:24:31.243398+00:00",
+  "tag_info": {
+    "id": 2629677,
+    "name": "883333815",
+    "category": 1,
+    "post_count": 1
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "883333815",
+      "insert_value": "883333815",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

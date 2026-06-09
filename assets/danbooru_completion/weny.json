@@ -1,0 +1,20 @@
+{
+  "tag": "weny",
+  "updated_at": "2026-05-19T14:26:42.254382+00:00",
+  "tag_info": {
+    "id": 2625313,
+    "name": "weny",
+    "category": 1,
+    "post_count": 3
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "weny",
+      "insert_value": "weny",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "tag": "partial_squatting",
+  "updated_at": "2026-05-19T14:24:10.305591+00:00",
+  "tag_info": {
+    "id": 2630429,
+    "name": "partial_squatting",
+    "category": 0,
+    "post_count": 101
+  },
+  "wiki": null,
+  "aliases": [
+    "half_squat",
+    "sorority_squat"
+  ],
+  "completion_candidates": [
+    {
+      "value": "partial_squatting",
+      "insert_value": "partial_squatting",
+      "source": "tag",
+      "score": 100
+    },
+    {
+      "value": "half_squat",
+      "insert_value": "partial_squatting",
+      "source": "alias",
+      "score": 85
+    },
+    {
+      "value": "sorority_squat",
+      "insert_value": "partial_squatting",
+      "source": "alias",
+      "score": 84
+    }
+  ]
+}

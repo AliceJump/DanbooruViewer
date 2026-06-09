@@ -1,0 +1,20 @@
+{
+  "tag": "2pg",
+  "updated_at": "2026-05-19T14:26:00.642571+00:00",
+  "tag_info": {
+    "id": 2626420,
+    "name": "2pg",
+    "category": 1,
+    "post_count": 4
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "2pg",
+      "insert_value": "2pg",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

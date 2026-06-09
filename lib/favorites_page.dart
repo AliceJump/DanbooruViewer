@@ -52,9 +52,9 @@ class _FavoritesPageState extends State<FavoritesPage>
     await _favoritesManager.removeFavorite(postId);
     await _loadFavorites();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已取消收藏')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已取消收藏')));
     }
   }
 
@@ -62,17 +62,17 @@ class _FavoritesPageState extends State<FavoritesPage>
     await _favoritesManager.removeFavoriteTag(tag);
     await _loadFavorites();
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已取消收藏标签')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已取消收藏标签')));
     }
   }
 
   void _copyTag(String tag) {
     Clipboard.setData(ClipboardData(text: tag));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已复制标签: $tag')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已复制标签: $tag')));
   }
 
   void _searchTag(String tag) {
@@ -109,10 +109,7 @@ class _FavoritesPageState extends State<FavoritesPage>
           ? const Center(child: CircularProgressIndicator())
           : TabBarView(
               controller: _tabController,
-              children: [
-                _buildPostsTab(),
-                _buildTagsTab(),
-              ],
+              children: [_buildPostsTab(), _buildTagsTab()],
             ),
     );
   }
@@ -146,9 +143,7 @@ class _FavoritesPageState extends State<FavoritesPage>
         final postId = _favoritePosts[index];
         return Card(
           child: ListTile(
-            leading: CircleAvatar(
-              child: Text('${index + 1}'),
-            ),
+            leading: CircleAvatar(child: Text('${index + 1}')),
             title: Text('Post ID: $postId'),
             subtitle: Text('收藏时间: ${DateTime.now().toString().split('.')[0]}'),
             trailing: Row(
@@ -158,9 +153,9 @@ class _FavoritesPageState extends State<FavoritesPage>
                   icon: const Icon(Icons.open_in_new),
                   onPressed: () {
                     // TODO: 跳转到图片详情页
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('跳转功能开发中')),
-                    );
+                    ScaffoldMessenger.of(
+                      context,
+                    ).showSnackBar(const SnackBar(content: Text('跳转功能开发中')));
                   },
                   tooltip: '查看',
                 ),

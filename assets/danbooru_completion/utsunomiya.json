@@ -1,0 +1,20 @@
+{
+  "tag": "utsunomiya",
+  "updated_at": "2026-05-19T14:26:01.224724+00:00",
+  "tag_info": {
+    "id": 2626390,
+    "name": "utsunomiya",
+    "category": 1,
+    "post_count": 1
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "utsunomiya",
+      "insert_value": "utsunomiya",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

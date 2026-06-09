@@ -1,0 +1,20 @@
+{
+  "tag": "danmatio_kira",
+  "updated_at": "2026-05-19T14:24:45.887562+00:00",
+  "tag_info": {
+    "id": 2628819,
+    "name": "danmatio_kira",
+    "category": 4,
+    "post_count": 1
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "danmatio_kira",
+      "insert_value": "danmatio_kira",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

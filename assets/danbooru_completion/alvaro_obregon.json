@@ -1,0 +1,20 @@
+{
+  "tag": "alvaro_obregon",
+  "updated_at": "2026-05-19T14:26:06.885110+00:00",
+  "tag_info": {
+    "id": 2626370,
+    "name": "alvaro_obregon",
+    "category": 4,
+    "post_count": 1
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "alvaro_obregon",
+      "insert_value": "alvaro_obregon",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

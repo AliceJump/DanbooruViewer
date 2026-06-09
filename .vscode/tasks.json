@@ -1,0 +1,38 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Flutter: 无限调试",
+      "type": "shell",
+      "command": "flutter",
+      "args": [
+        "run",
+        "--debug"
+      ],
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false,
+        "focus": false
+      },
+      "group": "build"
+    },
+    {
+      "label": "Flutter: Pub Get",
+      "type": "shell",
+      "command": "flutter",
+      "args": [
+        "pub",
+        "get"
+      ],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared",
+        "clear": false,
+        "focus": false
+      },
+      "group": "build"
+    }
+  ]
+}

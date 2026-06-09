@@ -1,0 +1,20 @@
+{
+  "tag": "7_aa33",
+  "updated_at": "2026-05-19T14:23:43.277931+00:00",
+  "tag_info": {
+    "id": 2631703,
+    "name": "7_aa33",
+    "category": 1,
+    "post_count": 1
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "7_aa33",
+      "insert_value": "7_aa33",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

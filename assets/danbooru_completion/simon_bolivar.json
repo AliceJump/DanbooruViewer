@@ -1,0 +1,20 @@
+{
+  "tag": "simon_bolivar",
+  "updated_at": "2026-05-19T14:26:08.359873+00:00",
+  "tag_info": {
+    "id": 2626356,
+    "name": "simon_bolivar",
+    "category": 4,
+    "post_count": 1
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "simon_bolivar",
+      "insert_value": "simon_bolivar",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

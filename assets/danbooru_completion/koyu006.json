@@ -1,0 +1,20 @@
+{
+  "tag": "koyu006",
+  "updated_at": "2026-05-19T14:26:24.440643+00:00",
+  "tag_info": {
+    "id": 2625844,
+    "name": "koyu006",
+    "category": 1,
+    "post_count": 1
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "koyu006",
+      "insert_value": "koyu006",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

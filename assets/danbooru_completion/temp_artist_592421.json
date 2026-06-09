@@ -1,0 +1,20 @@
+{
+  "tag": "temp_artist_592421",
+  "updated_at": "2026-05-19T14:24:45.682562+00:00",
+  "tag_info": {
+    "id": 2628825,
+    "name": "temp_artist_592421",
+    "category": 1,
+    "post_count": 0
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "temp_artist_592421",
+      "insert_value": "temp_artist_592421",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

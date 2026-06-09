@@ -1,0 +1,20 @@
+{
+  "tag": "traditional_window",
+  "updated_at": "2026-05-19T14:24:10.924616+00:00",
+  "tag_info": {
+    "id": 2630405,
+    "name": "traditional_window",
+    "category": 0,
+    "post_count": 0
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "traditional_window",
+      "insert_value": "traditional_window",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

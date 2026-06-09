@@ -1,0 +1,20 @@
+{
+  "tag": "wojczym",
+  "updated_at": "2026-05-19T14:23:20.768208+00:00",
+  "tag_info": {
+    "id": 2632433,
+    "name": "wojczym",
+    "category": 1,
+    "post_count": 2
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "wojczym",
+      "insert_value": "wojczym",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

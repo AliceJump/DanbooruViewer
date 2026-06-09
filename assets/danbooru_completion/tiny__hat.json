@@ -1,0 +1,20 @@
+{
+  "tag": "tiny_-hat",
+  "updated_at": "2026-05-19T14:24:50.742188+00:00",
+  "tag_info": {
+    "id": 2628787,
+    "name": "tiny_-hat",
+    "category": 0,
+    "post_count": 0
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "tiny_-hat",
+      "insert_value": "tiny_-hat",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "tag": "4253_sub",
+  "updated_at": "2026-05-19T14:23:21.447744+00:00",
+  "tag_info": {
+    "id": 2632477,
+    "name": "4253_sub",
+    "category": 1,
+    "post_count": 1
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "4253_sub",
+      "insert_value": "4253_sub",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}

@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,7 +9,6 @@ import 'package:video_player/video_player.dart';
 import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
 import 'main.dart';
-import 'media_utils.dart';
 
 class PostDetailPage extends StatefulWidget {
   final List<Post> posts;
@@ -36,6 +33,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   final _favoritesManager = FavoritesManager();
   bool _isFavorite = false;
+  Offset _dragStartOffset = Offset.zero;
 
   static const platform = MethodChannel(
     'com.example.danbooru_viewer/drag_drop',
@@ -226,6 +224,41 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
+  void _handleDragAction(Offset dragOffset) {
+    // 根据拖拽方向判断操作
+    // 向左拖拽 -> 下载
+    // 向右拖拽 -> 分享
+    // 向上拖拽 -> 复制链接
+    final dx = dragOffset.dx - _dragStartOffset.dx;
+    final dy = dragOffset.dy - _dragStartOffset.dy;
+    final distance = dragOffset.distance;
+
+    if (distance > 100) {
+      // 判断主要方向
+      if (dx.abs() > dy.abs()) {
+        // 水平拖拽
+        if (dx < -50) {
+          // 向左拖拽 -> 下载
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('准备下载 ⬅️')));
+        } else if (dx > 50) {
+          // 向右拖拽 -> 分享
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('准备分享 ➡️')));
+        }
+      } else {
+        // 竖直拖拽
+        if (dy < -50) {
+          // 向上拖拽 -> 复制链接
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('准备复制链接 ⬆️')));
+        }
+      }
+    }
+  }
 
   Widget _buildTagSection(String title, String? tags, BuildContext context) {
     if (tags == null || tags.trim().isEmpty) {
@@ -374,44 +407,33 @@ class _PostDetailPageState extends State<PostDetailPage> {
                   }
 
                   return GestureDetector(
-                    onTapDown: (_) {
-                      pressStartTime = DateTime.now();
-                      pressTimer = Timer(const Duration(seconds: 1), () {
-                        pressTimer = null; // Timer 已触发，拖拽开始
-                        startDrag(context,post.fileUrl as String);
-                      });
+                    onPanStart: (details) {
+                      _dragStartOffset = details.localPosition;
                     },
-                    onTapUp: (_) {
-                      if (pressTimer != null && pressTimer!.isActive) {
-                        pressTimer?.cancel();
-                        pressTimer = null;
-
-                        // 计算按住时长
-                        final elapsed =
-                            DateTime.now().difference(pressStartTime!).inMilliseconds;
-
-                        if (elapsed >= 300) {
-                          // 按住至少0.3s → 下载
-                          saveMediaToGallery(context,definitiveHighResUrl!);
-                        }else{
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => FullScreenImagePage(
-                                previewUrl: previewUrl,
-                                highResUrl: definitiveHighResUrl,
-                                heroTag: heroTag,
-                              ),
-                            ),
-                          );
-                        }
-
+                    onPanUpdate: (details) {
+                      _handleDragAction(details.localPosition);
+                    },
+                    onPanEnd: (details) {
+                      // reset start offset
+                      _dragStartOffset = Offset.zero;
+                    },
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => FullScreenImagePage(
+                            previewUrl: previewUrl,
+                            highResUrl: definitiveHighResUrl,
+                            heroTag: heroTag,
+                          ),
+                        ),
+                      );
+                    },
+                    onLongPress: () {
+                      // 长按触发拖拽分享
+                      if (definitiveHighResUrl != null || previewUrl != null) {
+                        _startDragShare(definitiveHighResUrl ?? previewUrl);
                       }
-                    },
-
-                    onTapCancel: () {
-                      pressTimer?.cancel();
-                      pressTimer = null;
                     },
                     child: Stack(
                       fit: StackFit.expand,

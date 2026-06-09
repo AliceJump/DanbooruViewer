@@ -1,0 +1,20 @@
+{
+  "tag": "enoshima_meto",
+  "updated_at": "2026-05-19T14:23:53.258452+00:00",
+  "tag_info": {
+    "id": 2631409,
+    "name": "enoshima_meto",
+    "category": 4,
+    "post_count": 0
+  },
+  "wiki": null,
+  "aliases": [],
+  "completion_candidates": [
+    {
+      "value": "enoshima_meto",
+      "insert_value": "enoshima_meto",
+      "source": "tag",
+      "score": 100
+    }
+  ]
+}
