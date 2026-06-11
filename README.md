@@ -1,5 +1,11 @@
 # Danbooru Viewer
 
+## Downloads
+
+![downloads](./assets/downloads.svg)
+
+---
+
 一个功能丰富的 Flutter 应用，用于浏览和管理来自 Danbooru 图像服务的图片和视频内容。
 
 ## 功能特性
