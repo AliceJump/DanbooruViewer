@@ -1,0 +1,11 @@
+# 填入需要同步的 Danbooru 标签名，每行一个
+oguri_cap_(umamusume)
+special_week_(umamusume)
+silence_suzuka_(umamusume)
+tamamo_cross_(umamusume)
+mejiro_mcqueen_(umamusume)
+tokai_teio_(umamusume)
+gold_ship_(umamusume)
+daiwa_scarlet_(umamusume)
+rice_shower_(umamusume)
+super_creek_(umamusume)
