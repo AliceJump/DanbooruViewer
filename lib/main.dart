@@ -9,8 +9,6 @@ import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
-import 'favorites_manager.dart';
-
 void main() {
   runApp(const MyApp());
 }
@@ -86,6 +84,13 @@ class SearchCompletionSuggestion {
   }
 }
 
+class _SearchToken {
+  final String value;
+  final int start;
+
+  const _SearchToken({required this.value, required this.start});
+}
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
@@ -122,7 +127,6 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _isCompletionLoading = true;
   bool _showSuggestions = false;
   int _page = 1;
-  final _favoritesManager = FavoritesManager();
 
   // Multi-select state
   bool _isMultiSelectMode = false;
@@ -164,20 +168,38 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _loadCompletionSuggestions() async {
     try {
-      final payload =
-          json.decode(
-                await rootBundle.loadString(
-                  'assets/danbooru_completion/oguri_cap__umamusume.json',
-                ),
-              )
-              as Map<String, dynamic>;
+      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+      final assetPaths = manifest
+          .listAssets()
+          .where(
+            (path) =>
+                path.startsWith('assets/danbooru_completion/') &&
+                path.endsWith('.json'),
+          )
+          .toList();
+      final suggestionsByValue = <String, SearchCompletionSuggestion>{};
 
-      final candidates =
-          (payload['completion_candidates'] as List<dynamic>? ?? [])
-              .whereType<Map<String, dynamic>>()
-              .map(SearchCompletionSuggestion.fromJson)
-              .where((item) => item.value.trim().isNotEmpty)
-              .toList();
+      for (final assetPath in assetPaths) {
+        final payload =
+            json.decode(await rootBundle.loadString(assetPath))
+                as Map<String, dynamic>;
+        final candidates =
+            (payload['completion_candidates'] as List<dynamic>? ?? [])
+                .whereType<Map<String, dynamic>>()
+                .map(SearchCompletionSuggestion.fromJson)
+                .where((item) => item.value.trim().isNotEmpty);
+
+        for (final candidate in candidates) {
+          final key = candidate.insertValue.toLowerCase();
+          final existing = suggestionsByValue[key];
+          if (existing == null || candidate.score > existing.score) {
+            suggestionsByValue[key] = candidate;
+          }
+        }
+      }
+
+      final candidates = suggestionsByValue.values.toList()
+        ..sort((a, b) => b.score.compareTo(a.score));
 
       if (!mounted) return;
       setState(() {
@@ -211,11 +233,16 @@ class _MyHomePageState extends State<MyHomePage> {
   void _refreshCompletionSuggestions() {
     if (!mounted || _isCompletionLoading) return;
 
-    final query = _searchController.text.trim().toLowerCase();
+    final token = _currentSearchToken();
+    final query = token.value.toLowerCase();
     final matches = query.isEmpty
         ? _completionSuggestions.take(10).toList()
         : _completionSuggestions
-              .where((item) => item.value.toLowerCase().contains(query))
+              .where(
+                (item) =>
+                    item.value.toLowerCase().contains(query) ||
+                    item.insertValue.toLowerCase().contains(query),
+              )
               .take(10)
               .toList();
 
@@ -225,10 +252,26 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
+  _SearchToken _currentSearchToken() {
+    final text = _searchController.text;
+    final cursor = _searchController.selection.baseOffset;
+    final end = cursor < 0 ? text.length : cursor;
+    final start = end == 0 ? 0 : text.lastIndexOf(' ', end - 1) + 1;
+    return _SearchToken(value: text.substring(start, end).trim(), start: start);
+  }
+
   void _applyCompletionSuggestion(String value) {
+    final text = _searchController.text;
+    final cursor = _searchController.selection.baseOffset;
+    final end = cursor < 0 ? text.length : cursor;
+    final token = _currentSearchToken();
+    final prefix = text.substring(0, token.start);
+    final suffix = text.substring(end);
+    final completedText = '$prefix$value$suffix';
+
     _searchController.value = TextEditingValue(
-      text: value,
-      selection: TextSelection.collapsed(offset: value.length),
+      text: completedText,
+      selection: TextSelection.collapsed(offset: token.start + value.length),
     );
     setState(() {
       _showSuggestions = false;
