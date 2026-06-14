@@ -17,6 +17,7 @@ from pathlib import Path
 from pprint import pprint
 import argparse
 import json
+import time
 
 import requests
 
@@ -32,13 +33,26 @@ session.headers.update({"User-Agent": "DanbooruTagInspector/1.0"})
 
 
 def get_json(path: str, **params):
-    response = session.get(
-        f"{BASE}{path}",
-        params=params,
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
+    max_retries = params.pop("max_retries", 5)
+
+    for retry in range(max_retries):
+        response = session.get(
+            f"{BASE}{path}",
+            params=params,
+            timeout=30,
+        )
+
+        if response.status_code == 429 and retry < max_retries - 1:
+            retry_after = response.headers.get("Retry-After")
+            wait_time = int(retry_after) if retry_after else 2 ** (retry + 1)
+            print(f"[429] Rate limited. Sleeping {wait_time}s...")
+            time.sleep(wait_time)
+            continue
+
+        response.raise_for_status()
+        return response.json()
+
+    raise RuntimeError("get_json failed")
 
 
 def title(name: str):

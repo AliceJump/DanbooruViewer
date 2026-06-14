@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:archive/archive.dart';
 import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/post_detail_page.dart';
 import 'package:dio/dio.dart';
@@ -91,6 +92,13 @@ class _SearchToken {
   const _SearchToken({required this.value, required this.start});
 }
 
+class SearchChip {
+  final String label;
+  final String queryValue;
+
+  const SearchChip({required this.label, required this.queryValue});
+}
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
@@ -123,9 +131,11 @@ class _MyHomePageState extends State<MyHomePage> {
   List<Post> _posts = [];
   List<SearchCompletionSuggestion> _completionSuggestions = [];
   List<SearchCompletionSuggestion> _visibleSuggestions = [];
+  final List<SearchChip> _searchChips = [];
   bool _isLoading = false;
   bool _isCompletionLoading = true;
   bool _showSuggestions = false;
+  String? _completionLoadError;
   int _page = 1;
 
   // Multi-select state
@@ -168,33 +178,41 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _loadCompletionSuggestions() async {
     try {
-      final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
-      final assetPaths = manifest
-          .listAssets()
-          .where(
-            (path) =>
-                path.startsWith('assets/danbooru_completion/') &&
-                path.endsWith('.json'),
-          )
-          .toList();
+      final bytes = await rootBundle.load('assets/danbooru_completion.zip');
+      final archive = ZipDecoder().decodeBytes(
+        bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
+      );
+      final jsonFiles =
+          archive.files
+              .where((file) => file.isFile && file.name.endsWith('.json'))
+              .toList()
+            ..sort((a, b) => a.name.compareTo(b.name));
       final suggestionsByValue = <String, SearchCompletionSuggestion>{};
 
-      for (final assetPath in assetPaths) {
-        final payload =
-            json.decode(await rootBundle.loadString(assetPath))
-                as Map<String, dynamic>;
-        final candidates =
-            (payload['completion_candidates'] as List<dynamic>? ?? [])
-                .whereType<Map<String, dynamic>>()
-                .map(SearchCompletionSuggestion.fromJson)
-                .where((item) => item.value.trim().isNotEmpty);
+      for (final file in jsonFiles) {
+        try {
+          final content = utf8.decode(file.content as List<int>);
+          final payload = json.decode(content) as Map<String, dynamic>;
+          final candidates =
+              (payload['completion_candidates'] as List<dynamic>? ?? [])
+                  .whereType<Map<String, dynamic>>()
+                  .map(SearchCompletionSuggestion.fromJson)
+                  .where(
+                    (item) =>
+                        item.value.trim().isNotEmpty &&
+                        item.insertValue.trim().isNotEmpty,
+                  );
 
-        for (final candidate in candidates) {
-          final key = candidate.insertValue.toLowerCase();
-          final existing = suggestionsByValue[key];
-          if (existing == null || candidate.score > existing.score) {
-            suggestionsByValue[key] = candidate;
+          for (final candidate in candidates) {
+            final key =
+                '${candidate.value.toLowerCase()}\u0000${candidate.insertValue.toLowerCase()}';
+            final existing = suggestionsByValue[key];
+            if (existing == null || candidate.score > existing.score) {
+              suggestionsByValue[key] = candidate;
+            }
           }
+        } catch (e) {
+          debugPrint('Skipped completion asset ${file.name}: $e');
         }
       }
 
@@ -205,6 +223,9 @@ class _MyHomePageState extends State<MyHomePage> {
       setState(() {
         _completionSuggestions = candidates;
         _isCompletionLoading = false;
+        _completionLoadError = candidates.isEmpty
+            ? '未读取到 danbooru_completion 补全数据'
+            : null;
       });
       _refreshCompletionSuggestions();
     } catch (e) {
@@ -214,6 +235,7 @@ class _MyHomePageState extends State<MyHomePage> {
         _isCompletionLoading = false;
         _visibleSuggestions = [];
         _showSuggestions = false;
+        _completionLoadError = '补全资源加载失败: $e';
       });
     }
   }
@@ -231,7 +253,14 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _refreshCompletionSuggestions() {
-    if (!mounted || _isCompletionLoading) return;
+    if (!mounted || _isCompletionLoading) {
+      if (_searchFocusNode.hasFocus) {
+        setState(() {
+          _showSuggestions = true;
+        });
+      }
+      return;
+    }
 
     final token = _currentSearchToken();
     final query = token.value.toLowerCase();
@@ -248,7 +277,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
     setState(() {
       _visibleSuggestions = matches;
-      _showSuggestions = _searchFocusNode.hasFocus && matches.isNotEmpty;
+      _showSuggestions = _searchFocusNode.hasFocus;
     });
   }
 
@@ -260,23 +289,41 @@ class _MyHomePageState extends State<MyHomePage> {
     return _SearchToken(value: text.substring(start, end).trim(), start: start);
   }
 
-  void _applyCompletionSuggestion(String value) {
+  void _applyCompletionSuggestion(SearchCompletionSuggestion suggestion) {
     final text = _searchController.text;
     final cursor = _searchController.selection.baseOffset;
     final end = cursor < 0 ? text.length : cursor;
     final token = _currentSearchToken();
     final prefix = text.substring(0, token.start);
     final suffix = text.substring(end);
-    final completedText = '$prefix$value$suffix';
+    final remainingText = '$prefix$suffix'.trim();
 
-    _searchController.value = TextEditingValue(
-      text: completedText,
-      selection: TextSelection.collapsed(offset: token.start + value.length),
-    );
     setState(() {
+      _searchChips.add(
+        SearchChip(label: suggestion.value, queryValue: suggestion.insertValue),
+      );
+      _searchController.value = TextEditingValue(
+        text: remainingText,
+        selection: TextSelection.collapsed(offset: remainingText.length),
+      );
       _showSuggestions = false;
     });
-    _searchFocusNode.unfocus();
+    _fetchPosts();
+  }
+
+  void _removeSearchChip(int index) {
+    setState(() {
+      _searchChips.removeAt(index);
+    });
+    _fetchPosts();
+  }
+
+  void _addSearchChip(String label, String queryValue) {
+    setState(() {
+      _searchChips.add(SearchChip(label: label, queryValue: queryValue));
+      _searchController.clear();
+      _showSuggestions = false;
+    });
     _fetchPosts();
   }
 
@@ -426,13 +473,16 @@ class _MyHomePageState extends State<MyHomePage> {
     }
 
     try {
-      String tags = _searchController.text;
       List<String> ratings = getSelectedRatings();
+      final queryTags = [
+        ..._searchChips.map((chip) => chip.queryValue),
+        ..._searchController.text.split(' ').where((s) => s.isNotEmpty),
+      ];
 
       String ratingTags = ratings.isNotEmpty
           ? 'rating:${ratings.join(',')}'
           : '';
-      String searchTags = tags.split(' ').where((s) => s.isNotEmpty).join('+');
+      String searchTags = queryTags.join('+');
       String finalTags = searchTags;
       if (ratingTags.isNotEmpty) {
         if (finalTags.isNotEmpty) {
@@ -489,8 +539,7 @@ class _MyHomePageState extends State<MyHomePage> {
     );
 
     if (result != null && result is String) {
-      _searchController.text = result;
-      _fetchPosts();
+      _addSearchChip(result, result);
     }
   }
 
@@ -507,9 +556,7 @@ class _MyHomePageState extends State<MyHomePage> {
               MaterialPageRoute(builder: (context) => const FavoritesPage()),
             );
             if (result != null && mounted) {
-              // 返回了标签，搜索该标签
-              _searchController.text = result;
-              _fetchPosts();
+              _addSearchChip(result, result);
             }
           },
           tooltip: '我的收藏',
@@ -529,6 +576,92 @@ class _MyHomePageState extends State<MyHomePage> {
         IconButton(icon: const Icon(Icons.download), onPressed: _batchDownload),
         IconButton(icon: const Icon(Icons.link), onPressed: _batchCopyLinks),
       ],
+    );
+  }
+
+  Widget _buildCompletionPanel() {
+    final statusText = _isCompletionLoading
+        ? '正在加载补全数据...'
+        : _completionLoadError ??
+              (_visibleSuggestions.isEmpty ? '没有匹配的补全建议' : null);
+
+    return Container(
+      constraints: const BoxConstraints(maxHeight: 220),
+      margin: const EdgeInsets.only(top: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      child: statusText != null
+          ? Padding(
+              padding: const EdgeInsets.all(16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  statusText,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+            )
+          : ListView.separated(
+              shrinkWrap: true,
+              padding: EdgeInsets.zero,
+              itemCount: _visibleSuggestions.length,
+              separatorBuilder: (context, index) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                final suggestion = _visibleSuggestions[index];
+                return ListTile(
+                  dense: true,
+                  title: Text(
+                    suggestion.value,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text('${suggestion.source} · ${suggestion.score}'),
+                  onTap: () => _applyCompletionSuggestion(suggestion),
+                );
+              },
+            ),
+    );
+  }
+
+  Widget _buildSearchInput() {
+    return InputDecorator(
+      decoration: InputDecoration(
+        border: const OutlineInputBorder(),
+        suffixIcon: IconButton(
+          icon: const Icon(Icons.search),
+          onPressed: () {
+            _searchFocusNode.unfocus();
+            _fetchPosts();
+          },
+        ),
+      ),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          for (var index = 0; index < _searchChips.length; index++)
+            InputChip(
+              label: Text(_searchChips[index].label),
+              onDeleted: () => _removeSearchChip(index),
+            ),
+          SizedBox(
+            width: 180,
+            child: TextField(
+              controller: _searchController,
+              focusNode: _searchFocusNode,
+              decoration: const InputDecoration.collapsed(hintText: '搜索...'),
+              onSubmitted: (_) {
+                _searchFocusNode.unfocus();
+                _fetchPosts();
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -552,61 +685,8 @@ class _MyHomePageState extends State<MyHomePage> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  TextField(
-                    controller: _searchController,
-                    focusNode: _searchFocusNode,
-                    decoration: InputDecoration(
-                      hintText: '搜索...',
-                      border: const OutlineInputBorder(),
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.search),
-                        onPressed: () {
-                          _searchFocusNode.unfocus();
-                          _fetchPosts();
-                        },
-                      ),
-                    ),
-                    onSubmitted: (_) {
-                      _searchFocusNode.unfocus();
-                      _fetchPosts();
-                    },
-                  ),
-                  if (_showSuggestions)
-                    Container(
-                      constraints: const BoxConstraints(maxHeight: 220),
-                      margin: const EdgeInsets.only(top: 8),
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: Theme.of(context).colorScheme.outlineVariant,
-                        ),
-                      ),
-                      child: ListView.separated(
-                        shrinkWrap: true,
-                        padding: EdgeInsets.zero,
-                        itemCount: _visibleSuggestions.length,
-                        separatorBuilder: (context, index) =>
-                            const Divider(height: 1),
-                        itemBuilder: (context, index) {
-                          final suggestion = _visibleSuggestions[index];
-                          return ListTile(
-                            dense: true,
-                            title: Text(
-                              suggestion.value,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              '${suggestion.source} · ${suggestion.score}',
-                            ),
-                            onTap: () => _applyCompletionSuggestion(
-                              suggestion.insertValue,
-                            ),
-                          );
-                        },
-                      ),
-                    ),
+                  _buildSearchInput(),
+                  if (_showSuggestions) _buildCompletionPanel(),
                 ],
               ),
             ),
