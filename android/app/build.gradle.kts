@@ -60,4 +60,5 @@ flutter {
 
 dependencies {
     implementation("io.coil-kt:coil:2.4.0")
+    implementation("org.apache.commons:commons-compress:1.26.2")
 }

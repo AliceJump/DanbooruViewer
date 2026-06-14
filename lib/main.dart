@@ -1,8 +1,9 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
 import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/post_detail_page.dart';
+import 'package:archive/archive.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -125,6 +126,10 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
+  static const MethodChannel _completionChannel = MethodChannel(
+    'com.example.danbooru_viewer/completion',
+  );
+
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
@@ -179,20 +184,13 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _loadCompletionSuggestions() async {
     try {
-      final bytes = await rootBundle.load('assets/danbooru_completion.zip');
-      final archive = ZipDecoder().decodeBytes(
-        bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
-      );
-      final jsonFiles =
-          archive.files
-              .where((file) => file.isFile && file.name.endsWith('.json'))
-              .toList()
-            ..sort((a, b) => a.name.compareTo(b.name));
+      final jsonFiles = await _loadCompletionJsonFiles();
+      final fileNames = jsonFiles.keys.toList()..sort();
       final suggestionsByValue = <String, SearchCompletionSuggestion>{};
 
-      for (final file in jsonFiles) {
+      for (final fileName in fileNames) {
         try {
-          final content = utf8.decode(file.content as List<int>);
+          final content = jsonFiles[fileName]!;
           final payload = json.decode(content) as Map<String, dynamic>;
           final candidates =
               (payload['completion_candidates'] as List<dynamic>? ?? [])
@@ -213,7 +211,7 @@ class _MyHomePageState extends State<MyHomePage> {
             }
           }
         } catch (e) {
-          debugPrint('Skipped completion asset ${file.name}: $e');
+          debugPrint('Skipped completion asset $fileName: $e');
         }
       }
 
@@ -238,6 +236,40 @@ class _MyHomePageState extends State<MyHomePage> {
         _showSuggestions = false;
         _completionLoadError = '补全资源加载失败: $e';
       });
+    }
+  }
+
+  Future<Map<String, String>> _loadCompletionJsonFiles() async {
+    try {
+      final data = await rootBundle.load('assets/danbooru_completion.zip');
+      final bytes = Uint8List.view(
+        data.buffer,
+        data.offsetInBytes,
+        data.lengthInBytes,
+      );
+      final archive = ZipDecoder().decodeBytes(bytes);
+      final jsonFiles = <String, String>{};
+
+      for (final file in archive.files) {
+        if (!file.isFile || !file.name.endsWith('.json')) {
+          continue;
+        }
+
+        final content = file.content;
+        if (content is List<int>) {
+          jsonFiles[file.name] = utf8.decode(content);
+        }
+      }
+
+      return jsonFiles;
+    } catch (e) {
+      debugPrint('Failed to load ZIP completion asset, trying platform 7z: $e');
+      return Map<String, String>.from(
+        await _completionChannel.invokeMethod<Map<Object?, Object?>>(
+              'loadCompletionJson',
+            ) ??
+            const {},
+      );
     }
   }
 
