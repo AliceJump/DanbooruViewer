@@ -128,6 +128,7 @@ class _MyHomePageState extends State<MyHomePage> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
+  final LayerLink _searchLayerLink = LayerLink();
   List<Post> _posts = [];
   List<SearchCompletionSuggestion> _completionSuggestions = [];
   List<SearchCompletionSuggestion> _visibleSuggestions = [];
@@ -587,7 +588,6 @@ class _MyHomePageState extends State<MyHomePage> {
 
     return Container(
       constraints: const BoxConstraints(maxHeight: 220),
-      margin: const EdgeInsets.only(top: 8),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         borderRadius: BorderRadius.circular(12),
@@ -627,40 +627,67 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Widget _buildSearchInput() {
-    return InputDecorator(
-      decoration: InputDecoration(
-        border: const OutlineInputBorder(),
-        suffixIcon: IconButton(
-          icon: const Icon(Icons.search),
-          onPressed: () {
-            _searchFocusNode.unfocus();
-            _fetchPosts();
-          },
+    return CompositedTransformTarget(
+      link: _searchLayerLink,
+      child: InputDecorator(
+        decoration: InputDecoration(
+          border: const OutlineInputBorder(),
+          suffixIcon: IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: () {
+              _searchFocusNode.unfocus();
+              _fetchPosts();
+            },
+          ),
+        ),
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            for (var index = 0; index < _searchChips.length; index++)
+              InputChip(
+                label: Text(_searchChips[index].label),
+                onDeleted: () => _removeSearchChip(index),
+              ),
+            SizedBox(
+              width: 180,
+              child: TextField(
+                controller: _searchController,
+                focusNode: _searchFocusNode,
+                decoration: const InputDecoration.collapsed(hintText: '搜索...'),
+                onTapOutside: (_) => _searchFocusNode.unfocus(),
+                onSubmitted: (_) {
+                  _searchFocusNode.unfocus();
+                  _fetchPosts();
+                },
+              ),
+            ),
+          ],
         ),
       ),
-      child: Wrap(
-        spacing: 6,
-        runSpacing: 6,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          for (var index = 0; index < _searchChips.length; index++)
-            InputChip(
-              label: Text(_searchChips[index].label),
-              onDeleted: () => _removeSearchChip(index),
-            ),
-          SizedBox(
-            width: 180,
-            child: TextField(
-              controller: _searchController,
-              focusNode: _searchFocusNode,
-              decoration: const InputDecoration.collapsed(hintText: '搜索...'),
-              onSubmitted: (_) {
-                _searchFocusNode.unfocus();
-                _fetchPosts();
-              },
-            ),
+    );
+  }
+
+  Widget _buildCompletionDropdown() {
+    return Positioned(
+      left: 16,
+      right: 16,
+      top: 0,
+      child: CompositedTransformFollower(
+        link: _searchLayerLink,
+        showWhenUnlinked: false,
+        targetAnchor: Alignment.bottomLeft,
+        followerAnchor: Alignment.topLeft,
+        offset: const Offset(0, 8),
+        child: TextFieldTapRegion(
+          child: Material(
+            color: Colors.transparent,
+            elevation: 6,
+            borderRadius: BorderRadius.circular(12),
+            child: _buildCompletionPanel(),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -678,125 +705,132 @@ class _MyHomePageState extends State<MyHomePage> {
         appBar: _isMultiSelectMode
             ? _buildMultiSelectAppBar()
             : _buildDefaultAppBar(),
-        body: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+        body: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTap: () => _searchFocusNode.unfocus(),
+          child: Stack(
+            children: [
+              Column(
                 children: [
-                  _buildSearchInput(),
-                  if (_showSuggestions) _buildCompletionPanel(),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
+                    child: _buildSearchInput(),
+                  ),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                    child: Row(
+                      children: ratingOptions.keys.map((key) {
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 8.0),
+                          child: FilterChip(
+                            label: Text(key),
+                            selected: ratingOptions[key]!,
+                            onSelected: (bool selected) {
+                              setState(() {
+                                ratingOptions[key] = selected;
+                              });
+                              _fetchPosts();
+                            },
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                  Expanded(
+                    child: (_isLoading && _posts.isEmpty)
+                        ? const Center(child: CircularProgressIndicator())
+                        : GridView.builder(
+                            controller: _scrollController,
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: 3,
+                                  crossAxisSpacing: 4.0,
+                                  mainAxisSpacing: 4.0,
+                                ),
+                            itemCount: _posts.length,
+                            itemBuilder: (context, index) {
+                              final post = _posts[index];
+                              final isSelected = _selectedItems.contains(
+                                post.id,
+                              );
+                              if (post.previewFileUrl != null) {
+                                return GestureDetector(
+                                  onTap: () {
+                                    if (_isMultiSelectMode) {
+                                      _toggleSelection(post.id);
+                                    } else {
+                                      _navigateToDetail(index);
+                                    }
+                                  },
+                                  onLongPress: () {
+                                    if (!_isMultiSelectMode) {
+                                      _enterMultiSelectMode(post.id);
+                                    }
+                                  },
+                                  child: Stack(
+                                    fit: StackFit.expand,
+                                    children: [
+                                      Hero(
+                                        tag: 'post_${post.id}',
+                                        child: Image.network(
+                                          post.previewFileUrl!,
+                                          fit: BoxFit.cover,
+                                          loadingBuilder: (context, child, loadingProgress) {
+                                            if (loadingProgress == null) {
+                                              return child;
+                                            }
+                                            return Center(
+                                              child: CircularProgressIndicator(
+                                                value:
+                                                    loadingProgress
+                                                            .expectedTotalBytes !=
+                                                        null
+                                                    ? loadingProgress
+                                                              .cumulativeBytesLoaded /
+                                                          loadingProgress
+                                                              .expectedTotalBytes!
+                                                    : null,
+                                              ),
+                                            );
+                                          },
+                                          errorBuilder:
+                                              (context, error, stackTrace) {
+                                                return const Icon(Icons.error);
+                                              },
+                                        ),
+                                      ),
+                                      if (isSelected)
+                                        Container(
+                                          color: Colors.black.withValues(
+                                            alpha: 0.5,
+                                          ),
+                                          child: const Icon(
+                                            Icons.check_circle,
+                                            color: Colors.white,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                );
+                              } else {
+                                return const GridTile(
+                                  child: Icon(Icons.image_not_supported),
+                                );
+                              }
+                            },
+                          ),
+                  ),
+                  if (_isLoading && _posts.isNotEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(8.0),
+                      child: CircularProgressIndicator(),
+                    ),
                 ],
               ),
-            ),
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: Row(
-                children: ratingOptions.keys.map((key) {
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8.0),
-                    child: FilterChip(
-                      label: Text(key),
-                      selected: ratingOptions[key]!,
-                      onSelected: (bool selected) {
-                        setState(() {
-                          ratingOptions[key] = selected;
-                        });
-                        _fetchPosts();
-                      },
-                    ),
-                  );
-                }).toList(),
-              ),
-            ),
-            Expanded(
-              child: (_isLoading && _posts.isEmpty)
-                  ? const Center(child: CircularProgressIndicator())
-                  : GridView.builder(
-                      controller: _scrollController,
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: 3,
-                            crossAxisSpacing: 4.0,
-                            mainAxisSpacing: 4.0,
-                          ),
-                      itemCount: _posts.length,
-                      itemBuilder: (context, index) {
-                        final post = _posts[index];
-                        final isSelected = _selectedItems.contains(post.id);
-                        if (post.previewFileUrl != null) {
-                          return GestureDetector(
-                            onTap: () {
-                              if (_isMultiSelectMode) {
-                                _toggleSelection(post.id);
-                              } else {
-                                _navigateToDetail(index);
-                              }
-                            },
-                            onLongPress: () {
-                              if (!_isMultiSelectMode) {
-                                _enterMultiSelectMode(post.id);
-                              }
-                            },
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                Hero(
-                                  tag: 'post_${post.id}',
-                                  child: Image.network(
-                                    post.previewFileUrl!,
-                                    fit: BoxFit.cover,
-                                    loadingBuilder:
-                                        (context, child, loadingProgress) {
-                                          if (loadingProgress == null) {
-                                            return child;
-                                          }
-                                          return Center(
-                                            child: CircularProgressIndicator(
-                                              value:
-                                                  loadingProgress
-                                                          .expectedTotalBytes !=
-                                                      null
-                                                  ? loadingProgress
-                                                            .cumulativeBytesLoaded /
-                                                        loadingProgress
-                                                            .expectedTotalBytes!
-                                                  : null,
-                                            ),
-                                          );
-                                        },
-                                    errorBuilder: (context, error, stackTrace) {
-                                      return const Icon(Icons.error);
-                                    },
-                                  ),
-                                ),
-                                if (isSelected)
-                                  Container(
-                                    color: Colors.black.withValues(alpha: 0.5),
-                                    child: const Icon(
-                                      Icons.check_circle,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          );
-                        } else {
-                          return const GridTile(
-                            child: Icon(Icons.image_not_supported),
-                          );
-                        }
-                      },
-                    ),
-            ),
-            if (_isLoading && _posts.isNotEmpty)
-              const Padding(
-                padding: EdgeInsets.all(8.0),
-                child: CircularProgressIndicator(),
-              ),
-          ],
+              if (_showSuggestions) _buildCompletionDropdown(),
+            ],
+          ),
         ),
       ),
     );

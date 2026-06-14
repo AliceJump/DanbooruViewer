@@ -12,7 +12,7 @@
 .swiftpm/
 migrate_working_dir/
 assets/danbooru_completion/*.json
-
+cache
 # IntelliJ related
 *.iml
 *.ipr
