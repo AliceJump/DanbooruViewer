@@ -28,9 +28,6 @@ jobs:
           - target: web
             os: ubuntu-latest
 
-          - target: windows
-            os: windows-latest
-
           - target: ios
             os: macos-latest
 
@@ -106,23 +103,6 @@ jobs:
         with:
           name: linux-release
           path: danbooru-viewer-linux-release.tar.gz
-
-      # ---------------- WINDOWS ----------------
-      - name: Build Windows
-        if: matrix.target == 'windows'
-        shell: powershell
-        run: |
-          flutter build windows --release
-          Compress-Archive `
-            -Path build/windows/x64/runner/Release/* `
-            -DestinationPath danbooru-viewer-windows-release.zip
-
-      - name: Upload Windows
-        if: matrix.target == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-release
-          path: danbooru-viewer-windows-release.zip
 
       # ---------------- WEB ----------------
       - name: Build Web
