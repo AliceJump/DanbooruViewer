@@ -83,14 +83,22 @@ def save_json_set(
     path: Path,
     values: set[str],
 ):
-    path.write_text(
-        json.dumps(
-            sorted(values),
-            ensure_ascii=False,
-            indent=2,
-        ),
+    payload = json.dumps(
+        sorted(values),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    temp_path = path.with_name(
+        f".{path.name}.{threading.get_ident()}.tmp"
+    )
+
+    temp_path.write_text(
+        payload,
         encoding="utf-8",
     )
+
+    temp_path.replace(path)
 
 
 # =========================================================
@@ -602,6 +610,8 @@ def main():
 
         else:
             sys.exit(1)
+
+    view.session = session
 
     print()
     print("Loading metadata...")
