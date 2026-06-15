@@ -47,6 +47,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: _currentIndex);
     _checkFavoriteStatus();
+    _recordCurrentPostHistory();
   }
 
   Future<void> _checkFavoriteStatus() async {
@@ -124,6 +125,13 @@ class _PostDetailPageState extends State<PostDetailPage> {
     });
     _loadHighResImageForIndex(index);
     _checkFavoriteStatus();
+    _recordCurrentPostHistory();
+  }
+
+  Future<void> _recordCurrentPostHistory() async {
+    await _favoritesManager.addBrowsingHistory(
+      widget.posts[_currentIndex].toJson(),
+    );
   }
 
   Future<void> _saveImage(String? imageUrl) async {
@@ -397,9 +405,186 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return Uri.tryParse('https://$value');
   }
 
+  String _postUrl(Post post) {
+    return 'https://danbooru.donmai.us/posts/${post.id}';
+  }
+
+  String? _sourceUrl(Post post) {
+    final source = post.source?.trim();
+    if (source == null || source.isEmpty) return null;
+    return _normalizePixivSource(source);
+  }
+
+  String _normalizePixivSource(String source) {
+    final pixivIdPatterns = [
+      RegExp(r'pixiv[./].*?[?&]illust_id=(\d+)', caseSensitive: false),
+      RegExp(r'pixiv[./].*?/artworks/(\d+)', caseSensitive: false),
+      RegExp(r'pixiv[./].*?/i/(\d+)', caseSensitive: false),
+      RegExp(r'pixiv[./].*?/img-original/.*/(\d+)_p\d+', caseSensitive: false),
+      RegExp(r'pximg\.net/.*/(\d+)_p\d+', caseSensitive: false),
+    ];
+
+    for (final pattern in pixivIdPatterns) {
+      final match = pattern.firstMatch(source);
+      if (match != null) {
+        return 'https://www.pixiv.net/artworks/${match.group(1)}';
+      }
+    }
+    return source;
+  }
+
+  Widget _buildLinkButtons(Post post) {
+    final sourceUrl = _sourceUrl(post);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          FilledButton.icon(
+            onPressed: () => _launchUrl(_postUrl(post)),
+            icon: const Icon(Icons.open_in_new),
+            label: const Text('站内原链接'),
+          ),
+          if (sourceUrl != null)
+            OutlinedButton.icon(
+              onPressed: () => _launchUrl(sourceUrl),
+              icon: const Icon(Icons.link),
+              label: Text(
+                _isPixivSource(sourceUrl) ? 'Pixiv 源链接' : 'Source 源链接',
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  bool _isPixivSource(String source) {
+    return source.toLowerCase().contains('pixiv.net');
+  }
+
+  Widget _buildMediaPager(double height) {
+    return SizedBox(
+      height: height,
+      child: PageView.builder(
+        controller: _pageController,
+        itemCount: widget.posts.length,
+        onPageChanged: _onPageChanged,
+        itemBuilder: (context, index) {
+          final post = widget.posts[index];
+          final previewUrl = post.previewFileUrl;
+          final highResUrlForDetailPage = _imageUrls[index];
+          final videoController = _videoControllers[index];
+          final definitiveHighResUrl = post.fileUrl ?? post.largeFileUrl;
+          final heroTag = 'post_${post.id}';
+
+          if (previewUrl == null) {
+            return const Center(child: Icon(Icons.broken_image));
+          }
+
+          return GestureDetector(
+            onPanStart: (details) {
+              _dragStartOffset = details.localPosition;
+            },
+            onPanUpdate: (details) {
+              _handleDragAction(details.localPosition);
+            },
+            onPanEnd: (details) {
+              _dragStartOffset = Offset.zero;
+            },
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => FullScreenImagePage(
+                    previewUrl: previewUrl,
+                    highResUrl: definitiveHighResUrl,
+                    heroTag: heroTag,
+                  ),
+                ),
+              );
+            },
+            onLongPress: () {
+              if (definitiveHighResUrl != null) {
+                _startDragShare(definitiveHighResUrl);
+              }
+            },
+            child: Stack(
+              fit: StackFit.expand,
+              alignment: Alignment.center,
+              children: [
+                Hero(
+                  tag: heroTag,
+                  child: Image.network(
+                    previewUrl,
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) =>
+                        const Icon(Icons.error),
+                  ),
+                ),
+                if (videoController != null)
+                  Center(
+                    child: AspectRatio(
+                      aspectRatio: videoController.value.aspectRatio,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          VideoPlayer(videoController),
+                          Center(
+                            child: Icon(
+                              Icons.play_circle_outline,
+                              size: 60,
+                              color: Colors.white.withValues(alpha: 0.7),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                if (highResUrlForDetailPage != null && videoController == null)
+                  AnimatedOpacity(
+                    opacity: highResUrlForDetailPage != previewUrl ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 300),
+                    child: Image.network(
+                      highResUrlForDetailPage,
+                      fit: BoxFit.contain,
+                      errorBuilder: (context, error, stackTrace) {
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                  ),
+                if (highResUrlForDetailPage == null &&
+                    videoController == null &&
+                    (post.fileUrl != null || post.largeFileUrl != null))
+                  const Center(child: CircularProgressIndicator()),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildInfoPanel(Post post) {
+    return ListView(
+      padding: const EdgeInsets.only(top: 16, bottom: 24),
+      children: [
+        _buildLinkButtons(post),
+        _buildTagSection('作者', post.tagStringArtist, context),
+        _buildTagSection('版权', post.tagStringCopyright, context),
+        _buildTagSection('角色', post.tagStringCharacter, context),
+        _buildTagSection('普通', post.tagStringGeneral, context),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentPostForTags = widget.posts[_currentIndex];
+    final orientation = MediaQuery.orientationOf(context);
+    final screenSize = MediaQuery.sizeOf(context);
+    final isLandscape = orientation == Orientation.landscape;
 
     return Scaffold(
       appBar: AppBar(
@@ -415,157 +600,20 @@ class _PostDetailPageState extends State<PostDetailPage> {
           ),
         ],
       ),
-      body: CustomScrollView(
-        slivers: [
-          SliverToBoxAdapter(
-            child: SizedBox(
-              height: MediaQuery.of(context).size.height * 0.5,
-              child: PageView.builder(
-                controller: _pageController,
-                itemCount: widget.posts.length,
-                onPageChanged: _onPageChanged,
-                itemBuilder: (context, index) {
-                  final post = widget.posts[index];
-                  final previewUrl = post.previewFileUrl;
-                  final highResUrlForDetailPage = _imageUrls[index];
-                  final videoController = _videoControllers[index];
-                  final definitiveHighResUrl =
-                      post.fileUrl ?? post.largeFileUrl;
-                  final heroTag = 'post_${post.id}';
-
-                  if (previewUrl == null) {
-                    return const Center(child: Icon(Icons.broken_image));
-                  }
-
-                  return GestureDetector(
-                    onPanStart: (details) {
-                      _dragStartOffset = details.localPosition;
-                    },
-                    onPanUpdate: (details) {
-                      _handleDragAction(details.localPosition);
-                    },
-                    onPanEnd: (details) {
-                      // reset start offset
-                      _dragStartOffset = Offset.zero;
-                    },
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => FullScreenImagePage(
-                            previewUrl: previewUrl,
-                            highResUrl: definitiveHighResUrl,
-                            heroTag: heroTag,
-                          ),
-                        ),
-                      );
-                    },
-                    onLongPress: () {
-                      // 长按触发拖拽分享
-                      if (definitiveHighResUrl != null || previewUrl != null) {
-                        _startDragShare(definitiveHighResUrl ?? previewUrl);
-                      }
-                    },
-                    child: Stack(
-                      fit: StackFit.expand,
-                      alignment: Alignment.center,
-                      children: [
-                        Hero(
-                          tag: heroTag,
-                          child: Image.network(
-                            previewUrl,
-                            fit: BoxFit.contain,
-                            errorBuilder: (context, error, stackTrace) =>
-                                const Icon(Icons.error),
-                          ),
-                        ),
-                        // 显示视频
-                        if (videoController != null)
-                          Center(
-                            child: AspectRatio(
-                              aspectRatio: videoController.value.aspectRatio,
-                              child: Stack(
-                                fit: StackFit.expand,
-                                children: [
-                                  VideoPlayer(videoController),
-                                  Center(
-                                    child: Icon(
-                                      Icons.play_circle_outline,
-                                      size: 60,
-                                      color: Colors.white.withValues(
-                                        alpha: 0.7,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        // 显示高分辨率图片
-                        if (highResUrlForDetailPage != null &&
-                            videoController == null)
-                          AnimatedOpacity(
-                            opacity: highResUrlForDetailPage != previewUrl
-                                ? 1.0
-                                : 0.0,
-                            duration: const Duration(milliseconds: 300),
-                            child: Image.network(
-                              highResUrlForDetailPage,
-                              fit: BoxFit.contain,
-                              errorBuilder: (context, error, stackTrace) {
-                                // 高分辨率图片加载失败，显示预览图
-                                return const SizedBox.shrink();
-                              },
-                            ),
-                          ),
-                        // 显示加载中指示器
-                        if (highResUrlForDetailPage == null &&
-                            videoController == null &&
-                            (post.fileUrl != null || post.largeFileUrl != null))
-                          const Center(child: CircularProgressIndicator()),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-          SliverList(
-            delegate: SliverChildListDelegate([
-              const SizedBox(height: 16),
-              _buildTagSection(
-                '作者',
-                currentPostForTags.tagStringArtist,
-                context,
-              ),
-              _buildTagSection(
-                '版权',
-                currentPostForTags.tagStringCopyright,
-                context,
-              ),
-              _buildTagSection(
-                '角色',
-                currentPostForTags.tagStringCharacter,
-                context,
-              ),
-              _buildTagSection(
-                '普通',
-                currentPostForTags.tagStringGeneral,
-                context,
-              ),
-            ]),
-          ),
-        ],
-      ),
-      floatingActionButton:
-          (currentPostForTags.source != null &&
-              currentPostForTags.source!.isNotEmpty)
-          ? FloatingActionButton(
-              onPressed: () => _launchUrl(currentPostForTags.source),
-              child: const Icon(Icons.link),
+      body: isLandscape
+          ? Row(
+              children: [
+                Expanded(flex: 3, child: _buildMediaPager(screenSize.height)),
+                const VerticalDivider(width: 1),
+                Expanded(flex: 2, child: _buildInfoPanel(currentPostForTags)),
+              ],
             )
-          : null,
-      floatingActionButtonLocation: FloatingActionButtonLocation.startFloat,
+          : Column(
+              children: [
+                _buildMediaPager(screenSize.height * 0.5),
+                Expanded(child: _buildInfoPanel(currentPostForTags)),
+              ],
+            ),
     );
   }
 }

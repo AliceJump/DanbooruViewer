@@ -16,12 +16,13 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   List<int> _favoritePosts = [];
   List<String> _favoriteTags = [];
+  List<Map<String, dynamic>> _browsingHistory = [];
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _loadFavorites();
   }
 
@@ -38,11 +39,13 @@ class _FavoritesPageState extends State<FavoritesPage>
 
     final posts = await _favoritesManager.getFavoritePosts();
     final tags = await _favoritesManager.getFavoriteTags();
+    final history = await _favoritesManager.getBrowsingHistory();
 
     if (mounted) {
       setState(() {
         _favoritePosts = posts;
         _favoriteTags = tags;
+        _browsingHistory = history;
         _isLoading = false;
       });
     }
@@ -79,6 +82,11 @@ class _FavoritesPageState extends State<FavoritesPage>
     Navigator.pop(context, tag);
   }
 
+  Future<void> _clearHistory() async {
+    await _favoritesManager.clearBrowsingHistory();
+    await _loadFavorites();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -95,6 +103,10 @@ class _FavoritesPageState extends State<FavoritesPage>
               icon: const Icon(Icons.label),
               text: '标签 (${_favoriteTags.length})',
             ),
+            Tab(
+              icon: const Icon(Icons.history),
+              text: '历史 (${_browsingHistory.length})',
+            ),
           ],
         ),
         actions: [
@@ -109,7 +121,7 @@ class _FavoritesPageState extends State<FavoritesPage>
           ? const Center(child: CircularProgressIndicator())
           : TabBarView(
               controller: _tabController,
-              children: [_buildPostsTab(), _buildTagsTab()],
+              children: [_buildPostsTab(), _buildTagsTab(), _buildHistoryTab()],
             ),
     );
   }
@@ -229,6 +241,66 @@ class _FavoritesPageState extends State<FavoritesPage>
           ),
         );
       },
+    );
+  }
+
+  Widget _buildHistoryTab() {
+    if (_browsingHistory.isEmpty) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.history, size: 64, color: Colors.grey),
+            SizedBox(height: 16),
+            Text('还没有浏览历史', style: TextStyle(fontSize: 16, color: Colors.grey)),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: _clearHistory,
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('清空历史'),
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(8),
+            itemCount: _browsingHistory.length,
+            itemBuilder: (context, index) {
+              final post = _browsingHistory[index];
+              final postId = post['id'];
+              final previewUrl = post['preview_file_url'] as String?;
+              final viewedAt = (post['viewed_at'] as String?)?.split('.').first;
+
+              return Card(
+                child: ListTile(
+                  leading: previewUrl == null
+                      ? const CircleAvatar(child: Icon(Icons.image))
+                      : ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.network(
+                            previewUrl,
+                            width: 48,
+                            height: 48,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) =>
+                                const CircleAvatar(child: Icon(Icons.image)),
+                          ),
+                        ),
+                  title: Text('Post ID: $postId'),
+                  subtitle: Text(viewedAt == null ? '最近浏览' : '浏览时间: $viewedAt'),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 

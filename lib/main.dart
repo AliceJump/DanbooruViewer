@@ -59,6 +59,23 @@ class Post {
       source: json['source'],
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'rating': rating,
+      'tag_string': tagString,
+      'file_url': fileUrl,
+      'large_file_url': largeFileUrl,
+      'preview_file_url': previewFileUrl,
+      'tag_string_general': tagStringGeneral,
+      'tag_string_artist': tagStringArtist,
+      'tag_string_character': tagStringCharacter,
+      'tag_string_copyright': tagStringCopyright,
+      'tag_string_meta': tagStringMeta,
+      'source': source,
+    };
+  }
 }
 
 class SearchCompletionSuggestion {
@@ -334,7 +351,7 @@ class _MyHomePageState extends State<MyHomePage> {
     final remainingText = '$prefix$suffix'.trim();
 
     setState(() {
-      _searchChips.add(
+      _upsertSearchChip(
         SearchChip(label: suggestion.value, queryValue: suggestion.insertValue),
       );
       _searchController.value = TextEditingValue(
@@ -355,11 +372,21 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _addSearchChip(String label, String queryValue) {
     setState(() {
-      _searchChips.add(SearchChip(label: label, queryValue: queryValue));
+      _upsertSearchChip(SearchChip(label: label, queryValue: queryValue));
       _searchController.clear();
       _showSuggestions = false;
     });
     _fetchPosts();
+  }
+
+  void _upsertSearchChip(SearchChip chip) {
+    final normalizedQuery = chip.queryValue.trim().toLowerCase();
+    if (normalizedQuery.isEmpty) return;
+
+    _searchChips.removeWhere(
+      (item) => item.queryValue.trim().toLowerCase() == normalizedQuery,
+    );
+    _searchChips.add(chip);
   }
 
   void _enterMultiSelectMode(int postId) {
