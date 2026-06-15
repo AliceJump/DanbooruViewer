@@ -30,6 +30,8 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
   bool _didLoadHighRes = false;
   bool _isVideo = false;
   bool _videoIsPlaying = false;
+  bool _videoLoading = false;
+  String? _videoLoadError;
 
   @override
   void initState() {
@@ -79,13 +81,24 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
 
     try {
       if (_isVideoUrl(highResUrl)) {
-        final file = await _getCachedFile(highResUrl);
-        final controller = VideoPlayerController.file(file);
-        await controller.initialize();
+        setState(() {
+          _videoLoading = true;
+          _videoLoadError = null;
+        });
+
+        final controller = VideoPlayerController.networkUrl(
+          Uri.parse(highResUrl),
+        );
+        await controller.initialize().timeout(const Duration(seconds: 12));
+        if (!mounted) {
+          controller.dispose();
+          return;
+        }
         if (mounted) {
           setState(() {
             _videoController = controller;
             _isVideo = true;
+            _videoLoading = false;
           });
         }
       } else {
@@ -100,7 +113,12 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
       }
     } catch (_) {
       if (mounted) {
-        setState(() {});
+        setState(() {
+          if (_isVideoUrl(highResUrl)) {
+            _videoLoading = false;
+            _videoLoadError = '视频加载失败';
+          }
+        });
       }
     }
   }
@@ -129,6 +147,82 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
     Navigator.of(context).pop();
   }
 
+  Widget _buildVideoPlaceholder() {
+    if (_videoLoadError != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.videocam_off, color: Colors.white70, size: 48),
+            const SizedBox(height: 12),
+            Text(
+              _videoLoadError!,
+              style: const TextStyle(color: Colors.white70),
+            ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: _loadHighResMedia,
+              child: const Text('重试'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        const Center(child: CircularProgressIndicator()),
+        if (widget.previewUrl.isNotEmpty)
+          Image.network(
+            widget.previewUrl,
+            fit: BoxFit.contain,
+            errorBuilder: (context, error, stackTrace) =>
+                const SizedBox.shrink(),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildMediaContent() {
+    if (_isVideo && _videoController != null) {
+      return Stack(
+        alignment: Alignment.center,
+        children: [
+          AspectRatio(
+            aspectRatio: _videoController!.value.aspectRatio,
+            child: VideoPlayer(_videoController!),
+          ),
+          if (!_videoIsPlaying)
+            Icon(
+              Icons.play_circle_outline,
+              size: 80,
+              color: Colors.white.withValues(alpha: 0.7),
+            ),
+        ],
+      );
+    }
+
+    if (_videoLoading || _videoLoadError != null) {
+      return _buildVideoPlaceholder();
+    }
+
+    return PhotoView(
+      imageProvider: _imageProvider,
+      heroAttributes: PhotoViewHeroAttributes(tag: widget.heroTag),
+      loadingBuilder: (context, event) => Center(
+        child: CircularProgressIndicator(
+          value: event == null || event.expectedTotalBytes == null
+              ? null
+              : event.cumulativeBytesLoaded / event.expectedTotalBytes!,
+        ),
+      ),
+      errorBuilder: (context, error, stackTrace) {
+        return const SizedBox.shrink();
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -138,39 +232,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
         behavior: HitTestBehavior.opaque,
         onTap: _handleTap,
         onLongPress: () => startDrag(context, _activeMediaPathOrUrl()),
-        child: Center(
-          child: _isVideo && _videoController != null
-              ? Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    AspectRatio(
-                      aspectRatio: _videoController!.value.aspectRatio,
-                      child: VideoPlayer(_videoController!),
-                    ),
-                    if (!_videoIsPlaying)
-                      Icon(
-                        Icons.play_circle_outline,
-                        size: 80,
-                        color: Colors.white.withValues(alpha: 0.7),
-                      ),
-                  ],
-                )
-              : PhotoView(
-                  imageProvider: _imageProvider,
-                  heroAttributes: PhotoViewHeroAttributes(tag: widget.heroTag),
-                  loadingBuilder: (context, event) => Center(
-                    child: CircularProgressIndicator(
-                      value: event == null || event.expectedTotalBytes == null
-                          ? null
-                          : event.cumulativeBytesLoaded /
-                                event.expectedTotalBytes!,
-                    ),
-                  ),
-                  errorBuilder: (context, error, stackTrace) {
-                    return const SizedBox.shrink();
-                  },
-                ),
-        ),
+        child: Center(child: _buildMediaContent()),
       ),
     );
   }
