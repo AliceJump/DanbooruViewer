@@ -9,6 +9,7 @@ import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
 import 'DragHelper.dart';
 import 'main.dart';
+import 'media_utils.dart';
 
 class PostDetailPage extends StatefulWidget {
   final List<Post> posts;
@@ -85,7 +86,28 @@ class _PostDetailPageState extends State<PostDetailPage> {
     if (highResUrl != null &&
         _imageUrls[index] == null &&
         _videoControllers[index] == null) {
-      // 先尝试作为图片加载
+      if (isVideoUrl(highResUrl)) {
+        final videoController = VideoPlayerController.networkUrl(
+          Uri.parse(highResUrl),
+        );
+        videoController
+            .initialize()
+            .timeout(const Duration(seconds: 12))
+            .then((_) {
+              if (!mounted) {
+                videoController.dispose();
+                return;
+              }
+              setState(() {
+                _videoControllers[index] = videoController;
+              });
+            })
+            .catchError((_) {
+              videoController.dispose();
+            });
+        return;
+      }
+
       precacheImage(NetworkImage(highResUrl), context)
           .then((_) {
             if (mounted) {
@@ -94,27 +116,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
               });
             }
           })
-          .catchError((_) {
-            // 图片加载失败，尝试作为视频加载
-            if (mounted && _videoControllers[index] == null) {
-              final videoController = VideoPlayerController.networkUrl(
-                Uri.parse(highResUrl),
-              );
-              videoController
-                  .initialize()
-                  .then((_) {
-                    if (mounted) {
-                      setState(() {
-                        _videoControllers[index] = videoController;
-                      });
-                    }
-                  })
-                  .catchError((_) {
-                    // 视频加载也失败，不做任何处理，保持使用预览图
-                    videoController.dispose();
-                  });
-            }
-          });
+          .catchError((_) {});
     }
   }
 
@@ -411,6 +413,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
           final highResUrlForDetailPage = _imageUrls[index];
           final videoController = _videoControllers[index];
           final definitiveHighResUrl = post.fileUrl ?? post.largeFileUrl;
+          final isVideo = definitiveHighResUrl != null &&
+              isVideoUrl(definitiveHighResUrl);
           final heroTag = 'post_${post.id}';
 
           if (previewUrl == null) {
@@ -485,6 +489,14 @@ class _PostDetailPageState extends State<PostDetailPage> {
                       ),
                     ),
                   ),
+                if (isVideo && videoController == null)
+                  Center(
+                    child: Icon(
+                      Icons.play_circle_outline,
+                      size: 60,
+                      color: Colors.white.withValues(alpha: 0.7),
+                    ),
+                  ),
                 if (highResUrlForDetailPage != null && videoController == null)
                   AnimatedOpacity(
                     opacity: highResUrlForDetailPage != previewUrl ? 1.0 : 0.0,
@@ -499,6 +511,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                   ),
                 if (highResUrlForDetailPage == null &&
                     videoController == null &&
+                    !isVideo &&
                     (post.fileUrl != null || post.largeFileUrl != null))
                   const Center(child: CircularProgressIndicator()),
               ],

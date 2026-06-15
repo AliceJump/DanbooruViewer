@@ -8,7 +8,7 @@ import 'package:danbooru_viewer/DragHelper.dart';
 
 /// 判断 URL 是否是视频
 bool isVideoUrl(String url) {
-  final lower = url.toLowerCase();
+  final lower = Uri.tryParse(url)?.path.toLowerCase() ?? url.toLowerCase();
   return lower.endsWith('.mp4') ||
       lower.endsWith('.webm') ||
       lower.endsWith('.mov') ||
