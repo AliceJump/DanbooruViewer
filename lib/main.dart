@@ -136,6 +136,7 @@ class _MyHomePageState extends State<MyHomePage> {
   List<Post> _posts = [];
   List<SearchCompletionSuggestion> _completionSuggestions = [];
   List<SearchCompletionSuggestion> _visibleSuggestions = [];
+  final Map<String, String> _completionDisplayByInsertValue = {};
   final List<SearchChip> _searchChips = [];
   bool _isLoading = false;
   bool _isCompletionLoading = true;
@@ -231,6 +232,9 @@ class _MyHomePageState extends State<MyHomePage> {
       if (!mounted) return;
       setState(() {
         _completionSuggestions = candidates;
+        _completionDisplayByInsertValue
+          ..clear()
+          ..addAll(_buildCompletionDisplayByInsertValue(candidates));
         _isCompletionLoading = false;
         _completionLoadError = candidates.isEmpty
             ? '未读取到 danbooru_completion 补全数据'
@@ -247,6 +251,28 @@ class _MyHomePageState extends State<MyHomePage> {
         _completionLoadError = '补全资源加载失败: $e';
       });
     }
+  }
+
+  Map<String, String> _buildCompletionDisplayByInsertValue(
+    List<SearchCompletionSuggestion> candidates,
+  ) {
+    final displays = <String, String>{};
+    for (final candidate in candidates) {
+      final key = candidate.insertValue.toLowerCase();
+      final label = candidate.value.trim();
+      if (key.isEmpty || label.isEmpty) continue;
+
+      final existing = displays[key];
+      if (existing == null ||
+          (!_containsNonEnglish(existing) && _containsNonEnglish(label))) {
+        displays[key] = label;
+      }
+    }
+    return displays;
+  }
+
+  bool _containsNonEnglish(String value) {
+    return value.runes.any((rune) => rune > 0x7f);
   }
 
   void _handleSearchFocusChanged() {
@@ -542,12 +568,17 @@ class _MyHomePageState extends State<MyHomePage> {
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) =>
-            PostDetailPage(posts: _posts, initialIndex: index),
+        builder: (context) => PostDetailPage(
+          posts: _posts,
+          initialIndex: index,
+          completionDisplayByValue: _completionDisplayByInsertValue,
+        ),
       ),
     );
 
-    if (result != null && result is String) {
+    if (result is SearchChip) {
+      _addSearchChip(result.label, result.queryValue);
+    } else if (result != null && result is String) {
       _addSearchChip(result, result);
     }
   }

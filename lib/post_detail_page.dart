@@ -13,11 +13,13 @@ import 'main.dart';
 class PostDetailPage extends StatefulWidget {
   final List<Post> posts;
   final int initialIndex;
+  final Map<String, String> completionDisplayByValue;
 
   const PostDetailPage({
     super.key,
     required this.posts,
     required this.initialIndex,
+    required this.completionDisplayByValue,
   });
 
   @override
@@ -285,17 +287,19 @@ class _PostDetailPageState extends State<PostDetailPage> {
               spacing: 6.0,
               runSpacing: 4.0,
               children: tagList.map((tag) {
+                final displayLabel = _displayLabelForTag(tag);
                 return GestureDetector(
                   onLongPress: () {
                     _showTagMenu(context, tag);
                   },
-                  child: ActionChip(
-                    label: Text(tag),
+                  child: InputChip(
+                    label: Text(displayLabel),
                     onPressed: () {
-                      Navigator.pop(context, tag);
+                      Navigator.pop(
+                        context,
+                        SearchChip(label: displayLabel, queryValue: tag),
+                      );
                     },
-                    labelStyle: const TextStyle(fontSize: 12),
-                    padding: const EdgeInsets.all(2.0),
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
                 );
@@ -305,6 +309,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
         ],
       ),
     );
+  }
+
+  String _displayLabelForTag(String tag) {
+    return widget.completionDisplayByValue[tag.toLowerCase()] ?? tag;
   }
 
   void _showTagMenu(BuildContext context, String tag) {
@@ -351,19 +359,42 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Future<void> _launchUrl(String? urlString) async {
-    if (urlString != null &&
-        urlString.isNotEmpty &&
-        await canLaunchUrl(Uri.parse(urlString))) {
-      await launchUrl(
-        Uri.parse(urlString),
+    final normalizedUrl = _normalizeUrl(urlString);
+    if (normalizedUrl == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法打开链接: $urlString')));
+      return;
+    }
+
+    try {
+      final launched = await launchUrl(
+        normalizedUrl,
         mode: LaunchMode.externalApplication,
       );
-    } else {
+      if (launched) return;
+
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('无法打开链接: $urlString')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('打开链接失败: $e')));
     }
+  }
+
+  Uri? _normalizeUrl(String? urlString) {
+    final value = urlString?.trim();
+    if (value == null || value.isEmpty) return null;
+
+    final uri = Uri.tryParse(value);
+    if (uri == null) return null;
+    if (uri.hasScheme) return uri;
+
+    return Uri.tryParse('https://$value');
   }
 
   @override

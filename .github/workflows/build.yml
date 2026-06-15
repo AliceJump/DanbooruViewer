@@ -79,14 +79,19 @@ jobs:
 
       - name: Build Android APK
         if: matrix.target == 'android'
-        run: flutter build apk --release --split-per-abi
+        run: |
+          flutter build apk --release --split-per-abi
+          mkdir -p release
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk release/danbooru-viewer-android-arm64-v8a.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk release/danbooru-viewer-android-armeabi-v7a.apk
+          cp build/app/outputs/flutter-apk/app-x86_64-release.apk release/danbooru-viewer-android-x86_64.apk
 
       - name: Upload Android
         if: matrix.target == 'android'
         uses: actions/upload-artifact@v4
         with:
           name: android-release
-          path: build/app/outputs/flutter-apk/*.apk
+          path: release/*.apk
 
       # ---------------- LINUX ----------------
       - name: Install Linux deps
@@ -144,7 +149,12 @@ jobs:
         if: matrix.target == 'windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           flutter build windows --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path -LiteralPath 'build/windows/x64/runner/Release')) {
+            throw 'Windows release output directory was not created.'
+          }
           Compress-Archive `
             -Path build/windows/x64/runner/Release/* `
             -DestinationPath danbooru-viewer-windows-release.zip `
@@ -173,3 +183,15 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: artifacts/**/*
+          body: |
+            ## 下载说明
+
+            | 平台 | 推荐下载 | 说明 |
+            | --- | --- | --- |
+            | Android ARM64 | [danbooru-viewer-android-arm64-v8a.apk](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-android-arm64-v8a.apk) | 大多数现代 Android 手机和平板 |
+            | Android ARMv7 | [danbooru-viewer-android-armeabi-v7a.apk](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-android-armeabi-v7a.apk) | 较旧的 32 位 Android 设备 |
+            | Android x86_64 | [danbooru-viewer-android-x86_64.apk](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-android-x86_64.apk) | Android 模拟器或 x86_64 设备 |
+            | Windows | [danbooru-viewer-windows-release.zip](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-windows-release.zip) | 解压后运行 `danbooru_viewer.exe` |
+            | Linux | [danbooru-viewer-linux-release.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-linux-release.tar.gz) | 解压后运行应用程序 |
+            | iOS | [app.ipa](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/app.ipa) | 未签名 IPA，需要自行签名或侧载 |
+            | Web | [danbooru-viewer-web-release.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-web-release.tar.gz) | 静态网页构建产物 |
