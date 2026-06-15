@@ -1,13 +1,13 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
 import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
+import 'DragHelper.dart';
 import 'main.dart';
 
 class PostDetailPage extends StatefulWidget {
@@ -35,11 +35,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   final _favoritesManager = FavoritesManager();
   bool _isFavorite = false;
-  Offset _dragStartOffset = Offset.zero;
+  bool _didTriggerDragAction = false;
+  double? _verticalDragStartDy;
 
-  static const platform = MethodChannel(
-    'com.example.danbooru_viewer/drag_drop',
-  );
+  static const double _dragActionThreshold = 120.0;
 
   @override
   void initState() {
@@ -134,43 +133,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
-  Future<void> _saveImage(String? imageUrl) async {
-    if (imageUrl == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('没有可保存的图片')));
-      return;
-    }
-
-    try {
-      final hasAccess = await Gal.hasAccess();
-      if (!hasAccess) {
-        final status = await Gal.requestAccess();
-        if (!status) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
-          return;
-        }
-      }
-      final tempDir = await getTemporaryDirectory();
-      final path = '${tempDir.path}/${imageUrl.split('/').last}';
-      await Dio().download(imageUrl, path);
-      await Gal.putImage(path, album: 'danbooru_viewer');
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('图片已保存到相册')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
-    }
-  }
-
   Future<void> _startDragShare(String imageUrl) async {
     try {
       // 下载图片到临时文件
@@ -181,13 +143,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
       // 下载图片
       await Dio().download(imageUrl, tempFile);
 
-      // 调用 Android 原生方法启动拖拽
-      final result = await platform.invokeMethod('startDragDrop', {
-        'imagePath': tempFile,
-        'mimeType': 'image/*',
-      });
-
-      debugPrint('Drag result: $result');
+      await DragHelper.startDrag(tempFile);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
@@ -234,39 +190,17 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
-  void _handleDragAction(Offset dragOffset) {
-    // 根据拖拽方向判断操作
-    // 向左拖拽 -> 下载
-    // 向右拖拽 -> 分享
-    // 向上拖拽 -> 复制链接
-    final dx = dragOffset.dx - _dragStartOffset.dx;
-    final dy = dragOffset.dy - _dragStartOffset.dy;
-    final distance = dragOffset.distance;
+  void _handleDragAction(double currentDy) {
+    if (_didTriggerDragAction) return;
+    final startDy = _verticalDragStartDy;
+    if (startDy == null) return;
 
-    if (distance > 100) {
-      // 判断主要方向
-      if (dx.abs() > dy.abs()) {
-        // 水平拖拽
-        if (dx < -50) {
-          // 向左拖拽 -> 下载
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('准备下载 ⬅️')));
-        } else if (dx > 50) {
-          // 向右拖拽 -> 分享
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('准备分享 ➡️')));
-        }
-      } else {
-        // 竖直拖拽
-        if (dy < -50) {
-          // 向上拖拽 -> 复制链接
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('准备复制链接 ⬆️')));
-        }
-      }
+    final dragDistance = currentDy - startDy;
+    if (dragDistance < -_dragActionThreshold) {
+      _didTriggerDragAction = true;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('准备复制链接 ⬆')));
     }
   }
 
@@ -484,16 +418,25 @@ class _PostDetailPageState extends State<PostDetailPage> {
           }
 
           return GestureDetector(
-            onPanStart: (details) {
-              _dragStartOffset = details.localPosition;
+            onVerticalDragStart: (_) {
+              _didTriggerDragAction = false;
+              _verticalDragStartDy = null;
             },
-            onPanUpdate: (details) {
-              _handleDragAction(details.localPosition);
+            onVerticalDragUpdate: (details) {
+              _verticalDragStartDy ??= details.localPosition.dy;
+              _handleDragAction(details.localPosition.dy);
             },
-            onPanEnd: (details) {
-              _dragStartOffset = Offset.zero;
+            onVerticalDragEnd: (_) {
+              _didTriggerDragAction = false;
+              _verticalDragStartDy = null;
+            },
+            onVerticalDragCancel: () {
+              _didTriggerDragAction = false;
+              _verticalDragStartDy = null;
             },
             onTap: () {
+              if (_didTriggerDragAction) return;
+
               Navigator.push(
                 context,
                 MaterialPageRoute(
