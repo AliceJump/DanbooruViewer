@@ -31,6 +31,9 @@ jobs:
           - target: ios
             os: macos-latest
 
+          - target: windows
+            os: windows-latest
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -135,6 +138,24 @@ jobs:
         with:
           name: ios-release
           path: app.ipa
+
+      # ---------------- WINDOWS ----------------
+      - name: Build Windows
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: |
+          flutter build windows --release
+          Compress-Archive `
+            -Path build/windows/x64/runner/Release/* `
+            -DestinationPath danbooru-viewer-windows-release.zip `
+            -Force
+
+      - name: Upload Windows
+        if: matrix.target == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: danbooru-viewer-windows-release.zip
 
   release:
     name: Create GitHub Release
