@@ -4,6 +4,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 class FavoritesManager {
   static const String _favoritesKey = 'favorite_posts';
   static const String _favoriteTagsKey = 'favorite_tags';
+  static const String _browsingHistoryKey = 'browsing_history_posts';
+  static const int _maxBrowsingHistory = 200;
 
   // 单例模式
   static final FavoritesManager _instance = FavoritesManager._internal();
@@ -118,10 +120,45 @@ class FavoritesManager {
     await _prefs!.setString(_favoriteTagsKey, jsonString);
   }
 
+  Future<List<Map<String, dynamic>>> getBrowsingHistory() async {
+    await _ensureInitialized();
+    final jsonString = _prefs!.getString(_browsingHistoryKey);
+    if (jsonString == null) return [];
+    final List<dynamic> decoded = jsonDecode(jsonString);
+    return decoded.whereType<Map>().map((item) {
+      return item.map((key, value) => MapEntry(key.toString(), value));
+    }).toList();
+  }
+
+  Future<void> addBrowsingHistory(Map<String, dynamic> postJson) async {
+    final postId = postJson['id'];
+    if (postId == null) return;
+
+    final history = await getBrowsingHistory();
+    history.removeWhere((item) => item['id'] == postId);
+    history.insert(0, {
+      ...postJson,
+      'viewed_at': DateTime.now().toIso8601String(),
+    });
+
+    await _saveBrowsingHistory(history.take(_maxBrowsingHistory).toList());
+  }
+
+  Future<void> clearBrowsingHistory() async {
+    await _ensureInitialized();
+    await _prefs!.remove(_browsingHistoryKey);
+  }
+
+  Future<void> _saveBrowsingHistory(List<Map<String, dynamic>> history) async {
+    await _ensureInitialized();
+    await _prefs!.setString(_browsingHistoryKey, jsonEncode(history));
+  }
+
   /// 清空所有收藏（用于测试或重置）
   Future<void> clearAllFavorites() async {
     await _ensureInitialized();
     await _prefs!.remove(_favoritesKey);
     await _prefs!.remove(_favoriteTagsKey);
+    await _prefs!.remove(_browsingHistoryKey);
   }
 }
