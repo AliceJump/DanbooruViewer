@@ -76,11 +76,15 @@ class SearchCompletionSuggestion {
 
   factory SearchCompletionSuggestion.fromJson(Map<String, dynamic> json) {
     return SearchCompletionSuggestion(
-      value: json['value'] as String? ?? '',
+      value: json['value'] as String? ?? json['v'] as String? ?? '',
       insertValue:
-          json['insert_value'] as String? ?? json['value'] as String? ?? '',
-      source: json['source'] as String? ?? '',
-      score: json['score'] as int? ?? 0,
+          json['insert_value'] as String? ??
+          json['i'] as String? ??
+          json['value'] as String? ??
+          json['v'] as String? ??
+          '',
+      source: json['source'] as String? ?? json['s'] as String? ?? '',
+      score: json['score'] as int? ?? json['r'] as int? ?? 0,
     );
   }
 }
@@ -193,16 +197,20 @@ class _MyHomePageState extends State<MyHomePage> {
       for (final file in jsonFiles) {
         try {
           final content = utf8.decode(file.content as List<int>);
-          final payload = json.decode(content) as Map<String, dynamic>;
-          final candidates =
-              (payload['completion_candidates'] as List<dynamic>? ?? [])
-                  .whereType<Map<String, dynamic>>()
-                  .map(SearchCompletionSuggestion.fromJson)
-                  .where(
-                    (item) =>
-                        item.value.trim().isNotEmpty &&
-                        item.insertValue.trim().isNotEmpty,
-                  );
+          final payload = json.decode(content);
+          final candidateJson = payload is List<dynamic>
+              ? payload
+              : payload is Map<String, dynamic>
+              ? payload['completion_candidates'] as List<dynamic>? ?? []
+              : const <dynamic>[];
+          final candidates = candidateJson
+              .whereType<Map<String, dynamic>>()
+              .map(SearchCompletionSuggestion.fromJson)
+              .where(
+                (item) =>
+                    item.value.trim().isNotEmpty &&
+                    item.insertValue.trim().isNotEmpty,
+              );
 
           for (final candidate in candidates) {
             final key =
