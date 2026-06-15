@@ -77,6 +77,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
+      - name: Decode Android signing keystore
+        if: matrix.target == 'android'
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.SIGNING_KEY_STORE_BASE64 }}" ] || [ -z "${{ secrets.SIGNING_STORE_PASSWORD }}" ] || [ -z "${{ secrets.SIGNING_KEY_ALIAS }}" ] || [ -z "${{ secrets.SIGNING_KEY_PASSWORD }}" ]; then
+            echo "Android signing secrets are required for release builds."
+            exit 1
+          fi
+          echo "${{ secrets.SIGNING_KEY_STORE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
+          echo "SIGNING_KEY_STORE_PATH=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_ENV"
+          echo "SIGNING_STORE_PASSWORD=${{ secrets.SIGNING_STORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_ALIAS=${{ secrets.SIGNING_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "SIGNING_KEY_PASSWORD=${{ secrets.SIGNING_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
       - name: Build Android APK
         if: matrix.target == 'android'
         run: |
