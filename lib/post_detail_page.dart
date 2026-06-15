@@ -156,7 +156,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   Future<void> _toggleFavorite() async {
     final currentPost = widget.posts[_currentIndex];
-    final newState = await _favoritesManager.toggleFavorite(currentPost.id);
+    final newState = await _favoritesManager.toggleFavorite(currentPost.toJson());
     if (mounted) {
       setState(() {
         _isFavorite = newState;

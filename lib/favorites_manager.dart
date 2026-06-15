@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class FavoritesManager {
   static const String _favoritesKey = 'favorite_posts';
+  static const String _favoritePostsFullKey = 'favorite_posts_full';
   static const String _favoriteTagsKey = 'favorite_tags';
   static const String _browsingHistoryKey = 'browsing_history_posts';
   static const int _maxBrowsingHistory = 200;
@@ -18,10 +19,19 @@ class FavoritesManager {
     _prefs ??= await SharedPreferences.getInstance();
   }
 
-  // ========== 图片收藏功能 ==========
+  // ========== 图片收藏功能（完整数据） ==========
 
-  /// 获取所有收藏的图片ID
-  Future<List<int>> getFavoritePosts() async {
+  /// 获取所有收藏图片的完整数据
+  Future<List<Map<String, dynamic>>> getFavoritePostsFull() async {
+    await _ensureInitialized();
+    final jsonString = _prefs!.getString(_favoritePostsFullKey);
+    if (jsonString == null) return [];
+    final List<dynamic> decoded = jsonDecode(jsonString);
+    return decoded.cast<Map<String, dynamic>>();
+  }
+
+  /// 获取所有收藏的图片ID（旧格式兼容）
+  Future<List<int>> getFavoritePostIds() async {
     await _ensureInitialized();
     final jsonString = _prefs!.getString(_favoritesKey);
     if (jsonString == null) return [];
@@ -31,42 +41,59 @@ class FavoritesManager {
 
   /// 检查图片是否已收藏
   Future<bool> isFavorite(int postId) async {
-    final favorites = await getFavoritePosts();
-    return favorites.contains(postId);
+    final favorites = await getFavoritePostsFull();
+    return favorites.any((item) => item['id'] == postId);
   }
 
-  /// 添加收藏
-  Future<void> addFavorite(int postId) async {
-    final favorites = await getFavoritePosts();
-    if (!favorites.contains(postId)) {
-      favorites.add(postId);
-      await _saveFavorites(favorites);
-    }
+  /// 添加收藏（存储完整数据）
+  Future<void> addFavorite(Map<String, dynamic> postJson) async {
+    final postId = postJson['id'];
+    if (postId == null) return;
+
+    // 存储完整数据
+    final fullFavorites = await getFavoritePostsFull();
+    fullFavorites.removeWhere((item) => item['id'] == postId);
+    fullFavorites.insert(0, postJson);
+    await _saveFavoritePostsFull(fullFavorites);
+
+    // 同时保存旧格式ID列表
+    final idList = fullFavorites.map((e) => e['id'] as int).toList();
+    await _saveFavoriteIds(idList);
   }
 
   /// 移除收藏
   Future<void> removeFavorite(int postId) async {
-    final favorites = await getFavoritePosts();
-    favorites.remove(postId);
-    await _saveFavorites(favorites);
+    // 从完整数据中移除
+    final fullFavorites = await getFavoritePostsFull();
+    fullFavorites.removeWhere((item) => item['id'] == postId);
+    await _saveFavoritePostsFull(fullFavorites);
+
+    // 同时从旧格式中移除
+    final idList = fullFavorites.map((e) => e['id'] as int).toList();
+    await _saveFavoriteIds(idList);
   }
 
   /// 切换收藏状态
-  Future<bool> toggleFavorite(int postId) async {
+  Future<bool> toggleFavorite(Map<String, dynamic> postJson) async {
+    final postId = postJson['id'];
     final isFav = await isFavorite(postId);
     if (isFav) {
       await removeFavorite(postId);
       return false;
     } else {
-      await addFavorite(postId);
+      await addFavorite(postJson);
       return true;
     }
   }
 
-  Future<void> _saveFavorites(List<int> favorites) async {
+  Future<void> _saveFavoritePostsFull(List<Map<String, dynamic>> favorites) async {
     await _ensureInitialized();
-    final jsonString = jsonEncode(favorites);
-    await _prefs!.setString(_favoritesKey, jsonString);
+    await _prefs!.setString(_favoritePostsFullKey, jsonEncode(favorites));
+  }
+
+  Future<void> _saveFavoriteIds(List<int> ids) async {
+    await _ensureInitialized();
+    await _prefs!.setString(_favoritesKey, jsonEncode(ids));
   }
 
   // ========== 标签收藏功能 ==========
