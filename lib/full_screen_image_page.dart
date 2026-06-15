@@ -1,12 +1,7 @@
-import 'dart:async';
 import 'dart:io';
 
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
-import 'package:gal/gal.dart';
-import 'package:http/http.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:video_player/video_player.dart';
 import 'media_utils.dart';
@@ -26,9 +21,6 @@ class FullScreenImagePage extends StatefulWidget {
   @override
   State<FullScreenImagePage> createState() => _FullScreenImagePageState();
 }
-
-Timer? pressTimer;
-DateTime? pressStartTime;
 
 class _FullScreenImagePageState extends State<FullScreenImagePage> {
   late String _currentImageUrl;
@@ -113,77 +105,39 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
     }
   }
 
+  String _activeMediaPathOrUrl() {
+    if (_isVideo && _videoController != null) {
+      return widget.highResUrl ?? widget.previewUrl;
+    }
+
+    return _cachedImageFile?.path ?? widget.highResUrl ?? widget.previewUrl;
+  }
+
+  void _handleTap() {
+    if (_isVideo && _videoController != null) {
+      setState(() {
+        if (_videoIsPlaying) {
+          _videoController!.pause();
+        } else {
+          _videoController!.play();
+        }
+        _videoIsPlaying = !_videoIsPlaying;
+      });
+      return;
+    }
+
+    Navigator.of(context).pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
 
       body: GestureDetector(
-        onTapDown: (_) {
-          pressStartTime = DateTime.now();
-          pressTimer = Timer(const Duration(seconds: 1), () {
-            pressTimer = null; // Timer 已触发，拖拽开始
-            String? url;
-
-            if (_isVideo && _videoController != null) {
-              // 如果是视频，用 highResUrl
-              url = widget.highResUrl ?? widget.previewUrl;
-            } else {
-              // 图片，优先用缓存文件路径
-              url =
-                  _cachedImageFile?.path ??
-                      widget.highResUrl ??
-                      widget.previewUrl;
-            }
-            startDrag(context,url);
-          });
-        },
-        onTapUp: (_) {
-          if (pressTimer != null && pressTimer!.isActive) {
-            pressTimer?.cancel();
-            pressTimer = null;
-
-            // 计算按住时长
-            final elapsed = DateTime.now()
-                .difference(pressStartTime!)
-                .inMilliseconds;
-
-            if (elapsed >= 300) {
-              // 按住至少0.3s → 下载
-              String? url;
-
-              if (_isVideo && _videoController != null) {
-                // 如果是视频，用 highResUrl
-                url = widget.highResUrl ?? widget.previewUrl;
-              } else {
-                // 图片，优先用缓存文件路径
-                url =
-                    _cachedImageFile?.path ??
-                    widget.highResUrl ??
-                    widget.previewUrl;
-              }
-              saveMediaToGallery(context, url);
-            } else {
-              if (_isVideo && _videoController != null) {
-                setState(() {
-                  if (_videoIsPlaying) {
-                    _videoController!.pause();
-                  } else {
-                    _videoController!.play();
-                  }
-                  _videoIsPlaying = !_videoIsPlaying;
-                });
-              } else {
-                Navigator.of(context).pop();
-              }
-            }
-          }
-        },
-
-        onTapCancel: () {
-          pressTimer?.cancel();
-          pressTimer = null;
-        },
+        behavior: HitTestBehavior.opaque,
+        onTap: _handleTap,
+        onLongPress: () => startDrag(context, _activeMediaPathOrUrl()),
         child: Center(
           child: _isVideo && _videoController != null
               ? Stack(

@@ -6,16 +6,58 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = ROOT / "assets" / "danbooru_completion"
+CACHE_DIR = ROOT / ".danbooru_cache"
+TAG_CACHE_DIR = ROOT / "cache"
+SUCCESS_CACHE_FILE = TAG_CACHE_DIR / "successful_tags.json"
 OUTPUT_FILE = ROOT / "assets" / "danbooru_completion.zip"
 TEMP_OUTPUT_FILE = OUTPUT_FILE.with_suffix(".zip.tmp")
 COMPACT_FILE = "completion_candidates.json"
+
+
+def slugify_tag(tag: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in tag).strip("_")
+
+
+def load_successful_tags() -> set[str]:
+    if not SUCCESS_CACHE_FILE.exists():
+        return set()
+
+    try:
+        payload = json.loads(SUCCESS_CACHE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+    if not isinstance(payload, list):
+        return set()
+
+    return {tag for tag in payload if isinstance(tag, str)}
+
+
+def iter_payload_files() -> list[Path]:
+    files_by_slug: dict[str, Path] = {}
+
+    for path in sorted(SOURCE_DIR.rglob("*.json")):
+        if path.is_file():
+            files_by_slug[path.stem] = path
+
+    if CACHE_DIR.is_dir():
+        for path in sorted(CACHE_DIR.glob("*.json")):
+            if path.is_file():
+                files_by_slug.setdefault(path.stem, path)
+
+    for tag in load_successful_tags():
+        path = CACHE_DIR / f"{slugify_tag(tag)}.json"
+        if path.is_file():
+            files_by_slug.setdefault(path.stem, path)
+
+    return sorted(files_by_slug.values(), key=lambda path: path.as_posix())
 
 
 def main() -> None:
     if not SOURCE_DIR.is_dir():
         raise SystemExit(f"Completion source directory not found: {SOURCE_DIR}")
 
-    json_files = sorted(path for path in SOURCE_DIR.rglob("*.json") if path.is_file())
+    json_files = iter_payload_files()
     suggestions_by_key: dict[tuple[str, str], dict[str, object]] = {}
 
     for path in json_files:

@@ -11,7 +11,6 @@ import android.view.HapticFeedbackConstants
 import android.view.View
 import android.widget.Toast
 import androidx.core.content.FileProvider
-import androidx.core.graphics.drawable.toBitmap
 import androidx.core.view.ViewCompat
 import java.io.File
 import kotlin.math.roundToInt
@@ -54,15 +53,24 @@ object DragHelper {
 
     private fun createDragShadowBuilder(view: View, path: String, type: String): View.DragShadowBuilder {
         val context = view.context
-        val minSize = 200 * context.resources.displayMetrics.density
+        val metrics = context.resources.displayMetrics
+        val maxShadowWidth = (metrics.widthPixels * 0.28f).roundToInt().coerceIn(120, 640)
+        val maxShadowHeight = (metrics.heightPixels * 0.28f).roundToInt().coerceIn(120, 640)
 
         try {
-            val bitmap: Bitmap? = if (type == "video") {
+            val bitmap = if (type == "video") {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    ThumbnailUtils.createVideoThumbnail(File(path), android.util.Size(minSize.roundToInt(), minSize.roundToInt()), null)
+                    ThumbnailUtils.createVideoThumbnail(
+                        File(path),
+                        android.util.Size(maxShadowWidth, maxShadowHeight),
+                        null,
+                    )
                 } else {
                     @Suppress("DEPRECATION")
-                    ThumbnailUtils.createVideoThumbnail(path, android.provider.MediaStore.Images.Thumbnails.MINI_KIND)
+                    ThumbnailUtils.createVideoThumbnail(
+                        path,
+                        android.provider.MediaStore.Images.Thumbnails.MINI_KIND,
+                    )
                 }
             } else {
                 val options = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -70,9 +78,17 @@ object DragHelper {
                 val srcWidth = options.outWidth
                 val srcHeight = options.outHeight
 
-                val scale = if (srcWidth < srcHeight) minSize / srcWidth else minSize / srcHeight
+                if (srcWidth <= 0 || srcHeight <= 0) {
+                    return View.DragShadowBuilder(view)
+                }
 
-                val sampleSize = if (scale < 1) 1 else (1 / scale).roundToInt()
+                val targetEdge = minOf(maxShadowWidth, maxShadowHeight).toFloat()
+                val smallestSourceEdge = minOf(srcWidth, srcHeight).toFloat()
+                val sampleSize = if (smallestSourceEdge <= targetEdge) {
+                    1
+                } else {
+                    (smallestSourceEdge / targetEdge).roundToInt().coerceAtLeast(1)
+                }
 
                 val newOptions = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
                 android.graphics.BitmapFactory.decodeFile(path, newOptions)
@@ -82,9 +98,13 @@ object DragHelper {
                 val width = bitmap.width
                 val height = bitmap.height
 
-                val scale = if (width < height) minSize / width else minSize / height
-                val scaledWidth = (width * scale).roundToInt()
-                val scaledHeight = (height * scale).roundToInt()
+                val scale = minOf(
+                    maxShadowWidth / width.toFloat(),
+                    maxShadowHeight / height.toFloat(),
+                    1f,
+                )
+                val scaledWidth = (width * scale).roundToInt().coerceAtLeast(1)
+                val scaledHeight = (height * scale).roundToInt().coerceAtLeast(1)
 
                 val scaledBitmap = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
                 val drawable = BitmapDrawable(context.resources, scaledBitmap)
