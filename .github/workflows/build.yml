@@ -189,15 +189,41 @@ jobs:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: artifacts/**/*
-          body: |
+      - name: Generate Changelog
+        id: changelog
+        shell: bash
+        run: |
+          # 获取当前 tag
+          CURRENT_TAG="${{ github.ref_name }}"
+
+          # 获取前一个 tag
+          PREV_TAG=$(git tag -l 'v*' --sort=-version:refname | grep -v "^$CURRENT_TAG$" | head -1)
+
+          # 生成 changelog（过滤 Bump version 消息）
+          echo "## 变更日志 ($CURRENT_TAG)" > /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+
+          if [ -z "$PREV_TAG" ]; then
+            git log "$CURRENT_TAG" --oneline --no-decorate | grep -v "Bump version to" >> /tmp/release_body.md
+          else
+            echo "从 $PREV_TAG 到 $CURRENT_TAG 的变更:" >> /tmp/release_body.md
+            echo "" >> /tmp/release_body.md
+            git log "$PREV_TAG..$CURRENT_TAG" --oneline --no-decorate | grep -v "Bump version to" >> /tmp/release_body.md
+          fi
+
+          echo "" >> /tmp/release_body.md
+          echo "---" >> /tmp/release_body.md
+          echo "" >> /tmp/release_body.md
+          # 追加下载说明
+          cat >> /tmp/release_body.md << 'DOWNLOADS'
             ## 下载说明
 
             | 平台 | 推荐下载 | 说明 |
@@ -209,3 +235,14 @@ jobs:
             | Linux | [danbooru-viewer-linux-release.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-linux-release.tar.gz) | 解压后运行应用程序 |
             | iOS | [app.ipa](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/app.ipa) | 未签名 IPA，需要自行签名或侧载 |
             | Web | [danbooru-viewer-web-release.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-web-release.tar.gz) | 静态网页构建产物 |
+            DOWNLOADS
+
+          # 输出 changelog 内容（用于 action 日志调试）
+          echo "=== Generated Changelog ==="
+          cat /tmp/release_body.md
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          body_path: /tmp/release_body.md

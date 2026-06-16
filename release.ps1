@@ -9,6 +9,7 @@ Danbooru Viewer Release Helper Script (PowerShell 7)
 - 智能处理自动 commit / tag
 - 支持 Release / Alpha/Beta/RC
 - 查看 Tags / Git 日志
+- 显示标签间的提交日志（过滤 Bump version 消息）
 #>
 
 Clear-Host
@@ -119,7 +120,43 @@ function Commit-Changes {
     }
 }
 
+# 显示两个版本间的提交日志，过滤 Bump version 消息
+function Show-Changelog {
+    param([string]$prev_tag, [string]$curr_ref)
+    Write-Host ""
+    Write-Host "========== 自上一标签以来的提交日志 ==========" -ForegroundColor Cyan
+    if ([string]::IsNullOrEmpty($prev_tag)) {
+        git log $curr_ref --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+    } else {
+        git log "$prev_tag..$curr_ref" --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+    }
+    Write-Host "============================================" -ForegroundColor Cyan
+    Write-Host ""
+}
 
+# 获取最新的非当前版本标签
+function Get-PreviousTag {
+    param([string]$current_tag)
+    $tags = git tag -l "v*" --sort=-version:refname
+    $tags | Where-Object { $_ -ne $current_tag } | Select-Object -First 1
+}
+
+# 生成标签间 changelog 文件
+function Generate-ChangelogFile {
+    param([string]$prev_tag, [string]$curr_tag)
+    $lines = @()
+    $lines += "## 变更日志 ($curr_tag)"
+    $lines += ""
+    if ([string]::IsNullOrEmpty($prev_tag)) {
+        $logLines = git log $curr_tag --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+    } else {
+        $logLines = git log "$prev_tag..$curr_tag" --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+    }
+    $lines += $logLines
+    $lines += ""
+    $lines | Set-Content "RELEASE_CHANGELOG.md" -Encoding UTF8 -Force
+    Write-Host "✅ 变更日志已写入 RELEASE_CHANGELOG.md"
+}
 
 function Create-Tag {
     param([string]$tag, [string]$commit)
@@ -160,15 +197,20 @@ switch ($choice) {
         Clear-Host
         Write-Host "=== 发布新 Release 版本 ==="
 
-        # 获取最新 commit
+        # 获取最新 commit 和上一个 tag
         $latestCommit = git rev-parse HEAD
         $existingTag = git tag --points-at $latestCommit
+        $lastTag = Get-PreviousTag -current_tag ""
 
         if (-not $existingTag) {
             # 最新 commit 无 tag → 自动生成版本号
             $currentVersion = Get-CurrentVersion
             $new_version = Get-NextVersion100
             Write-Host "最新 commit 无 tag，自动生成版本号: $currentVersion"
+
+            # 显示 changelog
+            Show-Changelog -prev_tag $lastTag -curr_ref "HEAD"
+
             # 如果 pubspec.yaml 有改动，则更新并 commit
             if (-not (git diff --quiet)) {
                 Update-PubspecVersion $new_version
@@ -176,19 +218,28 @@ switch ($choice) {
             }
             # 为最新 commit 打 tag
             $tag = "v$currentVersion"
+            $newTag = $tag
             Create-Tag -tag $tag -commit $latestCommit
-            Push-Changes
         } else {
             # 最新 commit 已有 tag → 按之前逻辑创建 Bump commit
             $currentVersion = Get-CurrentVersion
             $new_version = Get-NextVersion100
+            Write-Host "最新 commit 已有 tag ($existingTag)，创建 Bump commit 并打新 tag" -ForegroundColor Yellow
+
+            # 显示 changelog
+            Show-Changelog -prev_tag $lastTag -curr_ref "HEAD"
+
             Update-PubspecVersion $new_version
             Commit-Changes -new_version $new_version
             $latestCommit = git rev-parse HEAD
             $tag = "v$currentVersion"
+            $newTag = $tag
             Create-Tag -tag $tag -commit $latestCommit
-            Push-Changes
         }
+
+        # 生成 changelog 文件
+        Generate-ChangelogFile -prev_tag $lastTag -curr_tag $newTag
+        Push-Changes
 
         Write-Host "✅ 发布完成!"
         Write-Host "监控进度: $REPO_URL/actions"
@@ -215,6 +266,11 @@ switch ($choice) {
         Write-Host "准备发布:"
         Write-Host "  版本号: $test_version"
         Write-Host "  Git Tag: $tag"
+
+        # 显示 changelog
+        $lastTag = Get-PreviousTag -current_tag ""
+        Show-Changelog -prev_tag $lastTag -curr_ref "HEAD"
+
         $confirm = Read-Host "继续? (y/n)"
         if ($confirm -ne 'y') { Write-Host "已取消"; exit 0 }
 
@@ -228,11 +284,22 @@ switch ($choice) {
         Clear-Host
         Write-Host "=== 最近的 Tags ==="
         git tag -l "v*" --sort=-version:refname
+        Write-Host ""
+        Write-Host "--- 最新两个 Tag 间的提交日志 ---" -ForegroundColor Cyan
+        $tags = git tag -l "v*" --sort=-version:refname | Select-Object -First 2
+        if ($tags.Count -ge 2) {
+            git log "$($tags[1])..$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+        } elseif ($tags.Count -eq 1) {
+            git log "$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+        }
     }
     "4" {
         Clear-Host
-        Write-Host "=== Git 日志 (最后 10 条提交) ==="
-        git log --oneline -10
+        Write-Host "=== Git 日志 (最后 20 条提交) ==="
+        git log --oneline -20
+        Write-Host ""
+        Write-Host "--- 过滤 Bump version 后的日志 ---" -ForegroundColor Cyan
+        git log --oneline -20 --no-decorate | Select-String -NotMatch "Bump version to"
     }
     default {
         Write-Host "❌ 无效选择" -ForegroundColor Red
