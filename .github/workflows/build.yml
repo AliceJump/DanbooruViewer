@@ -237,10 +237,6 @@ jobs:
             | Web | [danbooru-viewer-web-release.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-web-release.tar.gz) | 静态网页构建产物 |
             DOWNLOADS
 
-          # 输出 changelog 内容（用于 action 日志调试）
-          echo "=== Generated Changelog ==="
-          cat /tmp/release_body.md
-
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
