@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import sys
 import threading
 import time
@@ -90,15 +91,29 @@ def save_json_set(
     )
 
     temp_path = path.with_name(
-        f".{path.name}.{threading.get_ident()}.tmp"
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
     )
 
-    temp_path.write_text(
-        payload,
-        encoding="utf-8",
-    )
+    try:
+        temp_path.write_text(
+            payload,
+            encoding="utf-8",
+        )
 
-    temp_path.replace(path)
+        for attempt in range(6):
+            try:
+                temp_path.replace(path)
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+
+                time.sleep(0.1 * (attempt + 1))
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except PermissionError:
+            pass
 
 
 # =========================================================
@@ -120,7 +135,12 @@ def create_session(
     )
 
     session.verify = verify_ssl
+    proxies = {
+        "http": "http://127.0.0.1:10808",
+        "https": "http://127.0.0.1:10808",
+    }
 
+    session.proxies.update(proxies)
     return session
 
 
