@@ -126,9 +126,9 @@ function Show-Changelog {
     Write-Host ""
     Write-Host "========== 自上一标签以来的提交日志 ==========" -ForegroundColor Cyan
     if ([string]::IsNullOrEmpty($prev_tag)) {
-        git log $curr_ref --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+        git log $curr_ref --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
     } else {
-        git log "$prev_tag..$curr_ref" --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+        git log "$prev_tag..$curr_ref" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
     }
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host ""
@@ -148,9 +148,9 @@ function Generate-ChangelogFile {
     $lines += "## 变更日志 ($curr_tag)"
     $lines += ""
     if ([string]::IsNullOrEmpty($prev_tag)) {
-        $logLines = git log $curr_tag --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+        $logLines = git log $curr_tag --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
     } else {
-        $logLines = git log "$prev_tag..$curr_tag" --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+        $logLines = git log "$prev_tag..$curr_tag" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
     }
     $lines += $logLines
     $lines += ""
@@ -288,9 +288,9 @@ switch ($choice) {
         Write-Host "--- 最新两个 Tag 间的提交日志 ---" -ForegroundColor Cyan
         $tags = git tag -l "v*" --sort=-version:refname | Select-Object -First 2
         if ($tags.Count -ge 2) {
-            git log "$($tags[1])..$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+            git log "$($tags[1])..$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
         } elseif ($tags.Count -eq 1) {
-            git log "$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to"
+            git log "$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
         }
     }
     "4" {
