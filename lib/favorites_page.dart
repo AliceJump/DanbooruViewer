@@ -7,7 +7,12 @@ import 'post_detail_page.dart';
 import 'main.dart';
 
 class FavoritesPage extends StatefulWidget {
-  const FavoritesPage({super.key});
+  final Map<String, String> completionDisplayByValue;
+
+  const FavoritesPage({
+    super.key,
+    this.completionDisplayByValue = const {},
+  });
 
   @override
   State<FavoritesPage> createState() => _FavoritesPageState();
@@ -27,11 +32,19 @@ class _FavoritesPageState extends State<FavoritesPage>
   // ============ 标签筛选状态 ============
   // 图片收藏页的筛选
   final TextEditingController _favFilterController = TextEditingController();
+  final FocusNode _favFilterFocusNode = FocusNode();
   List<String> _favFilterChips = [];
+  List<String> _allFavTags = [];
+  List<String> _favSuggestions = [];
+  bool _showFavSuggestions = false;
 
   // 历史记录页的筛选
   final TextEditingController _histFilterController = TextEditingController();
+  final FocusNode _histFilterFocusNode = FocusNode();
   List<String> _histFilterChips = [];
+  List<String> _allHistTags = [];
+  List<String> _histSuggestions = [];
+  bool _showHistSuggestions = false;
 
   // 标签页的文本筛选
   final TextEditingController _tagFilterController = TextEditingController();
@@ -41,8 +54,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   Map<String, List<Post>> _tagPreviewPosts = {};
   Map<String, bool> _tagPreviewsLoading = {};
 
-  // ============ 补全数据（从主页传入） ============
-  Map<String, String> _completionDisplayByValue = {};
+  // ============ 补全数据（从主页传入，通过widget.completionDisplayByValue） ============
 
   @override
   void initState() {
@@ -58,16 +70,110 @@ class _FavoritesPageState extends State<FavoritesPage>
         _tagFilterText = _tagFilterController.text;
       });
     });
+    _favFilterController.addListener(_onFavFilterChanged);
+    _histFilterController.addListener(_onHistFilterChanged);
+    _favFilterFocusNode.addListener(_onFavFilterFocusChanged);
+    _histFilterFocusNode.addListener(_onHistFilterFocusChanged);
     _loadData();
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    _favFilterController.removeListener(_onFavFilterChanged);
+    _histFilterController.removeListener(_onHistFilterChanged);
+    _favFilterFocusNode.removeListener(_onFavFilterFocusChanged);
+    _histFilterFocusNode.removeListener(_onHistFilterFocusChanged);
     _favFilterController.dispose();
+    _favFilterFocusNode.dispose();
     _histFilterController.dispose();
+    _histFilterFocusNode.dispose();
     _tagFilterController.dispose();
     super.dispose();
+  }
+
+  // ============ 补全显示标签 ============
+  String _displayLabelForTag(String tag) {
+    return widget.completionDisplayByValue[tag.toLowerCase()] ?? tag;
+  }
+
+  // ============ 提取 Posts 中所有唯一标签 ============
+  void _extractAllTags() {
+    final favSet = <String>{};
+    for (final post in _favoritePosts) {
+      final tagStr = post['tag_string'] as String? ?? '';
+      if (tagStr.isNotEmpty) {
+        favSet.addAll(tagStr.split(' ').where((t) => t.isNotEmpty));
+      }
+    }
+    _allFavTags = favSet.toList()..sort();
+
+    final histSet = <String>{};
+    for (final post in _browsingHistory) {
+      final tagStr = post['tag_string'] as String? ?? '';
+      if (tagStr.isNotEmpty) {
+        histSet.addAll(tagStr.split(' ').where((t) => t.isNotEmpty));
+      }
+    }
+    _allHistTags = histSet.toList()..sort();
+  }
+
+  // ============ 收藏筛选补全逻辑 ============
+  void _onFavFilterChanged() {
+    final text = _favFilterController.text;
+    if (text.isEmpty) {
+      setState(() {
+        _favSuggestions = [];
+        _showFavSuggestions = false;
+      });
+      return;
+    }
+    final query = text.toLowerCase();
+    setState(() {
+      _favSuggestions = _allFavTags
+          .where((tag) => tag.toLowerCase().contains(query))
+          .take(20)
+          .toList();
+      _showFavSuggestions =
+          _favFilterFocusNode.hasFocus && _favSuggestions.isNotEmpty;
+    });
+  }
+
+  void _onFavFilterFocusChanged() {
+    if (!_favFilterFocusNode.hasFocus) {
+      setState(() => _showFavSuggestions = false);
+    } else if (_favFilterController.text.isNotEmpty) {
+      _onFavFilterChanged();
+    }
+  }
+
+  // ============ 历史筛选补全逻辑 ============
+  void _onHistFilterChanged() {
+    final text = _histFilterController.text;
+    if (text.isEmpty) {
+      setState(() {
+        _histSuggestions = [];
+        _showHistSuggestions = false;
+      });
+      return;
+    }
+    final query = text.toLowerCase();
+    setState(() {
+      _histSuggestions = _allHistTags
+          .where((tag) => tag.toLowerCase().contains(query))
+          .take(20)
+          .toList();
+      _showHistSuggestions =
+          _histFilterFocusNode.hasFocus && _histSuggestions.isNotEmpty;
+    });
+  }
+
+  void _onHistFilterFocusChanged() {
+    if (!_histFilterFocusNode.hasFocus) {
+      setState(() => _showHistSuggestions = false);
+    } else if (_histFilterController.text.isNotEmpty) {
+      _onHistFilterChanged();
+    }
   }
 
   Future<void> _loadData() async {
@@ -84,6 +190,7 @@ class _FavoritesPageState extends State<FavoritesPage>
         _browsingHistory = history;
         _isLoading = false;
       });
+      _extractAllTags();
       _loadTagPreviews();
     }
   }
@@ -186,7 +293,7 @@ class _FavoritesPageState extends State<FavoritesPage>
         builder: (context) => PostDetailPage(
           posts: posts,
           initialIndex: index,
-          completionDisplayByValue: _completionDisplayByValue,
+          completionDisplayByValue: widget.completionDisplayByValue,
         ),
       ),
     );
@@ -199,7 +306,7 @@ class _FavoritesPageState extends State<FavoritesPage>
         builder: (context) => PostDetailPage(
           posts: posts,
           initialIndex: index,
-          completionDisplayByValue: _completionDisplayByValue,
+          completionDisplayByValue: widget.completionDisplayByValue,
         ),
       ),
     );
@@ -211,6 +318,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       if (!_favFilterChips.contains(tag)) {
         _favFilterChips.add(tag);
         _favFilterController.clear();
+        _showFavSuggestions = false;
       }
     });
   }
@@ -224,6 +332,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       if (!_histFilterChips.contains(tag)) {
         _histFilterChips.add(tag);
         _histFilterController.clear();
+        _showHistSuggestions = false;
       }
     });
   }
@@ -283,13 +392,17 @@ class _FavoritesPageState extends State<FavoritesPage>
 
     return Column(
       children: [
-        // 筛选输入
-        _buildFilterInput(
+        // 补全式筛选输入
+        _buildSmartFilterInput(
           controller: _favFilterController,
+          focusNode: _favFilterFocusNode,
           chips: _favFilterChips,
           hintText: '输入标签筛选收藏...',
           onAdd: _addFavFilterChip,
           onRemove: _removeFavFilterChip,
+          suggestions: _favSuggestions,
+          showSuggestions: _showFavSuggestions,
+          onDismissSuggestions: () => setState(() => _showFavSuggestions = false),
         ),
         // 网格
         Expanded(
@@ -611,13 +724,17 @@ class _FavoritesPageState extends State<FavoritesPage>
 
     return Column(
       children: [
-        // 清空按钮 + 筛选输入
-        _buildFilterInput(
+        // 清空按钮 + 补全式筛选输入
+        _buildSmartFilterInput(
           controller: _histFilterController,
+          focusNode: _histFilterFocusNode,
           chips: _histFilterChips,
           hintText: '输入标签筛选历史...',
           onAdd: _addHistFilterChip,
           onRemove: _removeHistFilterChip,
+          suggestions: _histSuggestions,
+          showSuggestions: _showHistSuggestions,
+          onDismissSuggestions: () => setState(() => _showHistSuggestions = false),
           trailing: TextButton.icon(
             onPressed: _clearHistory,
             icon: const Icon(Icons.delete_outline, size: 18),
@@ -693,20 +810,26 @@ class _FavoritesPageState extends State<FavoritesPage>
   // 通用组件
   // =====================================================
 
-  /// 筛选输入框 + 标签芯片
-  Widget _buildFilterInput({
+  /// 补全式筛选输入框 + 标签芯片 + 建议下拉
+  Widget _buildSmartFilterInput({
     required TextEditingController controller,
+    required FocusNode focusNode,
     required List<String> chips,
     required String hintText,
     required Function(String) onAdd,
     required Function(int) onRemove,
+    required List<String> suggestions,
+    required bool showSuggestions,
+    required VoidCallback onDismissSuggestions,
     Widget? trailing,
   }) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
       child: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // 输入行
           Row(
             children: [
               Expanded(
@@ -714,6 +837,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                   height: 40,
                   child: TextField(
                     controller: controller,
+                    focusNode: focusNode,
                     decoration: InputDecoration(
                       hintText: hintText,
                       prefixIcon: const Icon(Icons.filter_list, size: 20),
@@ -727,6 +851,8 @@ class _FavoritesPageState extends State<FavoritesPage>
                     onSubmitted: (value) {
                       if (value.trim().isNotEmpty) {
                         onAdd(value.trim());
+                        onDismissSuggestions();
+                        focusNode.unfocus();
                       }
                     },
                   ),
@@ -735,6 +861,7 @@ class _FavoritesPageState extends State<FavoritesPage>
               if (trailing != null) trailing,
             ],
           ),
+          // 标签 chips
           if (chips.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -753,6 +880,40 @@ class _FavoritesPageState extends State<FavoritesPage>
                     );
                   }),
                 ),
+              ),
+            ),
+          // 补全建议下拉
+          if (showSuggestions && suggestions.isNotEmpty)
+            Container(
+              constraints: const BoxConstraints(maxHeight: 200),
+              margin: const EdgeInsets.only(top: 4),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                    color: Theme.of(context).colorScheme.outlineVariant),
+              ),
+              child: ListView.builder(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                itemCount: suggestions.length,
+                itemBuilder: (context, index) {
+                  final tag = suggestions[index];
+                  return ListTile(
+                    dense: true,
+                    title: Text(
+                      _displayLabelForTag(tag),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    onTap: () {
+                      onAdd(tag);
+                      onDismissSuggestions();
+                      controller.clear();
+                      focusNode.unfocus();
+                    },
+                  );
+                },
               ),
             ),
         ],

@@ -23,7 +23,7 @@ function Check-Git {
 
 function Get-RemoteUrl {
     $url = git remote get-url origin
-    return $url -replace '\.git$',''
+    return $url -replace '\.git$', ''
 }
 
 function Get-CurrentVersion {
@@ -34,7 +34,8 @@ function Get-CurrentVersion {
     # 解析 base 版本（去掉 +build）
     if ($currentVersion -match '^(\d+\.\d+\.\d+)') {
         $baseVersion = $Matches[1]
-    } else {
+    }
+    else {
         $baseVersion = $currentVersion
     }
 
@@ -76,7 +77,8 @@ function Get-PrevVersion100 {
             $minor = 99
             if ($major -gt 0) {
                 $major--
-            } else {
+            }
+            else {
                 # 已经到 0.0.0，不允许再减
                 $minor = 0
                 $patch = 0
@@ -102,7 +104,8 @@ function Update-PubspecVersion($newVersion) {
     $pubspecNew = $pubspec | ForEach-Object {
         if ($_ -match '^version:') {
             if ($oldBuild) { "version: $newVersion+$oldBuild" } else { "version: $newVersion" }
-        } else { $_ }
+        }
+        else { $_ }
     }
 
     $pubspecNew | Set-Content pubspec.yaml -Encoding UTF8 -Force
@@ -113,7 +116,8 @@ function Commit-Changes {
     param([string]$new_version)
     if (git diff --quiet) {
         Write-Host "⚠ 没有未提交的改动，跳过 commit" -ForegroundColor Yellow
-    } else {
+    }
+    else {
         git add pubspec.yaml
         git commit -m "Bump version to $new_version"
         Write-Host "✅ 自动提交完成"
@@ -127,7 +131,8 @@ function Show-Changelog {
     Write-Host "========== 自上一标签以来的提交日志 ==========" -ForegroundColor Cyan
     if ([string]::IsNullOrEmpty($prev_tag)) {
         git log $curr_ref --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
-    } else {
+    }
+    else {
         git log "$prev_tag..$curr_ref" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
     }
     Write-Host "============================================" -ForegroundColor Cyan
@@ -149,7 +154,8 @@ function Generate-ChangelogFile {
     $lines += ""
     if ([string]::IsNullOrEmpty($prev_tag)) {
         $logLines = git log $curr_tag --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
-    } else {
+    }
+    else {
         $logLines = git log "$prev_tag..$curr_tag" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
     }
     $lines += $logLines
@@ -177,6 +183,12 @@ function Push-Changes {
 
 # ------------------ 主程序 ------------------
 Check-Git
+
+# 拉取远程最新代码
+Write-Host "⏳ 拉取远程最新代码..." -ForegroundColor Yellow
+git pull --ff-only
+Write-Host ""
+
 $REPO_URL = Get-RemoteUrl
 Write-Host "当前远程仓库: $REPO_URL"
 Write-Host ""
@@ -220,7 +232,8 @@ switch ($choice) {
             $tag = "v$currentVersion"
             $newTag = $tag
             Create-Tag -tag $tag -commit $latestCommit
-        } else {
+        }
+        else {
             # 最新 commit 已有 tag → 按之前逻辑创建 Bump commit
             $currentVersion = Get-CurrentVersion
             $new_version = Get-NextVersion100
@@ -289,7 +302,8 @@ switch ($choice) {
         $tags = git tag -l "v*" --sort=-version:refname | Select-Object -First 2
         if ($tags.Count -ge 2) {
             git log "$($tags[1])..$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
-        } elseif ($tags.Count -eq 1) {
+        }
+        elseif ($tags.Count -eq 1) {
             git log "$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
         }
     }
