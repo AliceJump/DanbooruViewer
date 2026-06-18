@@ -620,7 +620,11 @@ class _MyHomePageState extends State<MyHomePage> {
           onPressed: () async {
             final result = await Navigator.push<String>(
               context,
-              MaterialPageRoute(builder: (context) => const FavoritesPage()),
+              MaterialPageRoute(
+                builder: (context) => FavoritesPage(
+                  completionDisplayByValue: _completionDisplayByInsertValue,
+                ),
+              ),
             );
             if (result != null && mounted) {
               _addSearchChip(result, result);

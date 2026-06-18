@@ -142,9 +142,9 @@ show_changelog() {
     echo ""
     echo -e "${CYAN}========== 自上一标签以来的提交日志 ==========${NC}"
     if [ -z "$prev_tag" ]; then
-        git log "$curr_ref" --oneline --no-decorate | grep -v "Bump version to"
+        git log "$curr_ref" --oneline --no-decorate | grep -v -E "Bump version to|update download stats"
     else
-        git log "$prev_tag..$curr_ref" --oneline --no-decorate | grep -v "Bump version to"
+        git log "$prev_tag..$curr_ref" --oneline --no-decorate | grep -v -E "Bump version to|update download stats"
     fi
     echo -e "${CYAN}============================================${NC}"
     echo ""
@@ -164,9 +164,9 @@ generate_changelog_text() {
     echo "## 变更日志 ($curr_tag)" > "$output_file"
     echo "" >> "$output_file"
     if [ -z "$prev_tag" ]; then
-        git log "$curr_tag" --oneline --no-decorate | grep -v "Bump version to" >> "$output_file"
+        git log "$curr_tag" --oneline --no-decorate | grep -v -E "Bump version to|update download stats" >> "$output_file"
     else
-        git log "$prev_tag..$curr_tag" --oneline --no-decorate | grep -v "Bump version to" >> "$output_file"
+        git log "$prev_tag..$curr_tag" --oneline --no-decorate | grep -v -E "Bump version to|update download stats" >> "$output_file"
     fi
     echo "" >> "$output_file"
 }
@@ -174,6 +174,12 @@ generate_changelog_text() {
 # ── 主程序 ─────────────────────────────────────────────────────
 
 check_git
+
+# 拉取远程最新代码
+echo -e "${YELLOW}⏳ 拉取远程最新代码...${NC}"
+git pull --ff-only
+echo ""
+
 REPO_URL=$(get_remote_url)
 echo -e "${BLUE}当前远程仓库: $REPO_URL${NC}"
 echo ""
@@ -304,9 +310,9 @@ case $choice in
         echo -e "${CYAN}--- 最新两个 Tag 间的提交日志 ---${NC}"
         tags=($(git tag -l 'v*' --sort=-version:refname | head -2))
         if [ ${#tags[@]} -ge 2 ]; then
-            git log "${tags[1]}..${tags[0]}" --oneline --no-decorate | grep -v "Bump version to"
+            git log "${tags[1]}..${tags[0]}" --oneline --no-decorate | grep -v -E "Bump version to|update download stats"
         elif [ ${#tags[@]} -eq 1 ]; then
-            git log "${tags[0]}" --oneline --no-decorate | grep -v "Bump version to"
+            git log "${tags[0]}" --oneline --no-decorate | grep -v -E "Bump version to|update download stats"
         fi
         ;;
 
@@ -317,7 +323,7 @@ case $choice in
         git log --oneline -20
         echo ""
         echo -e "${CYAN}--- 过滤 Bump version 后的日志 ---${NC}"
-        git log --oneline -20 --no-decorate | grep -v "Bump version to"
+        git log --oneline -20 --no-decorate | grep -v -E "Bump version to|update download stats"
         ;;
 
     *)
