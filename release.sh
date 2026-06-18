@@ -142,9 +142,9 @@ show_changelog() {
     echo ""
     echo -e "${CYAN}========== 自上一标签以来的提交日志 ==========${NC}"
     if [ -z "$prev_tag" ]; then
-        git log "$curr_ref" --oneline --no-decorate | grep -v -E "Bump version to|update download stats"
+        git -c i18n.logOutputEncoding=utf-8 log "$curr_ref" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats"
     else
-        git log "$prev_tag..$curr_ref" --oneline --no-decorate | grep -v -E "Bump version to|update download stats"
+        git -c i18n.logOutputEncoding=utf-8 log "$prev_tag..$curr_ref" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats"
     fi
     echo -e "${CYAN}============================================${NC}"
     echo ""
@@ -161,12 +161,18 @@ generate_changelog_text() {
     local prev_tag="$1"
     local curr_tag="$2"
     local output_file="$3"
+
+    # 如果 prev_tag 和 curr_tag 相同，自动推断上一个 tag
+    if [ -z "$prev_tag" ] || [ "$prev_tag" = "$curr_tag" ]; then
+        prev_tag=$(git -c i18n.logOutputEncoding=utf-8 describe --tags --abbrev=0 "$curr_tag^" 2>/dev/null || echo "")
+    fi
+
     echo "## 变更日志 ($curr_tag)" > "$output_file"
     echo "" >> "$output_file"
     if [ -z "$prev_tag" ]; then
-        git log "$curr_tag" --oneline --no-decorate | grep -v -E "Bump version to|update download stats" >> "$output_file"
+        git -c i18n.logOutputEncoding=utf-8 log "$curr_tag" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats" >> "$output_file"
     else
-        git log "$prev_tag..$curr_tag" --oneline --no-decorate | grep -v -E "Bump version to|update download stats" >> "$output_file"
+        git -c i18n.logOutputEncoding=utf-8 log "$prev_tag..$curr_tag" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats" >> "$output_file"
     fi
     echo "" >> "$output_file"
 }
@@ -310,9 +316,9 @@ case $choice in
         echo -e "${CYAN}--- 最新两个 Tag 间的提交日志 ---${NC}"
         tags=($(git tag -l 'v*' --sort=-version:refname | head -2))
         if [ ${#tags[@]} -ge 2 ]; then
-            git log "${tags[1]}..${tags[0]}" --oneline --no-decorate | grep -v -E "Bump version to|update download stats"
+            git -c i18n.logOutputEncoding=utf-8 log "${tags[1]}..${tags[0]}" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats"
         elif [ ${#tags[@]} -eq 1 ]; then
-            git log "${tags[0]}" --oneline --no-decorate | grep -v -E "Bump version to|update download stats"
+            git -c i18n.logOutputEncoding=utf-8 log "${tags[0]}" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats"
         fi
         ;;
 
@@ -323,7 +329,7 @@ case $choice in
         git log --oneline -20
         echo ""
         echo -e "${CYAN}--- 过滤 Bump version 后的日志 ---${NC}"
-        git log --oneline -20 --no-decorate | grep -v -E "Bump version to|update download stats"
+        git -c i18n.logOutputEncoding=utf-8 log --oneline -20 --no-decorate --no-merges | grep -v -E "Bump version to|update download stats"
         ;;
 
     *)

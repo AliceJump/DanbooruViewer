@@ -144,7 +144,7 @@ if "!prev_tag!"=="" (
 )
 echo.
 echo [36m========== 自上一标签以来的提交日志 ==========[0m
-git log !log_range! --oneline --no-decorate | findstr /v "Bump version to" | findstr /v "update download stats"
+git log !log_range! --oneline --no-decorate --no-merges | findstr /v "Bump version to" | findstr /v "update download stats"
 echo [36m============================================[0m
 goto :eof
 
@@ -311,9 +311,9 @@ for /f "usebackq tokens=*" %%i in (`git tag -l "v*" --sort=-version:refname ^| f
     )
 )
 if not "!tag2!"=="" (
-    git log !tag2!..!tag1! --oneline --no-decorate | findstr /v "Bump version to" | findstr /v "update download stats"
+    git log !tag2!..!tag1! --oneline --no-decorate --no-merges | findstr /v "Bump version to" | findstr /v "update download stats"
 ) else if not "!tag1!"=="" (
-    git log !tag1! --oneline --no-decorate | findstr /v "Bump version to" | findstr /v "update download stats"
+    git log !tag1! --oneline --no-decorate --no-merges | findstr /v "Bump version to" | findstr /v "update download stats"
 )
 goto end
 
@@ -327,7 +327,7 @@ git log --oneline -20
 echo.
 echo [36m--- 过滤 Bump version 后的日志 ---[0m
 echo.
-git log --oneline -20 --no-decorate | findstr /v "Bump version to" | findstr /v "update download stats"
+git log --oneline -20 --no-decorate --no-merges | findstr /v "Bump version to" | findstr /v "update download stats"
 goto end
 
 :end

@@ -12,6 +12,9 @@ Danbooru Viewer Release Helper Script (PowerShell 7)
 - 显示标签间的提交日志（过滤 Bump version 消息）
 #>
 
+# 设置控制台编码为 UTF-8，确保 git log 中文正常显示
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 Clear-Host
 
 function Check-Git {
@@ -130,10 +133,10 @@ function Show-Changelog {
     Write-Host ""
     Write-Host "========== 自上一标签以来的提交日志 ==========" -ForegroundColor Cyan
     if ([string]::IsNullOrEmpty($prev_tag)) {
-        git log $curr_ref --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
+        git -c i18n.logOutputEncoding=utf-8 log $curr_ref --oneline --no-decorate --no-merges | Select-String -NotMatch "Bump version to|update download stats"
     }
     else {
-        git log "$prev_tag..$curr_ref" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
+        git -c i18n.logOutputEncoding=utf-8 log "$prev_tag..$curr_ref" --oneline --no-decorate --no-merges | Select-String -NotMatch "Bump version to|update download stats"
     }
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host ""
@@ -152,11 +155,18 @@ function Generate-ChangelogFile {
     $lines = @()
     $lines += "## 变更日志 ($curr_tag)"
     $lines += ""
-    if ([string]::IsNullOrEmpty($prev_tag)) {
-        $logLines = git log $curr_tag --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
+
+    # 如果 prev_tag 和 curr_tag 相同，自动推断上一个 tag
+    $actual_prev = $prev_tag
+    if ([string]::IsNullOrEmpty($actual_prev) -or $actual_prev -eq $curr_tag) {
+        $actual_prev = git -c i18n.logOutputEncoding=utf-8 describe --tags --abbrev=0 "$curr_tag^" 2>$null
+    }
+
+    if ([string]::IsNullOrEmpty($actual_prev)) {
+        $logLines = git -c i18n.logOutputEncoding=utf-8 log $curr_tag --oneline --no-decorate --no-merges | Select-String -NotMatch "Bump version to|update download stats"
     }
     else {
-        $logLines = git log "$prev_tag..$curr_tag" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
+        $logLines = git -c i18n.logOutputEncoding=utf-8 log "$actual_prev..$curr_tag" --oneline --no-decorate --no-merges | Select-String -NotMatch "Bump version to|update download stats"
     }
     $lines += $logLines
     $lines += ""
@@ -301,10 +311,10 @@ switch ($choice) {
         Write-Host "--- 最新两个 Tag 间的提交日志 ---" -ForegroundColor Cyan
         $tags = git tag -l "v*" --sort=-version:refname | Select-Object -First 2
         if ($tags.Count -ge 2) {
-            git log "$($tags[1])..$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
+            git -c i18n.logOutputEncoding=utf-8 log "$($tags[1])..$($tags[0])" --oneline --no-decorate --no-merges | Select-String -NotMatch "Bump version to|update download stats"
         }
         elseif ($tags.Count -eq 1) {
-            git log "$($tags[0])" --oneline --no-decorate | Select-String -NotMatch "Bump version to|update download stats"
+            git -c i18n.logOutputEncoding=utf-8 log "$($tags[0])" --oneline --no-decorate --no-merges | Select-String -NotMatch "Bump version to|update download stats"
         }
     }
     "4" {
@@ -313,7 +323,7 @@ switch ($choice) {
         git log --oneline -20
         Write-Host ""
         Write-Host "--- 过滤 Bump version 后的日志 ---" -ForegroundColor Cyan
-        git log --oneline -20 --no-decorate | Select-String -NotMatch "Bump version to"
+        git -c i18n.logOutputEncoding=utf-8 log --oneline -20 --no-decorate --no-merges | Select-String -NotMatch "Bump version to"
     }
     default {
         Write-Host "❌ 无效选择" -ForegroundColor Red
