@@ -452,23 +452,6 @@ class _FavoritesPageState extends State<FavoritesPage>
                               highResUrl: highResUrl,
                               previewUrl: previewUrl,
                               fit: BoxFit.cover,
-                              loadingBuilder:
-                                  (context, child, loadingProgress) {
-                                    if (loadingProgress == null) return child;
-                                    return Center(
-                                      child: CircularProgressIndicator(
-                                        value:
-                                            loadingProgress
-                                                    .expectedTotalBytes !=
-                                                null
-                                            ? loadingProgress
-                                                      .cumulativeBytesLoaded /
-                                                  loadingProgress
-                                                      .expectedTotalBytes!
-                                            : null,
-                                      ),
-                                    );
-                                  },
                               errorBuilder: (context, error, stackTrace) =>
                                   const Icon(Icons.error),
                             ),
@@ -652,43 +635,23 @@ class _FavoritesPageState extends State<FavoritesPage>
                                             child: ClipRRect(
                                               borderRadius:
                                                   BorderRadius.circular(8),
-                                              child: cachedHighResImageOrPreview(
-                                                highResUrl: highResUrl,
-                                                previewUrl: previewUrl,
-                                                width: 120,
-                                                height: 120,
-                                                fit: BoxFit.cover,
-                                                loadingBuilder:
-                                                    (
-                                                      context,
-                                                      child,
-                                                      loadingProgress,
-                                                    ) {
-                                                      if (loadingProgress ==
-                                                          null) {
-                                                        return child;
-                                                      }
-                                                      return const Center(
-                                                        child: SizedBox(
-                                                          width: 20,
-                                                          height: 20,
-                                                          child:
-                                                              CircularProgressIndicator(
-                                                                strokeWidth: 2,
-                                                              ),
+                                              child:
+                                                  cachedHighResImageOrPreview(
+                                                    highResUrl: highResUrl,
+                                                    previewUrl: previewUrl,
+                                                    width: 120,
+                                                    height: 120,
+                                                    fit: BoxFit.cover,
+                                                    errorBuilder:
+                                                        (
+                                                          context,
+                                                          error,
+                                                          stackTrace,
+                                                        ) => const Icon(
+                                                          Icons.error,
+                                                          size: 40,
                                                         ),
-                                                      );
-                                                    },
-                                                errorBuilder:
-                                                    (
-                                                      context,
-                                                      error,
-                                                      stackTrace,
-                                                    ) => const Icon(
-                                                      Icons.error,
-                                                      size: 40,
-                                                    ),
-                                              ),
+                                                  ),
                                             ),
                                           );
                                         },
@@ -769,18 +732,6 @@ class _FavoritesPageState extends State<FavoritesPage>
                           highResUrl: highResUrl,
                           previewUrl: previewUrl,
                           fit: BoxFit.cover,
-                          loadingBuilder: (context, child, loadingProgress) {
-                            if (loadingProgress == null) return child;
-                            return Center(
-                              child: CircularProgressIndicator(
-                                value:
-                                    loadingProgress.expectedTotalBytes != null
-                                    ? loadingProgress.cumulativeBytesLoaded /
-                                          loadingProgress.expectedTotalBytes!
-                                    : null,
-                              ),
-                            );
-                          },
                           errorBuilder: (context, error, stackTrace) =>
                               const Icon(Icons.error),
                         ),

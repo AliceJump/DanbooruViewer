@@ -830,6 +830,7 @@ class _MyHomePageState extends State<MyHomePage> {
                                 final highResUrl =
                                     post.fileUrl ?? post.largeFileUrl;
                                 return GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
                                   onTap: () {
                                     if (_isMultiSelectMode) {
                                       _toggleSelection(post.id);
@@ -851,24 +852,6 @@ class _MyHomePageState extends State<MyHomePage> {
                                           highResUrl: highResUrl,
                                           previewUrl: post.previewFileUrl,
                                           fit: BoxFit.cover,
-                                          loadingBuilder: (context, child, loadingProgress) {
-                                            if (loadingProgress == null) {
-                                              return child;
-                                            }
-                                            return Center(
-                                              child: CircularProgressIndicator(
-                                                value:
-                                                    loadingProgress
-                                                            .expectedTotalBytes !=
-                                                        null
-                                                    ? loadingProgress
-                                                              .cumulativeBytesLoaded /
-                                                          loadingProgress
-                                                              .expectedTotalBytes!
-                                                    : null,
-                                              ),
-                                            );
-                                          },
                                           errorBuilder:
                                               (context, error, stackTrace) {
                                                 return const Icon(Icons.error);
