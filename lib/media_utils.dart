@@ -15,6 +15,46 @@ bool isVideoUrl(String url) {
       lower.endsWith('.m4v');
 }
 
+Future<File?> getCachedMediaFile(String? url) async {
+  if (url == null || isVideoUrl(url)) return null;
+  return (await DefaultCacheManager().getFileFromCache(url))?.file;
+}
+
+Widget cachedHighResImageOrPreview({
+  required String? highResUrl,
+  required String? previewUrl,
+  required BoxFit fit,
+  double? width,
+  double? height,
+  ImageLoadingBuilder? loadingBuilder,
+  ImageErrorWidgetBuilder? errorBuilder,
+}) {
+  return FutureBuilder<File?>(
+    future: getCachedMediaFile(highResUrl),
+    builder: (context, snapshot) {
+      final cachedFile = snapshot.data;
+      if (cachedFile != null) {
+        return Image.file(
+          cachedFile,
+          width: width,
+          height: height,
+          fit: fit,
+          errorBuilder: errorBuilder,
+        );
+      }
+      if (previewUrl == null) return const Icon(Icons.image_not_supported);
+      return Image.network(
+        previewUrl,
+        width: width,
+        height: height,
+        fit: fit,
+        loadingBuilder: loadingBuilder,
+        errorBuilder: errorBuilder,
+      );
+    },
+  );
+}
+
 /// 获取缓存文件（支持重试）
 Future<File> getCachedFile(String url, {int retries = 2}) async {
   var attempt = 0;
@@ -48,12 +88,12 @@ Future<void> startDrag(BuildContext context, String media) async {
 
     await DragHelper.startDrag(filePath, type: type);
   } catch (e) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('无法拖拽: $e')),
-    );
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('无法拖拽: $e')));
   }
 }
-
 
 Future<void> saveMediaToGallery(BuildContext context, String mediaUrl) async {
   try {
@@ -62,14 +102,16 @@ Future<void> saveMediaToGallery(BuildContext context, String mediaUrl) async {
       final status = await Gal.requestAccess();
       if (!status) {
         if (!context.mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('需要存储权限来保存文件')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存文件')));
         return;
       }
     }
 
     // 判断是网络 URL 还是本地路径
-    final file = (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://'))
+    final file =
+        (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://'))
         ? await DefaultCacheManager().getSingleFile(mediaUrl)
         : File(mediaUrl);
 
@@ -82,11 +124,13 @@ Future<void> saveMediaToGallery(BuildContext context, String mediaUrl) async {
     }
 
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('${isVideo ? '视频' : '图片'}已保存到相册')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('${isVideo ? '视频' : '图片'}已保存到相册')));
   } catch (e) {
     if (!context.mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('保存失败: $e')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('保存失败: $e')));
   }
 }

@@ -79,12 +79,24 @@ def load_sync_data(tag: str):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def compact_sync_payload(payload: dict) -> dict:
+    candidates = payload.get("completion_candidates")
+    if not isinstance(candidates, list):
+        candidates = []
+
+    return {
+        "tag": payload.get("tag"),
+        "updated_at": payload.get("updated_at"),
+        "completion_candidates": candidates,
+    }
+
+
 def save_sync_data(tag: str, payload: dict):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
 
     path = cache_path(tag)
-    payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
+    payload_text = json.dumps(compact_sync_payload(payload), ensure_ascii=False, indent=2)
     path.write_text(payload_text, encoding="utf-8")
 
     asset_path = ASSET_DIR / f"{slugify_tag(tag)}.json"

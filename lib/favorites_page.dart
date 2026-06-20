@@ -3,16 +3,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'favorites_manager.dart';
+import 'media_utils.dart';
 import 'post_detail_page.dart';
 import 'main.dart';
 
 class FavoritesPage extends StatefulWidget {
   final Map<String, String> completionDisplayByValue;
 
-  const FavoritesPage({
-    super.key,
-    this.completionDisplayByValue = const {},
-  });
+  const FavoritesPage({super.key, this.completionDisplayByValue = const {}});
 
   @override
   State<FavoritesPage> createState() => _FavoritesPageState();
@@ -253,8 +251,9 @@ class _FavoritesPageState extends State<FavoritesPage>
     await _favoritesManager.removeFavorite(postId);
     await _loadData();
     if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('已取消收藏')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已取消收藏')));
     }
   }
 
@@ -264,15 +263,17 @@ class _FavoritesPageState extends State<FavoritesPage>
     _tagPreviewsLoading.remove(tag);
     await _loadData();
     if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('已取消收藏标签')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已取消收藏标签')));
     }
   }
 
   void _copyTag(String tag) {
     Clipboard.setData(ClipboardData(text: tag));
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('已复制标签: $tag')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已复制标签: $tag')));
   }
 
   void _searchTag(String tag) {
@@ -375,11 +376,7 @@ class _FavoritesPageState extends State<FavoritesPage>
           ? const Center(child: CircularProgressIndicator())
           : TabBarView(
               controller: _tabController,
-              children: [
-                _buildPostsTab(),
-                _buildTagsTab(),
-                _buildHistoryTab(),
-              ],
+              children: [_buildPostsTab(), _buildTagsTab(), _buildHistoryTab()],
             ),
     );
   }
@@ -402,7 +399,8 @@ class _FavoritesPageState extends State<FavoritesPage>
           onRemove: _removeFavFilterChip,
           suggestions: _favSuggestions,
           showSuggestions: _showFavSuggestions,
-          onDismissSuggestions: () => setState(() => _showFavSuggestions = false),
+          onDismissSuggestions: () =>
+              setState(() => _showFavSuggestions = false),
         ),
         // 网格
         Expanded(
@@ -414,8 +412,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                 )
               : GridView.builder(
                   padding: const EdgeInsets.all(4),
-                  gridDelegate:
-                      const SliverGridDelegateWithFixedCrossAxisCount(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 3,
                     crossAxisSpacing: 4.0,
                     mainAxisSpacing: 4.0,
@@ -423,8 +420,9 @@ class _FavoritesPageState extends State<FavoritesPage>
                   itemCount: filteredPosts.length,
                   itemBuilder: (context, index) {
                     final post = filteredPosts[index];
-                    final previewUrl =
-                        post['preview_file_url'] as String?;
+                    final previewUrl = post['preview_file_url'] as String?;
+                    final highResUrl =
+                        (post['file_url'] ?? post['large_file_url']) as String?;
                     final postId = post['id'] as int;
 
                     if (previewUrl == null) {
@@ -441,25 +439,27 @@ class _FavoritesPageState extends State<FavoritesPage>
                         children: [
                           Hero(
                             tag: 'fav_post_$postId',
-                            child: Image.network(
-                              previewUrl,
+                            child: cachedHighResImageOrPreview(
+                              highResUrl: highResUrl,
+                              previewUrl: previewUrl,
                               fit: BoxFit.cover,
                               loadingBuilder:
                                   (context, child, loadingProgress) {
-                                if (loadingProgress == null) return child;
-                                return Center(
-                                  child: CircularProgressIndicator(
-                                    value: loadingProgress
-                                                .expectedTotalBytes !=
-                                            null
-                                        ? loadingProgress
-                                                .cumulativeBytesLoaded /
+                                    if (loadingProgress == null) return child;
+                                    return Center(
+                                      child: CircularProgressIndicator(
+                                        value:
                                             loadingProgress
-                                                .expectedTotalBytes!
-                                        : null,
-                                  ),
-                                );
-                              },
+                                                    .expectedTotalBytes !=
+                                                null
+                                            ? loadingProgress
+                                                      .cumulativeBytesLoaded /
+                                                  loadingProgress
+                                                      .expectedTotalBytes!
+                                            : null,
+                                      ),
+                                    );
+                                  },
                               errorBuilder: (context, error, stackTrace) =>
                                   const Icon(Icons.error),
                             ),
@@ -513,8 +513,10 @@ class _FavoritesPageState extends State<FavoritesPage>
                 borderRadius: BorderRadius.circular(12),
               ),
               isDense: true,
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
               suffixIcon: _tagFilterText.isNotEmpty
                   ? IconButton(
                       icon: const Icon(Icons.clear, size: 18),
@@ -537,10 +539,8 @@ class _FavoritesPageState extends State<FavoritesPage>
                   itemCount: filteredTags.length,
                   itemBuilder: (context, index) {
                     final tag = filteredTags[index];
-                    final previewPosts =
-                        _tagPreviewPosts[tag] ?? [];
-                    final isLoading =
-                        _tagPreviewsLoading[tag] ?? true;
+                    final previewPosts = _tagPreviewPosts[tag] ?? [];
+                    final isLoading = _tagPreviewsLoading[tag] ?? true;
 
                     return Card(
                       margin: const EdgeInsets.only(bottom: 12),
@@ -551,15 +551,16 @@ class _FavoritesPageState extends State<FavoritesPage>
                         child: Padding(
                           padding: const EdgeInsets.all(12),
                           child: Column(
-                            crossAxisAlignment:
-                                CrossAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               // 标签名 + 操作按钮
                               Row(
                                 children: [
-                                  const Icon(Icons.label,
-                                      size: 18,
-                                      color: Colors.amber),
+                                  const Icon(
+                                    Icons.label,
+                                    size: 18,
+                                    color: Colors.amber,
+                                  ),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
@@ -569,33 +570,31 @@ class _FavoritesPageState extends State<FavoritesPage>
                                         fontWeight: FontWeight.w600,
                                       ),
                                       maxLines: 1,
-                                      overflow:
-                                          TextOverflow.ellipsis,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
                                   IconButton(
-                                    icon: const Icon(Icons.search,
-                                        size: 20),
+                                    icon: const Icon(Icons.search, size: 20),
                                     padding: EdgeInsets.zero,
-                                    constraints:
-                                        const BoxConstraints(
-                                            minWidth: 32,
-                                            minHeight: 32),
-                                    onPressed: () =>
-                                        _searchTag(tag),
+                                    constraints: const BoxConstraints(
+                                      minWidth: 32,
+                                      minHeight: 32,
+                                    ),
+                                    onPressed: () => _searchTag(tag),
                                     tooltip: '搜索此标签',
                                   ),
                                   IconButton(
-                                    icon: const Icon(Icons.delete,
-                                        size: 20,
-                                        color: Colors.red),
+                                    icon: const Icon(
+                                      Icons.delete,
+                                      size: 20,
+                                      color: Colors.red,
+                                    ),
                                     padding: EdgeInsets.zero,
-                                    constraints:
-                                        const BoxConstraints(
-                                            minWidth: 32,
-                                            minHeight: 32),
-                                    onPressed: () =>
-                                        _removeTag(tag),
+                                    constraints: const BoxConstraints(
+                                      minWidth: 32,
+                                      minHeight: 32,
+                                    ),
+                                    onPressed: () => _removeTag(tag),
                                     tooltip: '取消收藏',
                                   ),
                                 ],
@@ -606,102 +605,85 @@ class _FavoritesPageState extends State<FavoritesPage>
                                 height: 120,
                                 child: isLoading
                                     ? const Center(
-                                        child:
-                                            SizedBox(
-                                              width: 24,
-                                              height: 24,
-                                              child:
-                                                  CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                              ),
-                                            ),
+                                        child: SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        ),
                                       )
                                     : previewPosts.isEmpty
-                                        ? const Center(
-                                            child: Text(
-                                              '暂无预览',
-                                              style: TextStyle(
-                                                  color: Colors
-                                                      .grey),
-                                            ),
-                                          )
-                                        : ListView.separated(
-                                            scrollDirection:
-                                                Axis.horizontal,
-                                            itemCount: previewPosts
-                                                .length,
-                                            separatorBuilder:
-                                                (context, index) =>
-                                                    const SizedBox(
-                                                        width: 8),
-                                            itemBuilder:
-                                                (context, idx) {
-                                              final post =
-                                                  previewPosts[
-                                                      idx];
-                                              final previewUrl =
-                                                  post
-                                                      .previewFileUrl;
-                                              if (previewUrl ==
-                                                  null) {
-                                                return const SizedBox
-                                                    .shrink();
-                                              }
-                                              return GestureDetector(
-                                                onTap: () =>
-                                                    _navigateToDetailFromPosts(
-                                                        previewPosts,
-                                                        idx),
-                                                child: ClipRRect(
-                                                  borderRadius:
-                                                      BorderRadius
-                                                          .circular(
-                                                              8),
-                                                  child: Image
-                                                      .network(
-                                                    previewUrl,
-                                                    width: 120,
-                                                    height: 120,
-                                                    fit: BoxFit
-                                                        .cover,
-                                                    loadingBuilder:
-                                                        (context,
-                                                            child,
-                                                            loadingProgress) {
+                                    ? const Center(
+                                        child: Text(
+                                          '暂无预览',
+                                          style: TextStyle(color: Colors.grey),
+                                        ),
+                                      )
+                                    : ListView.separated(
+                                        scrollDirection: Axis.horizontal,
+                                        itemCount: previewPosts.length,
+                                        separatorBuilder: (context, index) =>
+                                            const SizedBox(width: 8),
+                                        itemBuilder: (context, idx) {
+                                          final post = previewPosts[idx];
+                                          final previewUrl =
+                                              post.previewFileUrl;
+                                          final highResUrl =
+                                              post.fileUrl ?? post.largeFileUrl;
+                                          if (previewUrl == null) {
+                                            return const SizedBox.shrink();
+                                          }
+                                          return GestureDetector(
+                                            onTap: () =>
+                                                _navigateToDetailFromPosts(
+                                                  previewPosts,
+                                                  idx,
+                                                ),
+                                            child: ClipRRect(
+                                              borderRadius:
+                                                  BorderRadius.circular(8),
+                                              child: cachedHighResImageOrPreview(
+                                                highResUrl: highResUrl,
+                                                previewUrl: previewUrl,
+                                                width: 120,
+                                                height: 120,
+                                                fit: BoxFit.cover,
+                                                loadingBuilder:
+                                                    (
+                                                      context,
+                                                      child,
+                                                      loadingProgress,
+                                                    ) {
                                                       if (loadingProgress ==
                                                           null) {
                                                         return child;
                                                       }
                                                       return const Center(
-                                                        child:
-                                                            SizedBox(
-                                                          width:
-                                                              20,
-                                                          height:
-                                                              20,
+                                                        child: SizedBox(
+                                                          width: 20,
+                                                          height: 20,
                                                           child:
                                                               CircularProgressIndicator(
-                                                            strokeWidth:
-                                                                2,
-                                                          ),
+                                                                strokeWidth: 2,
+                                                              ),
                                                         ),
                                                       );
                                                     },
-                                                    errorBuilder:
-                                                        (context,
-                                                            error,
-                                                            stackTrace) =>
-                                                            const Icon(
-                                                              Icons
-                                                                  .error,
-                                                              size:
-                                                                  40,
-                                                            ),
-                                                  ),
-                                                ),
-                                              );
-                                            },
-                                          ),
+                                                errorBuilder:
+                                                    (
+                                                      context,
+                                                      error,
+                                                      stackTrace,
+                                                    ) => const Icon(
+                                                      Icons.error,
+                                                      size: 40,
+                                                    ),
+                                              ),
+                                            ),
+                                          );
+                                        },
+                                      ),
                               ),
                             ],
                           ),
@@ -719,8 +701,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   // Tab 3: 浏览记录 - 网格布局 + 标签筛选
   // =====================================================
   Widget _buildHistoryTab() {
-    final filteredHistory =
-        _filterPosts(_browsingHistory, _histFilterChips);
+    final filteredHistory = _filterPosts(_browsingHistory, _histFilterChips);
 
     return Column(
       children: [
@@ -734,7 +715,8 @@ class _FavoritesPageState extends State<FavoritesPage>
           onRemove: _removeHistFilterChip,
           suggestions: _histSuggestions,
           showSuggestions: _showHistSuggestions,
-          onDismissSuggestions: () => setState(() => _showHistSuggestions = false),
+          onDismissSuggestions: () =>
+              setState(() => _showHistSuggestions = false),
           trailing: TextButton.icon(
             onPressed: _clearHistory,
             icon: const Icon(Icons.delete_outline, size: 18),
@@ -751,8 +733,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                 )
               : GridView.builder(
                   padding: const EdgeInsets.all(4),
-                  gridDelegate:
-                      const SliverGridDelegateWithFixedCrossAxisCount(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount: 3,
                     crossAxisSpacing: 4.0,
                     mainAxisSpacing: 4.0,
@@ -760,8 +741,9 @@ class _FavoritesPageState extends State<FavoritesPage>
                   itemCount: filteredHistory.length,
                   itemBuilder: (context, index) {
                     final post = filteredHistory[index];
-                    final previewUrl =
-                        post['preview_file_url'] as String?;
+                    final previewUrl = post['preview_file_url'] as String?;
+                    final highResUrl =
+                        (post['file_url'] ?? post['large_file_url']) as String?;
                     final postId = post['id'] as int;
 
                     if (previewUrl == null) {
@@ -771,25 +753,21 @@ class _FavoritesPageState extends State<FavoritesPage>
                     }
 
                     return GestureDetector(
-                      onTap: () =>
-                          _navigateToDetail(filteredHistory, index),
+                      onTap: () => _navigateToDetail(filteredHistory, index),
                       child: Hero(
                         tag: 'hist_post_$postId',
-                        child: Image.network(
-                          previewUrl,
+                        child: cachedHighResImageOrPreview(
+                          highResUrl: highResUrl,
+                          previewUrl: previewUrl,
                           fit: BoxFit.cover,
-                          loadingBuilder:
-                              (context, child, loadingProgress) {
+                          loadingBuilder: (context, child, loadingProgress) {
                             if (loadingProgress == null) return child;
                             return Center(
                               child: CircularProgressIndicator(
-                                value: loadingProgress
-                                            .expectedTotalBytes !=
-                                        null
-                                    ? loadingProgress
-                                            .cumulativeBytesLoaded /
-                                        loadingProgress
-                                            .expectedTotalBytes!
+                                value:
+                                    loadingProgress.expectedTotalBytes != null
+                                    ? loadingProgress.cumulativeBytesLoaded /
+                                          loadingProgress.expectedTotalBytes!
                                     : null,
                               ),
                             );
@@ -846,7 +824,9 @@ class _FavoritesPageState extends State<FavoritesPage>
                       ),
                       isDense: true,
                       contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                     ),
                     onSubmitted: (value) {
                       if (value.trim().isNotEmpty) {
@@ -872,11 +852,12 @@ class _FavoritesPageState extends State<FavoritesPage>
                   runSpacing: 4,
                   children: List.generate(chips.length, (index) {
                     return InputChip(
-                      label: Text(chips[index],
-                          style: const TextStyle(fontSize: 13)),
+                      label: Text(
+                        chips[index],
+                        style: const TextStyle(fontSize: 13),
+                      ),
                       onDeleted: () => onRemove(index),
-                      materialTapTargetSize:
-                          MaterialTapTargetSize.shrinkWrap,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                     );
                   }),
                 ),
@@ -891,7 +872,8 @@ class _FavoritesPageState extends State<FavoritesPage>
                 color: Theme.of(context).colorScheme.surface,
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
-                    color: Theme.of(context).colorScheme.outlineVariant),
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
               ),
               child: ListView.builder(
                 shrinkWrap: true,
@@ -932,11 +914,12 @@ class _FavoritesPageState extends State<FavoritesPage>
         children: [
           Icon(icon, size: 64, color: Colors.grey),
           const SizedBox(height: 16),
-          Text(title,
-              style: const TextStyle(fontSize: 16, color: Colors.grey)),
+          Text(title, style: const TextStyle(fontSize: 16, color: Colors.grey)),
           const SizedBox(height: 8),
-          Text(subtitle,
-              style: const TextStyle(fontSize: 14, color: Colors.grey)),
+          Text(
+            subtitle,
+            style: const TextStyle(fontSize: 14, color: Colors.grey),
+          ),
         ],
       ),
     );
@@ -950,9 +933,10 @@ class _FavoritesPageState extends State<FavoritesPage>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(tag,
-                style:
-                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text(
+              tag,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
             const SizedBox(height: 16),
             ListTile(
               leading: const Icon(Icons.search),
@@ -972,8 +956,7 @@ class _FavoritesPageState extends State<FavoritesPage>
             ),
             ListTile(
               leading: const Icon(Icons.delete, color: Colors.red),
-              title:
-                  const Text('取消收藏', style: TextStyle(color: Colors.red)),
+              title: const Text('取消收藏', style: TextStyle(color: Colors.red)),
               onTap: () {
                 Navigator.pop(context);
                 _removeTag(tag);
