@@ -50,7 +50,6 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   // ============ 标签预览数据 ============
   Map<String, List<Post>> _tagPreviewPosts = {};
-  Map<String, bool> _tagPreviewsLoading = {};
 
   // ============ 补全数据（从主页传入，通过widget.completionDisplayByValue） ============
 
@@ -197,7 +196,6 @@ class _FavoritesPageState extends State<FavoritesPage>
   Future<void> _loadTagPreviews() async {
     for (final tag in _favoriteTags) {
       if (_tagPreviewPosts.containsKey(tag)) continue;
-      setState(() => _tagPreviewsLoading[tag] = true);
 
       try {
         final response = await http.get(
@@ -211,14 +209,11 @@ class _FavoritesPageState extends State<FavoritesPage>
           if (mounted) {
             setState(() {
               _tagPreviewPosts[tag] = posts;
-              _tagPreviewsLoading[tag] = false;
             });
           }
-        } else {
-          if (mounted) setState(() => _tagPreviewsLoading[tag] = false);
         }
       } catch (e) {
-        if (mounted) setState(() => _tagPreviewsLoading[tag] = false);
+        debugPrint('Failed to load tag preview for $tag: $e');
       }
     }
   }
@@ -260,7 +255,6 @@ class _FavoritesPageState extends State<FavoritesPage>
   Future<void> _removeTag(String tag) async {
     await _favoritesManager.removeFavoriteTag(tag);
     _tagPreviewPosts.remove(tag);
-    _tagPreviewsLoading.remove(tag);
     await _loadData();
     if (mounted) {
       ScaffoldMessenger.of(
@@ -291,15 +285,11 @@ class _FavoritesPageState extends State<FavoritesPage>
     int index,
   ) async {
     final posts = postMaps.map((m) => Post.fromJson(m)).toList();
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PostDetailPage(
-          posts: posts,
-          initialIndex: index,
-          completionDisplayByValue: widget.completionDisplayByValue,
-        ),
-      ),
+    final result = await openPostDetailPage(
+      context: context,
+      posts: posts,
+      initialIndex: index,
+      completionDisplayByValue: widget.completionDisplayByValue,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
@@ -307,15 +297,11 @@ class _FavoritesPageState extends State<FavoritesPage>
   }
 
   Future<void> _navigateToDetailFromPosts(List<Post> posts, int index) async {
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PostDetailPage(
-          posts: posts,
-          initialIndex: index,
-          completionDisplayByValue: widget.completionDisplayByValue,
-        ),
-      ),
+    final result = await openPostDetailPage(
+      context: context,
+      posts: posts,
+      initialIndex: index,
+      completionDisplayByValue: widget.completionDisplayByValue,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
@@ -434,48 +420,30 @@ class _FavoritesPageState extends State<FavoritesPage>
                         (post['file_url'] ?? post['large_file_url']) as String?;
                     final postId = post['id'] as int;
 
-                    if (previewUrl == null) {
-                      return const GridTile(
-                        child: Icon(Icons.image_not_supported),
-                      );
-                    }
-
-                    return GestureDetector(
+                    return PostThumbnailTile(
+                      previewUrl: previewUrl,
+                      highResUrl: highResUrl,
+                      heroTag: 'fav_post_$postId',
                       onTap: () => _navigateToDetail(filteredPosts, index),
                       onLongPress: () => _removePost(postId),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          Hero(
-                            tag: 'fav_post_$postId',
-                            child: cachedHighResImageOrPreview(
-                              highResUrl: highResUrl,
-                              previewUrl: previewUrl,
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) =>
-                                  const Icon(Icons.error),
+                      overlay: Positioned(
+                        top: 4,
+                        right: 4,
+                        child: GestureDetector(
+                          onTap: () => _removePost(postId),
+                          child: Container(
+                            padding: const EdgeInsets.all(2),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Icon(
+                              Icons.close,
+                              size: 16,
+                              color: Colors.white,
                             ),
                           ),
-                          Positioned(
-                            top: 4,
-                            right: 4,
-                            child: GestureDetector(
-                              onTap: () => _removePost(postId),
-                              child: Container(
-                                padding: const EdgeInsets.all(2),
-                                decoration: BoxDecoration(
-                                  color: Colors.black54,
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: const Icon(
-                                  Icons.close,
-                                  size: 16,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
                     );
                   },
@@ -532,7 +500,6 @@ class _FavoritesPageState extends State<FavoritesPage>
                   itemBuilder: (context, index) {
                     final tag = filteredTags[index];
                     final previewPosts = _tagPreviewPosts[tag] ?? [];
-                    final isLoading = _tagPreviewsLoading[tag] ?? true;
 
                     return Card(
                       margin: const EdgeInsets.only(bottom: 12),
@@ -595,17 +562,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                               // 预览图片行
                               SizedBox(
                                 height: 120,
-                                child: isLoading
-                                    ? const Center(
-                                        child: SizedBox(
-                                          width: 24,
-                                          height: 24,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        ),
-                                      )
-                                    : previewPosts.isEmpty
+                                child: previewPosts.isEmpty
                                     ? const Center(
                                         child: Text(
                                           '暂无预览',
@@ -623,36 +580,21 @@ class _FavoritesPageState extends State<FavoritesPage>
                                               post.previewFileUrl;
                                           final highResUrl =
                                               post.fileUrl ?? post.largeFileUrl;
-                                          if (previewUrl == null) {
-                                            return const SizedBox.shrink();
-                                          }
-                                          return GestureDetector(
+                                          return PostThumbnailTile(
+                                            previewUrl: previewUrl,
+                                            highResUrl: highResUrl,
+                                            heroTag: 'tag_${tag}_${post.id}',
+                                            width: 120,
+                                            height: 120,
+                                            borderRadius: BorderRadius.circular(
+                                              8,
+                                            ),
                                             onTap: () =>
                                                 _navigateToDetailFromPosts(
                                                   previewPosts,
                                                   idx,
                                                 ),
-                                            child: ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                              child:
-                                                  cachedHighResImageOrPreview(
-                                                    highResUrl: highResUrl,
-                                                    previewUrl: previewUrl,
-                                                    width: 120,
-                                                    height: 120,
-                                                    fit: BoxFit.cover,
-                                                    errorBuilder:
-                                                        (
-                                                          context,
-                                                          error,
-                                                          stackTrace,
-                                                        ) => const Icon(
-                                                          Icons.error,
-                                                          size: 40,
-                                                        ),
-                                                  ),
-                                            ),
+                                            errorIconSize: 40,
                                           );
                                         },
                                       ),
@@ -718,24 +660,11 @@ class _FavoritesPageState extends State<FavoritesPage>
                         (post['file_url'] ?? post['large_file_url']) as String?;
                     final postId = post['id'] as int;
 
-                    if (previewUrl == null) {
-                      return const GridTile(
-                        child: Icon(Icons.image_not_supported),
-                      );
-                    }
-
-                    return GestureDetector(
+                    return PostThumbnailTile(
+                      previewUrl: previewUrl,
+                      highResUrl: highResUrl,
+                      heroTag: 'hist_post_$postId',
                       onTap: () => _navigateToDetail(filteredHistory, index),
-                      child: Hero(
-                        tag: 'hist_post_$postId',
-                        child: cachedHighResImageOrPreview(
-                          highResUrl: highResUrl,
-                          previewUrl: previewUrl,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) =>
-                              const Icon(Icons.error),
-                        ),
-                      ),
                     );
                   },
                 ),
@@ -885,8 +814,8 @@ class _FavoritesPageState extends State<FavoritesPage>
     );
   }
 
-  void _showTagOptions(String tag) {
-    showModalBottomSheet(
+  Future<void> _showTagOptions(String tag) async {
+    final action = await showModalBottomSheet<String>(
       context: context,
       builder: (context) => Container(
         padding: const EdgeInsets.all(16.0),
@@ -902,29 +831,39 @@ class _FavoritesPageState extends State<FavoritesPage>
               leading: const Icon(Icons.search),
               title: const Text('搜索此标签'),
               onTap: () {
-                Navigator.pop(context);
-                _searchTag(tag);
+                Navigator.pop(context, 'search');
               },
             ),
             ListTile(
               leading: const Icon(Icons.copy),
               title: const Text('复制标签'),
               onTap: () {
-                Navigator.pop(context);
-                _copyTag(tag);
+                Navigator.pop(context, 'copy');
               },
             ),
             ListTile(
               leading: const Icon(Icons.delete, color: Colors.red),
               title: const Text('取消收藏', style: TextStyle(color: Colors.red)),
               onTap: () {
-                Navigator.pop(context);
-                _removeTag(tag);
+                Navigator.pop(context, 'remove');
               },
             ),
           ],
         ),
       ),
     );
+
+    if (!mounted || action == null) return;
+    switch (action) {
+      case 'search':
+        _searchTag(tag);
+        break;
+      case 'copy':
+        _copyTag(tag);
+        break;
+      case 'remove':
+        _removeTag(tag);
+        break;
+    }
   }
 }
