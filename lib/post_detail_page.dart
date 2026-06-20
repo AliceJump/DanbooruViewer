@@ -525,11 +525,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
                       },
                     ),
                   ),
-                if (highResUrlForDetailPage == null &&
-                    videoController == null &&
-                    !isVideo &&
-                    (post.fileUrl != null || post.largeFileUrl != null))
-                  const Center(child: CircularProgressIndicator()),
               ],
             ),
           );
