@@ -27,6 +27,32 @@ class PostDetailPage extends StatefulWidget {
   State<PostDetailPage> createState() => _PostDetailPageState();
 }
 
+Future<Object?> openPostDetailPage({
+  required BuildContext context,
+  required List<Post> posts,
+  required int initialIndex,
+  required Map<String, String> completionDisplayByValue,
+}) {
+  if (initialIndex >= 0 && initialIndex < posts.length) {
+    final post = posts[initialIndex];
+    warmPostImages(
+      previewUrl: post.previewFileUrl,
+      highResUrl: post.fileUrl ?? post.largeFileUrl,
+    );
+  }
+
+  return Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => PostDetailPage(
+        posts: posts,
+        initialIndex: initialIndex,
+        completionDisplayByValue: completionDisplayByValue,
+      ),
+    ),
+  );
+}
+
 class _PostDetailPageState extends State<PostDetailPage> {
   late PageController _pageController;
   late int _currentIndex;
@@ -84,15 +110,28 @@ class _PostDetailPageState extends State<PostDetailPage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_didChangeDependenciesRun) {
-      _loadHighResImageForIndex(_currentIndex);
+      _loadMediaForIndex(_currentIndex, prioritizePreview: true);
       _didChangeDependenciesRun = true;
     }
   }
 
-  void _loadHighResImageForIndex(int index) {
+  Future<void> _loadMediaForIndex(
+    int index, {
+    bool prioritizePreview = false,
+  }) async {
     if (index < 0 || index >= widget.posts.length) return;
     final post = widget.posts[index];
+    final previewUrl = post.previewFileUrl;
     final highResUrl = post.fileUrl ?? post.largeFileUrl;
+
+    if (prioritizePreview && previewUrl != null) {
+      try {
+        await precacheImage(NetworkImage(previewUrl), context);
+      } catch (e) {
+        debugPrint('Failed to precache preview for post ${post.id}: $e');
+      }
+      if (!mounted) return;
+    }
 
     if (highResUrl != null &&
         _imageUrls[index] == null &&
@@ -119,15 +158,15 @@ class _PostDetailPageState extends State<PostDetailPage> {
         return;
       }
 
-      precacheImage(NetworkImage(highResUrl), context)
-          .then((_) {
-            if (mounted) {
-              setState(() {
-                _imageUrls[index] = highResUrl;
-              });
-            }
-          })
-          .catchError((_) {});
+      try {
+        await precacheImage(NetworkImage(highResUrl), context);
+        if (!mounted) return;
+        setState(() {
+          _imageUrls[index] = highResUrl;
+        });
+      } catch (e) {
+        debugPrint('Failed to precache image for post ${post.id}: $e');
+      }
     }
   }
 
@@ -135,7 +174,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
     setState(() {
       _currentIndex = index;
     });
-    _loadHighResImageForIndex(index);
+    _loadMediaForIndex(index, prioritizePreview: true);
     _checkFavoriteStatus();
     _recordCurrentPostHistory();
   }

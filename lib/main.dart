@@ -391,6 +391,15 @@ class _MyHomePageState extends State<MyHomePage> {
     _searchChips.add(chip);
   }
 
+  void _handleSearchResult(Object? result) {
+    if (!mounted) return;
+    if (result is SearchChip) {
+      _addSearchChip(result.label, result.queryValue);
+    } else if (result is String) {
+      _addSearchChip(result, result);
+    }
+  }
+
   void _enterMultiSelectMode(int postId) {
     setState(() {
       _isMultiSelectMode = true;
@@ -419,9 +428,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _batchDownload() async {
-    final itemsToDownload = _posts
-        .where((post) => _selectedItems.contains(post.id))
-        .toList();
+    final itemsToDownload = _selectedPosts();
 
     if (itemsToDownload.isEmpty) {
       _exitMultiSelectMode();
@@ -478,8 +485,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _batchCopyLinks() {
-    final links = _posts
-        .where((post) => _selectedItems.contains(post.id))
+    final links = _selectedPosts()
         .map((post) => post.fileUrl ?? post.largeFileUrl)
         .where((url) => url != null)
         .join('\n');
@@ -495,6 +501,16 @@ class _MyHomePageState extends State<MyHomePage> {
       ).showSnackBar(const SnackBar(content: Text('没有可复制的链接')));
     }
     _exitMultiSelectMode();
+  }
+
+  List<Post> _selectedPosts() {
+    final postsById = <int, Post>{};
+    for (final post in _posts) {
+      if (_selectedItems.contains(post.id)) {
+        postsById.putIfAbsent(post.id, () => post);
+      }
+    }
+    return postsById.values.toList();
   }
 
   List<String> getSelectedRatings() {
@@ -594,22 +610,14 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _navigateToDetail(int index) async {
     if (_isMultiSelectMode) return;
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PostDetailPage(
-          posts: _posts,
-          initialIndex: index,
-          completionDisplayByValue: _completionDisplayByInsertValue,
-        ),
-      ),
+    final result = await openPostDetailPage(
+      context: context,
+      posts: _posts,
+      initialIndex: index,
+      completionDisplayByValue: _completionDisplayByInsertValue,
     );
 
-    if (result is SearchChip) {
-      _addSearchChip(result.label, result.queryValue);
-    } else if (result != null && result is String) {
-      _addSearchChip(result, result);
-    }
+    _handleSearchResult(result);
   }
 
   AppBar _buildDefaultAppBar() {
@@ -620,7 +628,7 @@ class _MyHomePageState extends State<MyHomePage> {
         IconButton(
           icon: const Icon(Icons.favorite),
           onPressed: () async {
-            final result = await Navigator.push<String>(
+            final result = await Navigator.push(
               context,
               MaterialPageRoute(
                 builder: (context) => FavoritesPage(
@@ -628,9 +636,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
               ),
             );
-            if (result != null && mounted) {
-              _addSearchChip(result, result);
-            }
+            _handleSearchResult(result);
           },
           tooltip: '我的收藏',
         ),
@@ -826,56 +832,34 @@ class _MyHomePageState extends State<MyHomePage> {
                               final isSelected = _selectedItems.contains(
                                 post.id,
                               );
-                              if (post.previewFileUrl != null) {
-                                final highResUrl =
-                                    post.fileUrl ?? post.largeFileUrl;
-                                return GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: () {
-                                    if (_isMultiSelectMode) {
-                                      _toggleSelection(post.id);
-                                    } else {
-                                      _navigateToDetail(index);
-                                    }
-                                  },
-                                  onLongPress: () {
-                                    if (!_isMultiSelectMode) {
-                                      _enterMultiSelectMode(post.id);
-                                    }
-                                  },
-                                  child: Stack(
-                                    fit: StackFit.expand,
-                                    children: [
-                                      Hero(
-                                        tag: 'post_${post.id}',
-                                        child: cachedHighResImageOrPreview(
-                                          highResUrl: highResUrl,
-                                          previewUrl: post.previewFileUrl,
-                                          fit: BoxFit.cover,
-                                          errorBuilder:
-                                              (context, error, stackTrace) {
-                                                return const Icon(Icons.error);
-                                              },
+                              return PostThumbnailTile(
+                                previewUrl: post.previewFileUrl,
+                                highResUrl: post.fileUrl ?? post.largeFileUrl,
+                                heroTag: 'post_${post.id}',
+                                onTap: () {
+                                  if (_isMultiSelectMode) {
+                                    _toggleSelection(post.id);
+                                  } else {
+                                    _navigateToDetail(index);
+                                  }
+                                },
+                                onLongPress: () {
+                                  if (!_isMultiSelectMode) {
+                                    _enterMultiSelectMode(post.id);
+                                  }
+                                },
+                                overlay: isSelected
+                                    ? Container(
+                                        color: Colors.black.withValues(
+                                          alpha: 0.5,
                                         ),
-                                      ),
-                                      if (isSelected)
-                                        Container(
-                                          color: Colors.black.withValues(
-                                            alpha: 0.5,
-                                          ),
-                                          child: const Icon(
-                                            Icons.check_circle,
-                                            color: Colors.white,
-                                          ),
+                                        child: const Icon(
+                                          Icons.check_circle,
+                                          color: Colors.white,
                                         ),
-                                    ],
-                                  ),
-                                );
-                              } else {
-                                return const GridTile(
-                                  child: Icon(Icons.image_not_supported),
-                                );
-                              }
+                                      )
+                                    : null,
+                              );
                             },
                           ),
                   ),

@@ -20,6 +20,15 @@ Future<File?> getCachedMediaFile(String? url) async {
   return (await DefaultCacheManager().getFileFromCache(url))?.file;
 }
 
+void warmPostImages({String? previewUrl, String? highResUrl}) {
+  if (previewUrl != null) {
+    DefaultCacheManager().downloadFile(previewUrl);
+  }
+  if (highResUrl != null && !isVideoUrl(highResUrl)) {
+    DefaultCacheManager().downloadFile(highResUrl);
+  }
+}
+
 Widget cachedHighResImageOrPreview({
   required String? highResUrl,
   required String? previewUrl,
@@ -53,6 +62,70 @@ Widget cachedHighResImageOrPreview({
       );
     },
   );
+}
+
+class PostThumbnailTile extends StatelessWidget {
+  final String? previewUrl;
+  final String? highResUrl;
+  final String heroTag;
+  final BoxFit fit;
+  final double? width;
+  final double? height;
+  final BorderRadius? borderRadius;
+  final Widget? overlay;
+  final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
+  final double? errorIconSize;
+
+  const PostThumbnailTile({
+    super.key,
+    required this.previewUrl,
+    required this.highResUrl,
+    required this.heroTag,
+    this.fit = BoxFit.cover,
+    this.width,
+    this.height,
+    this.borderRadius,
+    this.overlay,
+    this.onTap,
+    this.onLongPress,
+    this.errorIconSize,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (previewUrl == null) {
+      return const GridTile(child: Icon(Icons.image_not_supported));
+    }
+
+    final image = Stack(
+      fit: StackFit.expand,
+      children: [
+        Hero(
+          tag: heroTag,
+          child: cachedHighResImageOrPreview(
+            highResUrl: highResUrl,
+            previewUrl: previewUrl,
+            width: width,
+            height: height,
+            fit: fit,
+            errorBuilder: (context, error, stackTrace) =>
+                Icon(Icons.error, size: errorIconSize),
+          ),
+        ),
+        if (overlay != null) overlay!,
+      ],
+    );
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: borderRadius == null
+          ? image
+          : ClipRRect(borderRadius: borderRadius!, child: image),
+    );
+  }
 }
 
 /// 获取缓存文件（支持重试）
