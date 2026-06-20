@@ -10,6 +10,8 @@ import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
+import 'media_utils.dart';
+
 void main() {
   runApp(const MyApp());
 }
@@ -825,6 +827,8 @@ class _MyHomePageState extends State<MyHomePage> {
                                 post.id,
                               );
                               if (post.previewFileUrl != null) {
+                                final highResUrl =
+                                    post.fileUrl ?? post.largeFileUrl;
                                 return GestureDetector(
                                   onTap: () {
                                     if (_isMultiSelectMode) {
@@ -843,8 +847,9 @@ class _MyHomePageState extends State<MyHomePage> {
                                     children: [
                                       Hero(
                                         tag: 'post_${post.id}',
-                                        child: Image.network(
-                                          post.previewFileUrl!,
+                                        child: cachedHighResImageOrPreview(
+                                          highResUrl: highResUrl,
+                                          previewUrl: post.previewFileUrl,
                                           fit: BoxFit.cover,
                                           loadingBuilder: (context, child, loadingProgress) {
                                             if (loadingProgress == null) {

@@ -37,6 +37,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
   final _favoritesManager = FavoritesManager();
   bool _isFavorite = false;
   bool _didTriggerDragAction = false;
+  bool _canShowLoadedImage = false;
   double? _verticalDragStartDy;
 
   static const double _dragActionThreshold = 120.0;
@@ -48,6 +49,16 @@ class _PostDetailPageState extends State<PostDetailPage> {
     _pageController = PageController(initialPage: _currentIndex);
     _checkFavoriteStatus();
     _recordCurrentPostHistory();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Future<void>.delayed(const Duration(milliseconds: 300), () {
+        if (mounted) {
+          setState(() {
+            _canShowLoadedImage = true;
+          });
+        }
+      });
+    });
   }
 
   Future<void> _checkFavoriteStatus() async {
@@ -156,7 +167,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   Future<void> _toggleFavorite() async {
     final currentPost = widget.posts[_currentIndex];
-    final newState = await _favoritesManager.toggleFavorite(currentPost.toJson());
+    final newState = await _favoritesManager.toggleFavorite(
+      currentPost.toJson(),
+    );
     if (mounted) {
       setState(() {
         _isFavorite = newState;
@@ -413,8 +426,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
           final highResUrlForDetailPage = _imageUrls[index];
           final videoController = _videoControllers[index];
           final definitiveHighResUrl = post.fileUrl ?? post.largeFileUrl;
-          final isVideo = definitiveHighResUrl != null &&
-              isVideoUrl(definitiveHighResUrl);
+          final isVideo =
+              definitiveHighResUrl != null && isVideoUrl(definitiveHighResUrl);
           final heroTag = 'post_${post.id}';
 
           if (previewUrl == null) {
@@ -463,8 +476,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
               children: [
                 Hero(
                   tag: heroTag,
-                  child: Image.network(
-                    previewUrl,
+                  child: cachedHighResImageOrPreview(
+                    highResUrl: definitiveHighResUrl,
+                    previewUrl: previewUrl,
                     fit: BoxFit.contain,
                     errorBuilder: (context, error, stackTrace) =>
                         const Icon(Icons.error),
@@ -497,7 +511,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
                       color: Colors.white.withValues(alpha: 0.7),
                     ),
                   ),
-                if (highResUrlForDetailPage != null && videoController == null)
+                if (_canShowLoadedImage &&
+                    highResUrlForDetailPage != null &&
+                    videoController == null)
                   AnimatedOpacity(
                     opacity: highResUrlForDetailPage != previewUrl ? 1.0 : 0.0,
                     duration: const Duration(milliseconds: 300),
