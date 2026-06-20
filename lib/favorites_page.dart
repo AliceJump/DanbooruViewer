@@ -286,9 +286,12 @@ class _FavoritesPageState extends State<FavoritesPage>
   }
 
   // ============ 导航到详情页 ============
-  void _navigateToDetail(List<Map<String, dynamic>> postMaps, int index) {
+  Future<void> _navigateToDetail(
+    List<Map<String, dynamic>> postMaps,
+    int index,
+  ) async {
     final posts = postMaps.map((m) => Post.fromJson(m)).toList();
-    Navigator.push(
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => PostDetailPage(
@@ -298,10 +301,13 @@ class _FavoritesPageState extends State<FavoritesPage>
         ),
       ),
     );
+    if (result != null && mounted) {
+      Navigator.pop(context, result);
+    }
   }
 
-  void _navigateToDetailFromPosts(List<Post> posts, int index) {
-    Navigator.push(
+  Future<void> _navigateToDetailFromPosts(List<Post> posts, int index) async {
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => PostDetailPage(
@@ -311,6 +317,9 @@ class _FavoritesPageState extends State<FavoritesPage>
         ),
       ),
     );
+    if (result != null && mounted) {
+      Navigator.pop(context, result);
+    }
   }
 
   // ============ 添加筛选标签 ============
