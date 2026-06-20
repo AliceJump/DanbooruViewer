@@ -117,13 +117,19 @@ class PostThumbnailTile extends StatelessWidget {
       ],
     );
 
+    final content = SizedBox(
+      width: width,
+      height: height,
+      child: borderRadius == null
+          ? image
+          : ClipRRect(borderRadius: borderRadius!, child: image),
+    );
+
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
       onLongPress: onLongPress,
-      child: borderRadius == null
-          ? image
-          : ClipRRect(borderRadius: borderRadius!, child: image),
+      child: content,
     );
   }
 }

@@ -50,6 +50,7 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   // ============ 标签预览数据 ============
   Map<String, List<Post>> _tagPreviewPosts = {};
+  final Set<String> _tagPreviewLoading = {};
 
   // ============ 补全数据（从主页传入，通过widget.completionDisplayByValue） ============
 
@@ -195,7 +196,14 @@ class _FavoritesPageState extends State<FavoritesPage>
   // ============ 标签预览图加载 ============
   Future<void> _loadTagPreviews() async {
     for (final tag in _favoriteTags) {
-      if (_tagPreviewPosts.containsKey(tag)) continue;
+      if (_tagPreviewPosts.containsKey(tag) ||
+          _tagPreviewLoading.contains(tag)) {
+        continue;
+      }
+
+      setState(() {
+        _tagPreviewLoading.add(tag);
+      });
 
       try {
         final response = await http.get(
@@ -211,9 +219,24 @@ class _FavoritesPageState extends State<FavoritesPage>
               _tagPreviewPosts[tag] = posts;
             });
           }
+        } else if (mounted) {
+          setState(() {
+            _tagPreviewPosts[tag] = const [];
+          });
         }
       } catch (e) {
         debugPrint('Failed to load tag preview for $tag: $e');
+        if (mounted) {
+          setState(() {
+            _tagPreviewPosts[tag] = const [];
+          });
+        }
+      } finally {
+        if (mounted) {
+          setState(() {
+            _tagPreviewLoading.remove(tag);
+          });
+        }
       }
     }
   }
@@ -255,6 +278,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   Future<void> _removeTag(String tag) async {
     await _favoritesManager.removeFavoriteTag(tag);
     _tagPreviewPosts.remove(tag);
+    _tagPreviewLoading.remove(tag);
     await _loadData();
     if (mounted) {
       ScaffoldMessenger.of(
@@ -500,6 +524,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                   itemBuilder: (context, index) {
                     final tag = filteredTags[index];
                     final previewPosts = _tagPreviewPosts[tag] ?? [];
+                    final isLoadingPreview = _tagPreviewLoading.contains(tag);
 
                     return Card(
                       margin: const EdgeInsets.only(bottom: 12),
@@ -562,7 +587,14 @@ class _FavoritesPageState extends State<FavoritesPage>
                               // 预览图片行
                               SizedBox(
                                 height: 120,
-                                child: previewPosts.isEmpty
+                                child: isLoadingPreview
+                                    ? const Center(
+                                        child: Text(
+                                          '正在加载预览...',
+                                          style: TextStyle(color: Colors.grey),
+                                        ),
+                                      )
+                                    : previewPosts.isEmpty
                                     ? const Center(
                                         child: Text(
                                           '暂无预览',
