@@ -1,7 +1,40 @@
 #!/usr/bin/env python3
 import json
+import sys
+import time
+import os
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ========================
+# JSON backend (orjson优先)
+# ========================
+try:
+    import orjson
+
+    def json_load(path: Path):
+        return orjson.loads(path.read_bytes())
+
+    def json_dump(obj):
+        return orjson.dumps(obj, option=orjson.OPT_NON_STR_KEYS)
+
+except ImportError:
+    def json_load(path: Path):
+        return json.loads(path.read_bytes().decode("utf-8"))
+
+    def json_dump(obj):
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+# ========================
+# tqdm optional
+# ========================
+try:
+    from tqdm import tqdm
+    HAVE_TQDM = True
+except ImportError:
+    HAVE_TQDM = False
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,92 +57,178 @@ def load_successful_tags() -> set[str]:
 
     try:
         payload = json.loads(SUCCESS_CACHE_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except Exception:
         return set()
 
     if not isinstance(payload, list):
         return set()
 
-    return {tag for tag in payload if isinstance(tag, str)}
+    return {t for t in payload if isinstance(t, str)}
 
 
-def iter_payload_files() -> list[Path]:
-    files_by_slug: dict[str, Path] = {}
+def iter_payload_files():
+    files = {}
 
-    for path in sorted(SOURCE_DIR.rglob("*.json")):
+    for path in SOURCE_DIR.rglob("*.json"):
         if path.is_file():
-            files_by_slug[path.stem] = path
+            files[path.stem] = path
 
     if CACHE_DIR.is_dir():
-        for path in sorted(CACHE_DIR.glob("*.json")):
+        for path in CACHE_DIR.glob("*.json"):
             if path.is_file():
-                files_by_slug.setdefault(path.stem, path)
+                files.setdefault(path.stem, path)
 
     for tag in load_successful_tags():
         path = CACHE_DIR / f"{slugify_tag(tag)}.json"
         if path.is_file():
-            files_by_slug.setdefault(path.stem, path)
+            files.setdefault(path.stem, path)
 
-    return sorted(files_by_slug.values(), key=lambda path: path.as_posix())
+    return list(files.values())
 
 
-def main() -> None:
+def _progress_bar(total: int, desc: str):
+    if HAVE_TQDM:
+        return tqdm(total=total, desc=desc, unit="file")
+    return _SimpleProgress(total, desc)
+
+
+class _SimpleProgress:
+    def __init__(self, total: int, desc: str):
+        self.total = total
+        self.desc = desc
+        self.n = 0
+        self.start = time.time()
+        self.last = 0
+
+    def update(self, x=1):
+        self.n += x
+        now = time.time()
+
+        if now - self.last < 0.1 and self.n < self.total:
+            return
+
+        self.last = now
+        pct = self.n / self.total * 100
+        elapsed = now - self.start
+        eta = (elapsed / self.n * (self.total - self.n)) if self.n else 0
+
+        bar_len = 30
+        fill = int(bar_len * self.n / self.total)
+        bar = "█" * fill + "░" * (bar_len - fill)
+
+        sys.stderr.write(
+            f"\r{self.desc}: |{bar}| {self.n}/{self.total} "
+            f"({pct:5.1f}%) [{_fmt(elapsed)}<{_fmt(eta)}]"
+        )
+
+        if self.n >= self.total:
+            sys.stderr.write("\n")
+
+    def close(self):
+        if self.n < self.total:
+            self.update(self.total - self.n)
+
+
+def _fmt(s):
+    m, s = divmod(int(s), 60)
+    h, m = divmod(m, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+# ========================
+# worker
+# ========================
+def load_candidates(path: Path):
+    try:
+        payload = json_load(path)
+    except Exception:
+        return None
+
+    cands = payload.get("completion_candidates")
+    if not isinstance(cands, list):
+        return None
+
+    result = []
+    for c in cands:
+        if not isinstance(c, dict):
+            continue
+
+        v = c.get("value")
+        i = c.get("insert_value", v)
+        if not isinstance(v, str) or not isinstance(i, str):
+            continue
+        if not v or not i:
+            continue
+
+        result.append((
+            sys.intern(v),
+            sys.intern(i),
+            c.get("source") if isinstance(c.get("source"), str) else "",
+            c.get("score") if isinstance(c.get("score"), int) else 0
+        ))
+
+    return result
+
+
+def main():
     if not SOURCE_DIR.is_dir():
-        raise SystemExit(f"Completion source directory not found: {SOURCE_DIR}")
+        raise SystemExit(f"not found: {SOURCE_DIR}")
 
-    json_files = iter_payload_files()
-    suggestions_by_key: dict[tuple[str, str], dict[str, object]] = {}
+    files = iter_payload_files()
+    total = len(files)
 
-    for path in json_files:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            print(f"Skipped {path.relative_to(SOURCE_DIR)}: {error}")
-            continue
+    print(f"📂 {total} files")
 
-        candidates = payload.get("completion_candidates")
-        if not isinstance(candidates, list):
-            continue
+    max_workers = min(32, (os.cpu_count() or 8) * 4)
 
-        for candidate in candidates:
-            if not isinstance(candidate, dict):
+    pbar = _progress_bar(total, "loading")
+
+    suggestions = {}
+    skipped = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = [ex.submit(load_candidates, f) for f in files]
+
+        for fut in as_completed(futures):
+            pbar.update(1)
+            data = fut.result()
+
+            if not data:
                 continue
 
-            value = candidate.get("value")
-            insert_value = candidate.get("insert_value", value)
-            if not isinstance(value, str) or not isinstance(insert_value, str):
-                continue
-            if not value.strip() or not insert_value.strip():
-                continue
+            for v, i, s, r in data:
+                key = (v.lower(), i.lower())
 
-            source = candidate.get("source")
-            score = candidate.get("score")
-            compact_candidate = {
-                "v": value,
-                "i": insert_value,
-                "s": source if isinstance(source, str) else "",
-                "r": score if isinstance(score, int) else 0,
-            }
-            key = (value.lower(), insert_value.lower())
-            existing = suggestions_by_key.get(key)
-            if existing is None or compact_candidate["r"] > existing["r"]:
-                suggestions_by_key[key] = compact_candidate
+                old = suggestions.get(key)
+                if old is None or r > old[3]:
+                    suggestions[key] = (v, i, s, r)
 
-    suggestions = sorted(
-        suggestions_by_key.values(),
-        key=lambda candidate: (-int(candidate["r"]), str(candidate["v"])),
+    pbar.close()
+
+    print(f"⚙️ merge {len(suggestions)}")
+
+    sorted_list = sorted(
+        suggestions.values(),
+        key=lambda x: (-x[3], x[0])
     )
-    compact_json = json.dumps(suggestions, ensure_ascii=False, separators=(",", ":"))
+
+    compact = [
+        {"v": v, "i": i, "s": s, "r": r}
+        for v, i, s, r in sorted_list
+    ]
+
+    print("🗜 writing zip...")
 
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with ZipFile(TEMP_OUTPUT_FILE, "w", ZIP_DEFLATED, compresslevel=9) as archive:
-        archive.writestr(COMPACT_FILE, compact_json)
+
+    with ZipFile(TEMP_OUTPUT_FILE, "w", ZIP_DEFLATED, compresslevel=9) as z:
+        z.writestr(COMPACT_FILE, json.dumps(compact, ensure_ascii=False, separators=(",", ":")))
+
     TEMP_OUTPUT_FILE.replace(OUTPUT_FILE)
 
-    print(
-        f"Wrote {OUTPUT_FILE} with {len(suggestions)} completion candidates "
-        f"from {len(json_files)} JSON files ({OUTPUT_FILE.stat().st_size:,} bytes)"
-    )
+    size = OUTPUT_FILE.stat().st_size
+
+    print(f"✅ done: {len(compact)} items, {size:,} bytes")
 
 
 if __name__ == "__main__":
