@@ -1,4 +1,6 @@
 // media_utils.dart
+import 'dart:async';
+
 import 'package:gal/gal.dart';
 import 'package:flutter/material.dart';
 import 'dart:io';
@@ -18,6 +20,11 @@ bool isVideoUrl(String url) {
 Future<File?> getCachedMediaFile(String? url) async {
   if (url == null || isVideoUrl(url)) return null;
   return (await DefaultCacheManager().getFileFromCache(url))?.file;
+}
+
+Future<File?> getCachedOrDownloadedMediaFile(String? url) async {
+  if (url == null || isVideoUrl(url)) return null;
+  return DefaultCacheManager().getSingleFile(url);
 }
 
 void warmPostImages({String? previewUrl, String? highResUrl}) {
@@ -52,16 +59,79 @@ Widget cachedHighResImageOrPreview({
         );
       }
       if (previewUrl == null) return const Icon(Icons.image_not_supported);
-      return Image.network(
-        previewUrl,
+      return CachedMediaImage(
+        imageUrl: previewUrl,
         width: width,
         height: height,
         fit: fit,
-        loadingBuilder: loadingBuilder,
         errorBuilder: errorBuilder,
       );
     },
   );
+}
+
+class CachedMediaImage extends StatefulWidget {
+  final String imageUrl;
+  final BoxFit fit;
+  final double? width;
+  final double? height;
+  final ImageErrorWidgetBuilder? errorBuilder;
+
+  const CachedMediaImage({
+    super.key,
+    required this.imageUrl,
+    required this.fit,
+    this.width,
+    this.height,
+    this.errorBuilder,
+  });
+
+  @override
+  State<CachedMediaImage> createState() => _CachedMediaImageState();
+}
+
+class _CachedMediaImageState extends State<CachedMediaImage> {
+  late Future<File?> _fileFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _fileFuture = getCachedOrDownloadedMediaFile(widget.imageUrl);
+  }
+
+  @override
+  void didUpdateWidget(CachedMediaImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imageUrl != widget.imageUrl) {
+      _fileFuture = getCachedOrDownloadedMediaFile(widget.imageUrl);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<File?>(
+      future: _fileFuture,
+      builder: (context, snapshot) {
+        final file = snapshot.data;
+        if (file != null) {
+          return Image.file(
+            file,
+            width: widget.width,
+            height: widget.height,
+            fit: widget.fit,
+            errorBuilder: widget.errorBuilder,
+          );
+        }
+
+        if (snapshot.hasError) {
+          return widget.errorBuilder?.call(context, snapshot.error!, null) ??
+              const Icon(Icons.error);
+        }
+
+        return const SizedBox.expand();
+      },
+    );
+  }
 }
 
 class PostThumbnailTile extends StatelessWidget {
@@ -130,6 +200,59 @@ class PostThumbnailTile extends StatelessWidget {
       onTap: onTap,
       onLongPress: onLongPress,
       child: content,
+    );
+  }
+}
+
+class TimedMediaHoldGesture extends StatefulWidget {
+  final String media;
+  final Widget child;
+
+  const TimedMediaHoldGesture({
+    super.key,
+    required this.media,
+    required this.child,
+  });
+
+  @override
+  State<TimedMediaHoldGesture> createState() => _TimedMediaHoldGestureState();
+}
+
+class _TimedMediaHoldGestureState extends State<TimedMediaHoldGesture> {
+  Timer? _dragTimer;
+  bool _didStartDrag = false;
+
+  @override
+  void dispose() {
+    _dragTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startHoldTimer() {
+    _dragTimer?.cancel();
+    _didStartDrag = false;
+    _dragTimer = Timer(const Duration(seconds: 1), () {
+      _didStartDrag = true;
+      startDrag(context, widget.media);
+    });
+  }
+
+  void _finishHold() {
+    final shouldSave = _dragTimer?.isActive == true && !_didStartDrag;
+    _dragTimer?.cancel();
+    if (shouldSave) {
+      saveMediaToGallery(context, widget.media);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onLongPressStart: (_) => _startHoldTimer(),
+      onLongPressEnd: (_) => _finishHold(),
+      onLongPressCancel: () => _dragTimer?.cancel(),
+      child: widget.child,
     );
   }
 }
