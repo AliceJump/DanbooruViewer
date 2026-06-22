@@ -1,13 +1,10 @@
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
 import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
-import 'DragHelper.dart';
 import 'main.dart';
 import 'media_utils.dart';
 
@@ -183,25 +180,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
     await _favoritesManager.addBrowsingHistory(
       widget.posts[_currentIndex].toJson(),
     );
-  }
-
-  Future<void> _startDragShare(String imageUrl) async {
-    try {
-      // 下载图片到临时文件
-      final tempDir = await getTemporaryDirectory();
-      final fileName = imageUrl.split('/').last;
-      final tempFile = '${tempDir.path}/$fileName';
-
-      // 下载图片
-      await Dio().download(imageUrl, tempFile);
-
-      await DragHelper.startDrag(tempFile);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('拖拽分享失败: $e')));
-    }
   }
 
   Future<void> _toggleFavorite() async {
@@ -473,6 +451,71 @@ class _PostDetailPageState extends State<PostDetailPage> {
             return const Center(child: Icon(Icons.broken_image));
           }
 
+          Widget mediaContent = Stack(
+            fit: StackFit.expand,
+            alignment: Alignment.center,
+            children: [
+              Hero(
+                tag: heroTag,
+                child: cachedHighResImageOrPreview(
+                  highResUrl: definitiveHighResUrl,
+                  previewUrl: previewUrl,
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) =>
+                      const Icon(Icons.error),
+                ),
+              ),
+              if (videoController != null)
+                Center(
+                  child: AspectRatio(
+                    aspectRatio: videoController.value.aspectRatio,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        VideoPlayer(videoController),
+                        Center(
+                          child: Icon(
+                            Icons.play_circle_outline,
+                            size: 60,
+                            color: Colors.white.withValues(alpha: 0.7),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (isVideo && videoController == null)
+                Center(
+                  child: Icon(
+                    Icons.play_circle_outline,
+                    size: 60,
+                    color: Colors.white.withValues(alpha: 0.7),
+                  ),
+                ),
+              if (_canShowLoadedImage &&
+                  highResUrlForDetailPage != null &&
+                  videoController == null)
+                AnimatedOpacity(
+                  opacity: highResUrlForDetailPage != previewUrl ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 300),
+                  child: Image.network(
+                    highResUrlForDetailPage,
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const SizedBox.shrink();
+                    },
+                  ),
+                ),
+            ],
+          );
+
+          if (definitiveHighResUrl != null) {
+            mediaContent = TimedMediaHoldGesture(
+              media: definitiveHighResUrl,
+              child: mediaContent,
+            );
+          }
+
           return GestureDetector(
             onVerticalDragStart: (_) {
               _didTriggerDragAction = false;
@@ -504,68 +547,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                 ),
               );
             },
-            onLongPress: () {
-              if (definitiveHighResUrl != null) {
-                _startDragShare(definitiveHighResUrl);
-              }
-            },
-            child: Stack(
-              fit: StackFit.expand,
-              alignment: Alignment.center,
-              children: [
-                Hero(
-                  tag: heroTag,
-                  child: cachedHighResImageOrPreview(
-                    highResUrl: definitiveHighResUrl,
-                    previewUrl: previewUrl,
-                    fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) =>
-                        const Icon(Icons.error),
-                  ),
-                ),
-                if (videoController != null)
-                  Center(
-                    child: AspectRatio(
-                      aspectRatio: videoController.value.aspectRatio,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          VideoPlayer(videoController),
-                          Center(
-                            child: Icon(
-                              Icons.play_circle_outline,
-                              size: 60,
-                              color: Colors.white.withValues(alpha: 0.7),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                if (isVideo && videoController == null)
-                  Center(
-                    child: Icon(
-                      Icons.play_circle_outline,
-                      size: 60,
-                      color: Colors.white.withValues(alpha: 0.7),
-                    ),
-                  ),
-                if (_canShowLoadedImage &&
-                    highResUrlForDetailPage != null &&
-                    videoController == null)
-                  AnimatedOpacity(
-                    opacity: highResUrlForDetailPage != previewUrl ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 300),
-                    child: Image.network(
-                      highResUrlForDetailPage,
-                      fit: BoxFit.contain,
-                      errorBuilder: (context, error, stackTrace) {
-                        return const SizedBox.shrink();
-                      },
-                    ),
-                  ),
-              ],
-            ),
+            child: mediaContent,
           );
         },
       ),

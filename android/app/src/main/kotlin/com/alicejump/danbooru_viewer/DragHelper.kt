@@ -1,6 +1,7 @@
 package com.alicejump.danbooru_viewer
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Point
@@ -32,10 +33,10 @@ object DragHelper {
             imageFile
         )
 
-        val clipData = ClipData.newUri(
-            context.contentResolver,
-            "Dragged Image",
-            uri
+        val mimeType = if (type == "video") "video/*" else "image/*"
+        val clipData = ClipData(
+            ClipDescription("Danbooru media", arrayOf(mimeType)),
+            ClipData.Item(uri)
         )
 
         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)

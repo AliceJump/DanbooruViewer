@@ -231,8 +231,10 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
       body: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: _handleTap,
-        onLongPress: () => startDrag(context, _activeMediaPathOrUrl()),
-        child: Center(child: _buildMediaContent()),
+        child: TimedMediaHoldGesture(
+          media: _activeMediaPathOrUrl(),
+          child: Center(child: _buildMediaContent()),
+        ),
       ),
     );
   }
