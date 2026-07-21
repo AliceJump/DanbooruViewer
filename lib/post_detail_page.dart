@@ -96,6 +96,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   @override
   void dispose() {
+    _pageController.dispose();
     // 清理所有视频控制器
     for (var controller in _videoControllers.values) {
       controller.dispose();
@@ -588,20 +589,25 @@ class _PostDetailPageState extends State<PostDetailPage> {
           ),
         ],
       ),
-      body: isLandscape
-          ? Row(
-              children: [
-                Expanded(flex: 3, child: _buildMediaPager(screenSize.height)),
-                const VerticalDivider(width: 1),
-                Expanded(flex: 2, child: _buildInfoPanel(currentPostForTags)),
-              ],
-            )
-          : Column(
-              children: [
-                _buildMediaPager(screenSize.height * 0.5),
-                Expanded(child: _buildInfoPanel(currentPostForTags)),
-              ],
+      body: Flex(
+        direction: isLandscape ? Axis.horizontal : Axis.vertical,
+        children: [
+          Expanded(
+            flex: isLandscape ? 3 : 1,
+            child: _buildMediaPager(
+              isLandscape ? screenSize.height : screenSize.height * 0.5,
             ),
+          ),
+          if (isLandscape)
+            const VerticalDivider(width: 1)
+          else
+            const Divider(height: 1),
+          Expanded(
+            flex: isLandscape ? 2 : 1,
+            child: _buildInfoPanel(currentPostForTags),
+          ),
+        ],
+      ),
     );
   }
 }

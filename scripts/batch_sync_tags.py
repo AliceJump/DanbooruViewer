@@ -90,6 +90,53 @@ def save_json_set(
         indent=2,
     )
 
+    _atomic_write(path, payload)
+
+
+def load_failed_cache(path: Path) -> dict[str, str]:
+    """加载失败缓存，返回 {tag: reason} 字典。
+    
+    兼容旧版数组格式，自动升级为字典。
+    """
+    if not path.exists():
+        return {}
+
+    try:
+        data = json.loads(
+            path.read_text(encoding="utf-8")
+        )
+
+        if isinstance(data, dict):
+            return data
+
+        # 旧版数组格式 → 升级为字典
+        if isinstance(data, list):
+            upgraded = {tag: "unknown" for tag in data}
+            save_failed_cache(path, upgraded)
+            return upgraded
+
+    except Exception:
+        pass
+
+    return {}
+
+
+def save_failed_cache(
+    path: Path,
+    values: dict[str, str],
+):
+    """保存失败缓存，{tag: reason} 格式。"""
+    payload = json.dumps(
+        dict(sorted(values.items())),
+        ensure_ascii=False,
+        indent=2,
+    )
+
+    _atomic_write(path, payload)
+
+
+def _atomic_write(path: Path, payload: str):
+    """原子写入文件（写入临时文件后 rename）。"""
     temp_path = path.with_name(
         f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
     )
@@ -459,11 +506,11 @@ def get_tags_iterator(args):
     if args.retry_failed:
         print("Retrying failed tags...")
 
-        failed_tags = load_json_set(
+        failed_tags = load_failed_cache(
             FAILED_CACHE_PATH
         )
 
-        return iter(sorted(failed_tags))
+        return iter(sorted(failed_tags.keys()))
 
     if args.tags:
         return iter(args.tags)
@@ -502,7 +549,7 @@ def sync_single_tag(
     args,
     metadata: dict,
     successful_tags: set[str],
-    failed_tags: set[str],
+    failed_tags: dict[str, str],
 ) -> tuple[str, str]:
     try:
         if (
@@ -565,15 +612,14 @@ def sync_single_tag(
 
             successful_tags.add(tag)
 
-            if tag in failed_tags:
-                failed_tags.remove(tag)
+            failed_tags.pop(tag, None)
 
             save_json_set(
                 SUCCESS_CACHE_PATH,
                 successful_tags,
             )
 
-            save_json_set(
+            save_failed_cache(
                 FAILED_CACHE_PATH,
                 failed_tags,
             )
@@ -582,9 +628,9 @@ def sync_single_tag(
 
     except Exception as exc:
         with metadata_lock:
-            failed_tags.add(tag)
+            failed_tags[tag] = str(exc)
 
-            save_json_set(
+            save_failed_cache(
                 FAILED_CACHE_PATH,
                 failed_tags,
             )
@@ -665,7 +711,7 @@ def main():
     print()
     print("Loading failed cache...")
 
-    failed_tags = load_json_set(
+    failed_tags = load_failed_cache(
         FAILED_CACHE_PATH
     )
 
