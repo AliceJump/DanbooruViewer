@@ -213,11 +213,11 @@ jobs:
           echo "" >> /tmp/release_body.md
 
           if [ -z "$PREV_TAG" ]; then
-            git log "$CURRENT_TAG" --oneline --no-decorate | grep -v "Bump version to" >> /tmp/release_body.md
+            git log "$CURRENT_TAG" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats" >> /tmp/release_body.md
           else
             echo "从 $PREV_TAG 到 $CURRENT_TAG 的变更:" >> /tmp/release_body.md
             echo "" >> /tmp/release_body.md
-            git log "$PREV_TAG..$CURRENT_TAG" --oneline --no-decorate | grep -v "Bump version to" >> /tmp/release_body.md
+            git log "$PREV_TAG..$CURRENT_TAG" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats" >> /tmp/release_body.md
           fi
 
           echo "" >> /tmp/release_body.md
