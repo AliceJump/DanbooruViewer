@@ -1,0 +1,110 @@
+name: Sync Latest Danbooru Tags
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Number of newest tags to sync and archive"
+        required: false
+        default: "10000"
+      delay:
+        description: "Delay between API pages in seconds"
+        required: false
+        default: "2.0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: latest-danbooru-tags
+  cancel-in-progress: false
+
+jobs:
+  sync-latest-tags:
+    runs-on: ubuntu-latest
+    env:
+      TAG_LIMIT: ${{ github.event.inputs.limit || '10000' }}
+      PAGE_DELAY: ${{ github.event.inputs.delay || '2.0' }}
+      DANBOORU_PROXY: ""
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Install Git LFS
+        run: |
+          git lfs install
+          git lfs track "*.zip"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Restore latest raw JSON archive
+        run: |
+          if [ -f assets/danbooru_latest_10000_raw_json.zip ]; then
+            python scripts/restore_latest_tag_json.py --cache-only
+          else
+            echo "No latest raw JSON archive to restore."
+          fi
+
+      - name: Sync newest tags with retries
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/sync_latest_tag_json.py \
+            --limit "$TAG_LIMIT" \
+            --page-size 500 \
+            --attempts 5 \
+            --page-delay "$PAGE_DELAY" \
+            --retry-delay 300
+
+      - name: Archive newest raw JSON files
+        run: |
+          python scripts/archive_latest_tag_json.py \
+            --limit "$TAG_LIMIT" \
+            --page-size 500 \
+            --retries 5 \
+            --delay "$PAGE_DELAY"
+
+      - name: Verify archive restore
+        run: python scripts/restore_latest_tag_json.py --dry-run --cache-only
+
+      - name: Commit updated latest tag archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short
+          changed_files=$(git status --porcelain -- \
+            .gitattributes \
+            scripts/sync_latest_tag_json.py \
+            assets/danbooru_latest_10000_raw_json.zip \
+            assets/danbooru_latest_10000_raw_json.manifest.json \
+            cache/tag_api_cursor.json \
+            cache/failed_tags.json \
+            cache/do_not_retry_tags.json)
+          if [ -z "$changed_files" ]; then
+            echo "No tag archive changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .gitattributes \
+            scripts/sync_latest_tag_json.py \
+            assets/danbooru_latest_10000_raw_json.zip \
+            assets/danbooru_latest_10000_raw_json.manifest.json \
+            cache/tag_api_cursor.json \
+            cache/failed_tags.json \
+            cache/do_not_retry_tags.json
+          git commit -m "chore: sync latest Danbooru tag archive"
+          git push
