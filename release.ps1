@@ -127,6 +127,69 @@ function Commit-Changes {
     }
 }
 
+function Test-WorkingTreeClean {
+    git diff --quiet
+    if ($LASTEXITCODE -ne 0) { return $false }
+    git diff --cached --quiet
+    return $LASTEXITCODE -eq 0
+}
+
+function Sync-RemoteBranch {
+    param([string]$stage = "同步远端分支")
+
+    $branch = git branch --show-current
+    if ([string]::IsNullOrWhiteSpace($branch)) {
+        Write-Host "❌ 当前不在任何分支上，无法发布" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "⏳ ${stage}: fetch origin/$branch..." -ForegroundColor Yellow
+    git fetch origin $branch --tags
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ fetch 失败，请检查网络或权限" -ForegroundColor Red
+        exit 1
+    }
+
+    $remoteRef = "origin/$branch"
+    git rev-parse --verify $remoteRef *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "⚠ 未找到远端分支 $remoteRef，跳过同步检查" -ForegroundColor Yellow
+        return
+    }
+
+    $localHead = git rev-parse HEAD
+    $remoteHead = git rev-parse $remoteRef
+    if ($localHead -eq $remoteHead) { return }
+
+    $mergeBase = git merge-base HEAD $remoteRef
+    if ($mergeBase -eq $localHead) {
+        Write-Host "⏩ 远端分支领先本地，执行 fast-forward..." -ForegroundColor Yellow
+        git merge --ff-only $remoteRef
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "❌ fast-forward 失败，请手动同步后重试" -ForegroundColor Red
+            exit 1
+        }
+        return
+    }
+
+    if ($mergeBase -eq $remoteHead) {
+        Write-Host "ℹ 本地分支领先远端，可以直接推送" -ForegroundColor Cyan
+        return
+    }
+
+    if (-not (Test-WorkingTreeClean)) {
+        Write-Host "❌ 本地和远端已分叉，且工作区不干净。请先提交/暂存改动后执行: git pull --rebase origin $branch" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "🔁 本地和远端已分叉，执行 rebase 到 origin/$branch..." -ForegroundColor Yellow
+    git rebase $remoteRef
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ rebase 失败，请解决冲突后重试发布" -ForegroundColor Red
+        exit 1
+    }
+}
+
 # 显示两个版本间的提交日志，过滤 Bump version 消息
 function Show-Changelog {
     param([string]$prev_tag, [string]$curr_ref)
@@ -181,6 +244,7 @@ function Create-Tag {
 }
 
 function Push-Changes {
+    Sync-RemoteBranch -stage "推送前检查远端分支"
     $branch = git branch --show-current
     Write-Host "⏳ 推送 Tag 和提交到分支 '$branch'..."
     git push origin $branch --tags
@@ -195,8 +259,7 @@ function Push-Changes {
 Check-Git
 
 # 拉取远程最新代码
-Write-Host "⏳ 拉取远程最新代码..." -ForegroundColor Yellow
-git pull --ff-only
+Sync-RemoteBranch -stage "拉取远程最新代码"
 Write-Host ""
 
 $REPO_URL = Get-RemoteUrl
@@ -218,6 +281,8 @@ switch ($choice) {
     "1" {
         Clear-Host
         Write-Host "=== 发布新 Release 版本 ==="
+
+        Sync-RemoteBranch -stage "发布前检查远端分支"
 
         # 获取最新 commit 和上一个 tag
         $latestCommit = git rev-parse HEAD
@@ -271,6 +336,8 @@ switch ($choice) {
     "2" {
         Clear-Host
         Write-Host "=== 发布测试版本 ==="
+
+        Sync-RemoteBranch -stage "发布前检查远端分支"
         Write-Host "选择版本类型:"
         Write-Host "1) Alpha"
         Write-Host "2) Beta"

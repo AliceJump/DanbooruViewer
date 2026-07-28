@@ -114,6 +114,69 @@ if %ERRORLEVEL% EQU 0 (
 )
 goto :eof
 
+:is_working_tree_clean
+git diff --quiet
+if %ERRORLEVEL% NEQ 0 exit /b 1
+git diff --cached --quiet
+if %ERRORLEVEL% NEQ 0 exit /b 1
+exit /b 0
+
+:sync_remote_branch
+set "sync_stage=%~1"
+if "!sync_stage!"=="" set "sync_stage=同步远端分支"
+for /f "usebackq tokens=*" %%i in (`git branch --show-current`) do set "branch=%%i"
+if "!branch!"=="" (
+    echo [31m? 当前不在任何分支上，无法发布[0m
+    exit /b 1
+)
+
+echo [33m? !sync_stage!: fetch origin/!branch!...[0m
+git fetch origin !branch! --tags
+if !ERRORLEVEL! NEQ 0 (
+    echo [31m? fetch 失败，请检查网络或权限[0m
+    exit /b 1
+)
+
+git rev-parse --verify origin/!branch! >nul 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo [33m? 未找到远端分支 origin/!branch!，跳过同步检查[0m
+    goto :eof
+)
+
+for /f "usebackq tokens=*" %%i in (`git rev-parse HEAD`) do set "local_head=%%i"
+for /f "usebackq tokens=*" %%i in (`git rev-parse origin/!branch!`) do set "remote_head=%%i"
+if "!local_head!"=="!remote_head!" goto :eof
+
+for /f "usebackq tokens=*" %%i in (`git merge-base HEAD origin/!branch!`) do set "merge_base=%%i"
+if "!merge_base!"=="!local_head!" (
+    echo [33m? 远端分支领先本地，执行 fast-forward...[0m
+    git merge --ff-only origin/!branch!
+    if !ERRORLEVEL! NEQ 0 (
+        echo [31m? fast-forward 失败，请手动同步后重试[0m
+        exit /b 1
+    )
+    goto :eof
+)
+
+if "!merge_base!"=="!remote_head!" (
+    echo [36m? 本地分支领先远端，可以直接推送[0m
+    goto :eof
+)
+
+call :is_working_tree_clean
+if !ERRORLEVEL! NEQ 0 (
+    echo [31m? 本地和远端已分叉，且工作区不干净。请先提交/暂存改动后执行: git pull --rebase origin !branch![0m
+    exit /b 1
+)
+
+echo [33m? 本地和远端已分叉，执行 rebase 到 origin/!branch!...[0m
+git rebase origin/!branch!
+if !ERRORLEVEL! NEQ 0 (
+    echo [31m? rebase 失败，请解决冲突后重试发布[0m
+    exit /b 1
+)
+goto :eof
+
 :create_tag
 set "tag_name=%~1"
 set "commit_hash=%~2"
@@ -122,6 +185,8 @@ echo [32m? Tag !tag_name! 已创建 (指向 commit !commit_hash!)[0m
 goto :eof
 
 :push_changes
+for /f "usebackq tokens=*" %%i in (`git branch --show-current`) do set "branch=%%i"
+call :sync_remote_branch "推送前检查远端分支"
 for /f "usebackq tokens=*" %%i in (`git branch --show-current`) do set "branch=%%i"
 echo [33m? 推送 Tag 和提交到分支 '!branch!'...[0m
 git push origin !branch! --tags
@@ -153,8 +218,7 @@ REM ── 主程序 ───────────────────�
 call :check_git
 
 REM 拉取远程最新代码
-echo [33m? 拉取远程最新代码...[0m
-git pull --ff-only
+call :sync_remote_branch "拉取远程最新代码"
 echo.
 
 call :get_remote_url
@@ -186,6 +250,8 @@ cls
 echo.
 echo === 发布新 Release 版本 ===
 echo.
+
+call :sync_remote_branch "发布前检查远端分支"
 
 for /f "usebackq tokens=*" %%i in (`git rev-parse HEAD`) do set "latest_commit=%%i"
 for /f "usebackq tokens=*" %%i in (`git tag --points-at !latest_commit!`) do set "existing_tag=%%i"
@@ -243,6 +309,8 @@ cls
 echo.
 echo === 发布测试版本 ===
 echo.
+call :sync_remote_branch "发布前检查远端分支"
+
 echo 选择版本类型:
 echo 1) Alpha
 echo 2) Beta

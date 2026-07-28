@@ -117,6 +117,65 @@ commit_changes() {
     fi
 }
 
+is_working_tree_clean() {
+    git diff --quiet && git diff --cached --quiet
+}
+
+sync_remote_branch() {
+    local stage="${1:-同步远端分支}"
+    local branch
+    branch=$(git branch --show-current)
+    if [ -z "$branch" ]; then
+        echo -e "${RED}❌ 当前不在任何分支上，无法发布${NC}"
+        exit 1
+    fi
+
+    echo -e "${YELLOW}⏳ $stage: fetch origin/$branch...${NC}"
+    if ! git fetch origin "$branch" --tags; then
+        echo -e "${RED}❌ fetch 失败，请检查网络或权限${NC}"
+        exit 1
+    fi
+
+    local remote_ref="origin/$branch"
+    if ! git rev-parse --verify "$remote_ref" >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ 未找到远端分支 $remote_ref，跳过同步检查${NC}"
+        return
+    fi
+
+    local local_head remote_head merge_base
+    local_head=$(git rev-parse HEAD)
+    remote_head=$(git rev-parse "$remote_ref")
+    if [ "$local_head" = "$remote_head" ]; then
+        return
+    fi
+
+    merge_base=$(git merge-base HEAD "$remote_ref")
+    if [ "$merge_base" = "$local_head" ]; then
+        echo -e "${YELLOW}⏩ 远端分支领先本地，执行 fast-forward...${NC}"
+        if ! git merge --ff-only "$remote_ref"; then
+            echo -e "${RED}❌ fast-forward 失败，请手动同步后重试${NC}"
+            exit 1
+        fi
+        return
+    fi
+
+    if [ "$merge_base" = "$remote_head" ]; then
+        echo -e "${CYAN}ℹ 本地分支领先远端，可以直接推送${NC}"
+        return
+    fi
+
+    if ! is_working_tree_clean; then
+        echo -e "${RED}❌ 本地和远端已分叉，且工作区不干净。请先提交/暂存改动后执行: git pull --rebase origin $branch${NC}"
+        exit 1
+    fi
+
+    echo -e "${YELLOW}🔁 本地和远端已分叉，执行 rebase 到 origin/$branch...${NC}"
+    if ! git rebase "$remote_ref"; then
+        echo -e "${RED}❌ rebase 失败，请解决冲突后重试发布${NC}"
+        exit 1
+    fi
+}
+
 create_tag() {
     local tag="$1"
     local commit="$2"
@@ -126,6 +185,8 @@ create_tag() {
 
 push_changes() {
     local branch
+    branch=$(git branch --show-current)
+    sync_remote_branch "推送前检查远端分支"
     branch=$(git branch --show-current)
     echo -e "${YELLOW}⏳ 推送 Tag 和提交到分支 '$branch'...${NC}"
     if ! git push origin "$branch" --tags; then
@@ -182,8 +243,7 @@ generate_changelog_text() {
 check_git
 
 # 拉取远程最新代码
-echo -e "${YELLOW}⏳ 拉取远程最新代码...${NC}"
-git pull --ff-only
+sync_remote_branch "拉取远程最新代码"
 echo ""
 
 REPO_URL=$(get_remote_url)
@@ -207,6 +267,8 @@ case $choice in
         echo ""
         echo "=== 发布新 Release 版本 ==="
         echo ""
+
+        sync_remote_branch "发布前检查远端分支"
 
         LATEST_COMMIT=$(git rev-parse HEAD)
         EXISTING_TAG=$(git tag --points-at "$LATEST_COMMIT")
@@ -266,6 +328,9 @@ case $choice in
         echo ""
         echo "=== 发布测试版本 ==="
         echo ""
+
+        sync_remote_branch "发布前检查远端分支"
+
         echo "选择版本类型:"
         echo "1) Alpha"
         echo "2) Beta"
