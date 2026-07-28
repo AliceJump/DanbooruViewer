@@ -5,6 +5,7 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:video_player/video_player.dart';
 import 'media_utils.dart';
+import 'video_controls.dart';
 
 class FullScreenImagePage extends StatefulWidget {
   final String previewUrl;
@@ -29,7 +30,6 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
   VideoPlayerController? _videoController;
   bool _didLoadHighRes = false;
   bool _isVideo = false;
-  bool _videoIsPlaying = false;
   bool _videoLoading = false;
   String? _videoLoadError;
 
@@ -132,19 +132,9 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
   }
 
   void _handleTap() {
-    if (_isVideo && _videoController != null) {
-      setState(() {
-        if (_videoIsPlaying) {
-          _videoController!.pause();
-        } else {
-          _videoController!.play();
-        }
-        _videoIsPlaying = !_videoIsPlaying;
-      });
-      return;
+    if (!_isVideo || _videoController == null) {
+      Navigator.of(context).pop();
     }
-
-    Navigator.of(context).pop();
   }
 
   Widget _buildVideoPlaceholder() {
@@ -160,10 +150,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
               style: const TextStyle(color: Colors.white70),
             ),
             const SizedBox(height: 12),
-            TextButton(
-              onPressed: _loadHighResMedia,
-              child: const Text('重试'),
-            ),
+            TextButton(onPressed: _loadHighResMedia, child: const Text('重试')),
           ],
         ),
       );
@@ -186,21 +173,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
 
   Widget _buildMediaContent() {
     if (_isVideo && _videoController != null) {
-      return Stack(
-        alignment: Alignment.center,
-        children: [
-          AspectRatio(
-            aspectRatio: _videoController!.value.aspectRatio,
-            child: VideoPlayer(_videoController!),
-          ),
-          if (!_videoIsPlaying)
-            Icon(
-              Icons.play_circle_outline,
-              size: 80,
-              color: Colors.white.withValues(alpha: 0.7),
-            ),
-        ],
-      );
+      return DanbooruVideoPlayer(controller: _videoController!);
     }
 
     if (_videoLoading || _videoLoadError != null) {

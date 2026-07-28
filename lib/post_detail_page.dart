@@ -11,6 +11,7 @@ import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
 import 'main.dart';
 import 'media_utils.dart';
+import 'video_controls.dart';
 
 class PostDetailPage extends StatefulWidget {
   final List<Post> posts;
@@ -596,21 +597,21 @@ class _PostDetailPageState extends State<PostDetailPage> {
               ),
               if (videoController != null)
                 Center(
-                  child: AspectRatio(
-                    aspectRatio: videoController.value.aspectRatio,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        VideoPlayer(videoController),
-                        Center(
-                          child: Icon(
-                            Icons.play_circle_outline,
-                            size: 60,
-                            color: Colors.white.withValues(alpha: 0.7),
+                  child: DanbooruVideoPlayer(
+                    controller: videoController,
+                    compact: true,
+                    onOpenFullScreen: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => FullScreenImagePage(
+                            previewUrl: previewUrl,
+                            highResUrl: definitiveHighResUrl,
+                            heroTag: heroTag,
                           ),
                         ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
                 ),
               if (isVideo && videoController == null)
