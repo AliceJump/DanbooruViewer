@@ -1,5 +1,9 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
@@ -54,6 +58,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
   late PageController _pageController;
   late int _currentIndex;
   final Map<int, String> _imageUrls = {};
+  final Map<int, String> _commentaryByPostId = {};
   final Map<int, VideoPlayerController> _videoControllers = {};
   bool _didChangeDependenciesRun = false;
 
@@ -221,6 +226,113 @@ class _PostDetailPageState extends State<PostDetailPage> {
         duration: const Duration(seconds: 1),
       ),
     );
+  }
+
+  void _copyLink(String url, String label) {
+    Clipboard.setData(ClipboardData(text: url));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已复制$label'),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  Future<void> _sharePost(Post post) async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('正在获取分享简介...'),
+        duration: Duration(milliseconds: 800),
+      ),
+    );
+
+    final postUrl = _postUrl(post);
+    final intro = await _postIntro(post);
+    final text = intro == null || intro.isEmpty
+        ? postUrl
+        : '$postUrl\n\n$intro';
+
+    try {
+      await Share.share(text, subject: 'Danbooru Post #${post.id}');
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('分享失败: $e')));
+    }
+  }
+
+  Future<String?> _postIntro(Post post) async {
+    final cached = _commentaryByPostId[post.id];
+    if (cached != null) return cached;
+
+    final commentary = await _fetchArtistCommentary(post.id);
+    final intro = commentary ?? _fallbackPostIntro(post);
+    if (intro != null && intro.isNotEmpty) {
+      _commentaryByPostId[post.id] = intro;
+    }
+    return intro;
+  }
+
+  Future<String?> _fetchArtistCommentary(int postId) async {
+    try {
+      final uri = Uri.https('danbooru.donmai.us', '/artist_commentaries.json', {
+        'search[post_id]': '$postId',
+        'limit': '1',
+      });
+      final response = await http.get(uri);
+      if (response.statusCode != 200) return null;
+
+      final payload = json.decode(response.body);
+      if (payload is! List || payload.isEmpty || payload.first is! Map) {
+        return null;
+      }
+
+      final commentary = Map<String, dynamic>.from(payload.first as Map);
+      final title = _firstNonEmpty([
+        commentary['translated_title'],
+        commentary['original_title'],
+      ]);
+      final description = _firstNonEmpty([
+        commentary['translated_description'],
+        commentary['original_description'],
+      ]);
+
+      return [title, description]
+          .whereType<String>()
+          .map(_normalizeShareText)
+          .where((value) => value.isNotEmpty)
+          .join('\n');
+    } catch (e) {
+      debugPrint('Failed to load artist commentary for post $postId: $e');
+      return null;
+    }
+  }
+
+  String? _firstNonEmpty(List<dynamic> values) {
+    for (final value in values) {
+      final text = value?.toString().trim();
+      if (text != null && text.isNotEmpty) return text;
+    }
+    return null;
+  }
+
+  String _normalizeShareText(String text) {
+    return text.replaceAll(RegExp(r'<[^>]*>'), '').trim();
+  }
+
+  String? _fallbackPostIntro(Post post) {
+    final lines = [
+      if (post.tagStringArtist?.trim().isNotEmpty == true)
+        '作者: ${post.tagStringArtist}',
+      if (post.tagStringCopyright?.trim().isNotEmpty == true)
+        '版权: ${post.tagStringCopyright}',
+      if (post.tagStringCharacter?.trim().isNotEmpty == true)
+        '角色: ${post.tagStringCharacter}',
+      if (post.rating.trim().isNotEmpty) 'Rating: ${post.rating}',
+    ];
+    if (lines.isEmpty) return null;
+    return lines.join('\n');
   }
 
   void _handleDragAction(double currentDy) {
@@ -411,12 +523,14 @@ class _PostDetailPageState extends State<PostDetailPage> {
         children: [
           FilledButton.icon(
             onPressed: () => _launchUrl(_postUrl(post)),
+            onLongPress: () => _copyLink(_postUrl(post), '站内原链接'),
             icon: const Icon(Icons.open_in_new),
             label: const Text('站内原链接'),
           ),
           if (sourceUrl != null)
             OutlinedButton.icon(
               onPressed: () => _launchUrl(sourceUrl),
+              onLongPress: () => _copyLink(sourceUrl, '源链接'),
               icon: const Icon(Icons.link),
               label: Text(
                 _isPixivSource(sourceUrl) ? 'Pixiv 源链接' : 'Source 源链接',
@@ -429,6 +543,20 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   bool _isPixivSource(String source) {
     return source.toLowerCase().contains('pixiv.net');
+  }
+
+  double _portraitMediaHeight(Post post, Size screenSize) {
+    final imageWidth = post.imageWidth;
+    final imageHeight = post.imageHeight;
+    if (imageWidth == null || imageHeight == null || imageWidth <= 0) {
+      return screenSize.height * 0.5;
+    }
+
+    final naturalHeight = screenSize.width * imageHeight / imageWidth;
+    return naturalHeight.clamp(
+      screenSize.height * 0.32,
+      screenSize.height * 0.72,
+    );
   }
 
   Widget _buildMediaPager(double height) {
@@ -587,6 +715,11 @@ class _PostDetailPageState extends State<PostDetailPage> {
             onPressed: _toggleFavorite,
             tooltip: _isFavorite ? '取消收藏' : '收藏',
           ),
+          IconButton(
+            icon: const Icon(Icons.share),
+            onPressed: () => _sharePost(currentPostForTags),
+            tooltip: '分享',
+          ),
         ],
       ),
       body: Flex(
@@ -595,7 +728,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
           Expanded(
             flex: isLandscape ? 3 : 1,
             child: _buildMediaPager(
-              isLandscape ? screenSize.height : screenSize.height * 0.5,
+              isLandscape
+                  ? screenSize.height
+                  : _portraitMediaHeight(currentPostForTags, screenSize),
             ),
           ),
           if (isLandscape)
