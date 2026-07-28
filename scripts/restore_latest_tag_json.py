@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Restore raw Danbooru tag JSON files from the latest-tag archive."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+from zipfile import ZipFile
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ARCHIVE = ROOT / "assets" / "danbooru_latest_10000_raw_json.zip"
+CACHE_DIR = ROOT / ".danbooru_cache"
+ASSET_DIR = ROOT / "assets" / "danbooru_completion"
+ZIP_MANIFEST_NAME = "manifest.json"
+
+
+def sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def restore_archive(
+    archive_path: Path,
+    cache_dir: Path,
+    asset_dir: Path | None,
+    dry_run: bool,
+):
+    with ZipFile(archive_path, "r") as archive:
+        manifest = json.loads(
+            archive.read(ZIP_MANIFEST_NAME).decode("utf-8")
+        )
+        entries = manifest.get("entries")
+        if not isinstance(entries, list):
+            raise SystemExit("archive manifest does not contain entries")
+
+        restored = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+
+            archive_name = entry.get("file")
+            slug = entry.get("slug")
+            expected_hash = entry.get("sha256")
+            if not all(isinstance(value, str) for value in (archive_name, slug, expected_hash)):
+                continue
+
+            payload = archive.read(archive_name)
+            actual_hash = sha256_bytes(payload)
+            if actual_hash != expected_hash:
+                raise SystemExit(
+                    f"sha256 mismatch for {archive_name}: "
+                    f"expected {expected_hash}, got {actual_hash}"
+                )
+
+            cache_path = cache_dir / f"{slug}.json"
+            asset_path = asset_dir / f"{slug}.json" if asset_dir is not None else None
+
+            if not dry_run:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_bytes(payload)
+                if asset_path is not None:
+                    asset_path.parent.mkdir(parents=True, exist_ok=True)
+                    asset_path.write_bytes(payload)
+
+            restored += 1
+
+    print(
+        f"Restored {restored} JSON files from {archive_path}"
+        f"{' (dry run)' if dry_run else ''}."
+    )
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Restore raw JSON files from assets/danbooru_latest_10000_raw_json.zip."
+    )
+    parser.add_argument("--archive", type=Path, default=DEFAULT_ARCHIVE)
+    parser.add_argument("--cache-dir", type=Path, default=CACHE_DIR)
+    parser.add_argument("--asset-dir", type=Path, default=ASSET_DIR)
+    parser.add_argument(
+        "--cache-only",
+        action="store_true",
+        help="Restore only to .danbooru_cache, not assets/danbooru_completion.",
+    )
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    restore_archive(
+        archive_path=args.archive,
+        cache_dir=args.cache_dir,
+        asset_dir=None if args.cache_only else args.asset_dir,
+        dry_run=args.dry_run,
+    )
+
+
+if __name__ == "__main__":
+    main()
