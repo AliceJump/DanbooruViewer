@@ -1,0 +1,16 @@
+{
+  "signature": {
+    "source": "successful",
+    "compression": "deflated",
+    "compresslevel": 3,
+    "successful_tags": {
+      "exists": true,
+      "mtime_ns": 1785265266892464000,
+      "size": 35244588
+    },
+    "hash": "6cd69156512693bb3a0dedbbae08870e4020df6f0dbacc79692fa86ef7ceeb68"
+  },
+  "items": 1854053,
+  "output_size": 24032560,
+  "updated_at": 1785265488
+}
