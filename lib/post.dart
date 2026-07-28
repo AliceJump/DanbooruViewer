@@ -11,6 +11,8 @@ class Post {
   final String? tagStringCopyright;
   final String? tagStringMeta;
   final String? source;
+  final int? imageWidth;
+  final int? imageHeight;
 
   Post({
     required this.id,
@@ -25,6 +27,8 @@ class Post {
     this.tagStringCopyright,
     this.tagStringMeta,
     this.source,
+    this.imageWidth,
+    this.imageHeight,
   });
 
   factory Post.fromJson(Map<String, dynamic> json) {
@@ -41,6 +45,8 @@ class Post {
       tagStringCopyright: json['tag_string_copyright'],
       tagStringMeta: json['tag_string_meta'],
       source: json['source'],
+      imageWidth: json['image_width'],
+      imageHeight: json['image_height'],
     );
   }
 }
