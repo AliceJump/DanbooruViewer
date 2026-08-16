@@ -93,12 +93,14 @@ class SearchCompletionSuggestion {
   final String insertValue;
   final String source;
   final int score;
+  final int? category;
 
   SearchCompletionSuggestion({
     required this.value,
     required this.insertValue,
     required this.source,
     required this.score,
+    this.category,
   });
 
   factory SearchCompletionSuggestion.fromJson(Map<String, dynamic> json) {
@@ -112,9 +114,23 @@ class SearchCompletionSuggestion {
           '',
       source: json['source'] as String? ?? json['s'] as String? ?? '',
       score: json['score'] as int? ?? json['r'] as int? ?? 0,
+      category: json['category'] as int?,
     );
   }
 }
+
+/// Danbooru tag category display names (0=general, 1=artist, 3=copyright,
+/// 4=character, 5=meta).
+const Map<int, String> _categoryNames = {
+  0: '通用',
+  1: '作者',
+  3: '作品',
+  4: '角色',
+  5: '元数据',
+};
+
+/// Preferred display order for category groups.
+const List<int> _categoryOrder = [4, 1, 3, 0, 5];
 
 class _SearchToken {
   final String value;
@@ -164,6 +180,7 @@ class _MyHomePageState extends State<MyHomePage> {
   List<SearchCompletionSuggestion> _completionSuggestions = [];
   List<SearchCompletionSuggestion> _visibleSuggestions = [];
   final Map<String, String> _completionDisplayByInsertValue = {};
+  final Map<String, int> _completionCategoryByInsertValue = {};
   final List<SearchChip> _searchChips = [];
   bool _isLoading = false;
   bool _isCompletionLoading = true;
@@ -224,6 +241,7 @@ class _MyHomePageState extends State<MyHomePage> {
           insertValue: insertValue,
           source: row.source,
           score: row.score,
+          category: row.category,
         );
         final key = '${value.toLowerCase()}\u0000${insertValue.toLowerCase()}';
         final existing = suggestionsByValue[key];
@@ -241,6 +259,9 @@ class _MyHomePageState extends State<MyHomePage> {
         _completionDisplayByInsertValue
           ..clear()
           ..addAll(_buildCompletionDisplayByInsertValue(candidates));
+        _completionCategoryByInsertValue
+          ..clear()
+          ..addAll(_buildCompletionCategoryByInsertValue(candidates));
         _isCompletionLoading = false;
         _completionLoadError = candidates.isEmpty
             ? '未读取到 danbooru_completion 补全数据'
@@ -275,6 +296,19 @@ class _MyHomePageState extends State<MyHomePage> {
       }
     }
     return displays;
+  }
+
+  Map<String, int> _buildCompletionCategoryByInsertValue(
+    List<SearchCompletionSuggestion> candidates,
+  ) {
+    final categories = <String, int>{};
+    for (final candidate in candidates) {
+      final key = candidate.insertValue.toLowerCase();
+      final category = candidate.category;
+      if (key.isEmpty || category == null) continue;
+      categories.putIfAbsent(key, () => category);
+    }
+    return categories;
   }
 
   bool _containsNonEnglish(String value) {
@@ -680,6 +714,7 @@ class _MyHomePageState extends State<MyHomePage> {
               MaterialPageRoute(
                 builder: (context) => FavoritesPage(
                   completionDisplayByValue: _completionDisplayByInsertValue,
+                  completionCategoryByValue: _completionCategoryByInsertValue,
                 ),
               ),
             );
@@ -703,6 +738,33 @@ class _MyHomePageState extends State<MyHomePage> {
         IconButton(icon: const Icon(Icons.link), onPressed: _batchCopyLinks),
       ],
     );
+  }
+
+  /// 把候选按分类分组，返回扁平行列表（分组头 + 候选）。
+  /// 分组顺序按 [_categoryOrder]，未分类的归到末尾。
+  List<Object> _groupedCompletionRows() {
+    final rows = <Object>[];
+    final byCategory = <int?, List<SearchCompletionSuggestion>>{};
+    for (final item in _visibleSuggestions) {
+      byCategory.putIfAbsent(item.category, () => []).add(item);
+    }
+
+    final ordered = [
+      ..._categoryOrder.map((c) => c),
+      ...byCategory.keys.where((c) => c != null && !_categoryOrder.contains(c)),
+      null, // 未分类放最后
+    ];
+
+    for (final category in ordered) {
+      final items = byCategory[category];
+      if (items == null || items.isEmpty) continue;
+      final name = category == null
+          ? '未分类'
+          : _categoryNames[category] ?? '分类 $category';
+      rows.add(name);
+      rows.addAll(items);
+    }
+    return rows;
   }
 
   Widget _buildCompletionPanel() {
@@ -729,22 +791,41 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
               ),
             )
-          : ListView.separated(
-              shrinkWrap: true,
-              padding: EdgeInsets.zero,
-              itemCount: _visibleSuggestions.length,
-              separatorBuilder: (context, index) => const Divider(height: 1),
-              itemBuilder: (context, index) {
-                final suggestion = _visibleSuggestions[index];
-                return ListTile(
-                  dense: true,
-                  title: Text(
-                    suggestion.value,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text('${suggestion.source} · ${suggestion.score}'),
-                  onTap: () => _applyCompletionSuggestion(suggestion),
+          : Builder(
+              builder: (context) {
+                final rows = _groupedCompletionRows();
+                return ListView.builder(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: rows.length,
+                  itemBuilder: (context, index) {
+                    final row = rows[index];
+                    if (row is String) {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+                        child: Text(
+                          row,
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                color: Theme.of(context).colorScheme.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                      );
+                    }
+                    final suggestion = row as SearchCompletionSuggestion;
+                    return ListTile(
+                      dense: true,
+                      title: Text(
+                        suggestion.value,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${suggestion.source} · ${suggestion.score}',
+                      ),
+                      onTap: () => _applyCompletionSuggestion(suggestion),
+                    );
+                  },
                 );
               },
             ),

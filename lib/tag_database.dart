@@ -13,12 +13,14 @@ class CompletionSuggestionRow {
   final String insertValue;
   final String source;
   final int score;
+  final int? category;
 
   const CompletionSuggestionRow({
     required this.value,
     required this.insertValue,
     required this.source,
     required this.score,
+    this.category,
   });
 
   factory CompletionSuggestionRow.fromMap(Map<String, Object?> map) {
@@ -27,6 +29,7 @@ class CompletionSuggestionRow {
       insertValue: map['insert_value'] as String? ?? '',
       source: map['source'] as String? ?? '',
       score: map['score'] as int? ?? 0,
+      category: map['category'] as int?,
     );
   }
 }
@@ -75,7 +78,7 @@ class TagDatabase {
     final db = await _open();
     final rows = await db.query(
       'completion_candidates',
-      columns: const ['value', 'insert_value', 'source', 'score'],
+      columns: const ['value', 'insert_value', 'source', 'score', 'category'],
       orderBy: 'score DESC',
     );
     return rows.map(CompletionSuggestionRow.fromMap).toList();
