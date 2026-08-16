@@ -32,6 +32,23 @@ class CompletionSuggestionRow {
       category: map['category'] as int?,
     );
   }
+
+  /// Convert to a plain, isolate-transferable record.
+  (String, String, String, int, int?) toRecord() {
+    return (value, insertValue, source, score, category);
+  }
+
+  static CompletionSuggestionRow fromRecord(
+    (String, String, String, int, int?) r,
+  ) {
+    return CompletionSuggestionRow(
+      value: r.$1,
+      insertValue: r.$2,
+      source: r.$3,
+      score: r.$4,
+      category: r.$5,
+    );
+  }
 }
 
 /// Read-only access to the bundled tag completion seed database.

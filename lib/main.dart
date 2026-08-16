@@ -133,23 +133,23 @@ const Map<int, String> _categoryNames = {
 /// Preferred display order for category groups.
 const List<int> _categoryOrder = [4, 1, 3, 0, 5];
 
-/// 构建 insert_value -> 显示名 / 分类 的映射（后台 isolate 使用）。
+/// 构建 insert_value -> 显示名 / 分类 的映射（后台 isolate 使用，纯计算）。
 /// 返回 (显示名映射, 分类映射)。
 (Map<String, String>, Map<String, int>) _buildCompletionMaps(
-  List<CompletionSuggestionRow> rows,
+  List<(String, String, String, int, int?)> records,
 ) {
   final display = <String, String>{};
   final category = <String, int>{};
-  for (final row in rows) {
-    final key = row.insertValue.toLowerCase();
-    final label = row.value.trim();
+  for (final r in records) {
+    final key = r.$2.toLowerCase();
+    final label = r.$1.trim();
     if (key.isEmpty || label.isEmpty) continue;
     final existing = display[key];
     if (existing == null ||
         (!_containsNonEnglish(existing) && _containsNonEnglish(label))) {
       display[key] = label;
     }
-    final cat = row.category;
+    final cat = r.$5;
     if (cat != null) {
       category.putIfAbsent(key, () => cat);
     }
@@ -256,13 +256,13 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _loadCompletionSuggestions() async {
     try {
-      // 先确保数据库就绪（首启复制 227MB 只发生一次），
-      // 再在后台 isolate 构建显示映射，避免阻塞 UI 线程（全量约 200 万行）。
+      // 数据库读取必须在主 isolate（sqflite 平台通道），
+      // 只把纯计算（构建显示映射）放到后台 isolate，避免阻塞 UI。
       await TagDatabase.ensureOpened();
-      final maps = await Isolate.run(() async {
-        final rows = await TagDatabase.loadAll();
-        return _buildCompletionMaps(rows);
-      });
+      final rows = await TagDatabase.loadAll();
+      final records = rows.map((r) => r.toRecord()).toList();
+
+      final maps = await Isolate.run(() => _buildCompletionMaps(records));
       if (!mounted) return;
       setState(() {
         _completionDisplayByInsertValue
@@ -680,6 +680,7 @@ class _MyHomePageState extends State<MyHomePage> {
       posts: _posts,
       initialIndex: index,
       completionDisplayByValue: _completionDisplayByInsertValue,
+      completionCategoryByValue: _completionCategoryByInsertValue,
     );
 
     _handleSearchResult(result);
