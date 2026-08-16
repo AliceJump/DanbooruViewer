@@ -1,8 +1,8 @@
 import 'dart:convert';
 
-import 'package:archive/archive.dart';
 import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/post_detail_page.dart';
+import 'package:danbooru_viewer/tag_database.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -211,45 +211,24 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _loadCompletionSuggestions() async {
     try {
-      final bytes = await rootBundle.load('assets/danbooru_completion.zip');
-      final archive = ZipDecoder().decodeBytes(
-        bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
-      );
-      final jsonFiles =
-          archive.files
-              .where((file) => file.isFile && file.name.endsWith('.json'))
-              .toList()
-            ..sort((a, b) => a.name.compareTo(b.name));
+      final rows = await TagDatabase.loadAll();
       final suggestionsByValue = <String, SearchCompletionSuggestion>{};
 
-      for (final file in jsonFiles) {
-        try {
-          final content = utf8.decode(file.content as List<int>);
-          final payload = json.decode(content);
-          final candidateJson = payload is List<dynamic>
-              ? payload
-              : payload is Map<String, dynamic>
-              ? payload['completion_candidates'] as List<dynamic>? ?? []
-              : const <dynamic>[];
-          final candidates = candidateJson
-              .whereType<Map<String, dynamic>>()
-              .map(SearchCompletionSuggestion.fromJson)
-              .where(
-                (item) =>
-                    item.value.trim().isNotEmpty &&
-                    item.insertValue.trim().isNotEmpty,
-              );
+      for (final row in rows) {
+        final value = row.value.trim();
+        final insertValue = row.insertValue.trim();
+        if (value.isEmpty || insertValue.isEmpty) continue;
 
-          for (final candidate in candidates) {
-            final key =
-                '${candidate.value.toLowerCase()}\u0000${candidate.insertValue.toLowerCase()}';
-            final existing = suggestionsByValue[key];
-            if (existing == null || candidate.score > existing.score) {
-              suggestionsByValue[key] = candidate;
-            }
-          }
-        } catch (e) {
-          debugPrint('Skipped completion asset ${file.name}: $e');
+        final candidate = SearchCompletionSuggestion(
+          value: value,
+          insertValue: insertValue,
+          source: row.source,
+          score: row.score,
+        );
+        final key = '${value.toLowerCase()}\u0000${insertValue.toLowerCase()}';
+        final existing = suggestionsByValue[key];
+        if (existing == null || candidate.score > existing.score) {
+          suggestionsByValue[key] = candidate;
         }
       }
 
@@ -326,21 +305,60 @@ class _MyHomePageState extends State<MyHomePage> {
 
     final token = _currentSearchToken();
     final query = token.value.toLowerCase();
-    final matches = query.isEmpty
-        ? _completionSuggestions.take(10).toList()
-        : _completionSuggestions
-              .where(
-                (item) =>
-                    item.value.toLowerCase().contains(query) ||
-                    item.insertValue.toLowerCase().contains(query),
-              )
-              .take(10)
-              .toList();
+
+    final List<SearchCompletionSuggestion> matches;
+    if (query.isEmpty) {
+      matches = _completionSuggestions.take(10).toList();
+    } else {
+      // 字串序列匹配排序：
+      //   1) 输入串在 value/insertValue 中出现的位置越靠前越优先（前缀=0 最优）
+      //   2) 位置相同时按 score 降序
+      // 只维护全局最小的 10 条，避免对全部候选做排序导致输入卡顿。
+      final best = <(int, SearchCompletionSuggestion)>[];
+      for (final item in _completionSuggestions) {
+        final pos = _matchPosition(item, query);
+        if (pos < 0) continue;
+        final entry = (pos, item);
+        var insertAt = best.length;
+        for (var i = 0; i < best.length; i++) {
+          if (_compareCompletionEntry(entry, best[i]) < 0) {
+            insertAt = i;
+            break;
+          }
+        }
+        if (insertAt < 10) {
+          best.insert(insertAt, entry);
+          if (best.length > 10) {
+            best.removeLast();
+          }
+        }
+      }
+      matches = best.map((e) => e.$2).toList();
+    }
 
     setState(() {
       _visibleSuggestions = matches;
       _showSuggestions = _searchFocusNode.hasFocus;
     });
+  }
+
+  /// 返回 query 在候选中最早出现的位置（value 与 insertValue 取较前者），
+  /// 两者都未匹配返回 -1。位置 0 表示前缀匹配，优先级最高。
+  int _matchPosition(SearchCompletionSuggestion item, String query) {
+    final valuePos = item.value.toLowerCase().indexOf(query);
+    final insertPos = item.insertValue.toLowerCase().indexOf(query);
+    if (valuePos == -1) return insertPos;
+    if (insertPos == -1) return valuePos;
+    return valuePos < insertPos ? valuePos : insertPos;
+  }
+
+  /// 比较两个 (位置, 候选)：位置升序，位置相同按 score 降序。
+  int _compareCompletionEntry(
+    (int, SearchCompletionSuggestion) a,
+    (int, SearchCompletionSuggestion) b,
+  ) {
+    final byPos = a.$1.compareTo(b.$1);
+    return byPos != 0 ? byPos : b.$2.score.compareTo(a.$2.score);
   }
 
   _SearchToken _currentSearchToken() {
@@ -383,6 +401,27 @@ class _MyHomePageState extends State<MyHomePage> {
   void _addSearchChip(String label, String queryValue) {
     setState(() {
       _upsertSearchChip(SearchChip(label: label, queryValue: queryValue));
+      _searchController.clear();
+      _showSuggestions = false;
+    });
+    _fetchPosts();
+  }
+
+  /// 回车时把输入框中的文本当作一个整体标签加入搜索。
+  ///
+  /// 空格不做特殊处理：整行（去除首尾空白后）作为一个标签 chip，
+  /// 不按空格拆分。若命中补全数据则 chip 显示中文名，查询词仍用原文。
+  void _submitSearchText(String text) {
+    final tag = text.trim();
+    if (tag.isEmpty) {
+      _fetchPosts();
+      return;
+    }
+
+    setState(() {
+      final display =
+          _completionDisplayByInsertValue[tag.toLowerCase()] ?? tag;
+      _upsertSearchChip(SearchChip(label: display, queryValue: tag));
       _searchController.clear();
       _showSuggestions = false;
     });
@@ -743,9 +782,9 @@ class _MyHomePageState extends State<MyHomePage> {
                 focusNode: _searchFocusNode,
                 decoration: const InputDecoration.collapsed(hintText: '搜索...'),
                 onTapOutside: (_) => _searchFocusNode.unfocus(),
-                onSubmitted: (_) {
+                onSubmitted: (value) {
                   _searchFocusNode.unfocus();
-                  _fetchPosts();
+                  _submitSearchText(value);
                 },
               ),
             ),
