@@ -10,6 +10,13 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = _SCRIPT_DIR.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.tag_db import db
+
 # ========================
 # JSON backend (orjson优先)
 # ========================
@@ -50,6 +57,10 @@ TEMP_OUTPUT_FILE = OUTPUT_FILE.with_suffix(".zip.tmp")
 MANIFEST_FILE = OUTPUT_FILE.with_suffix(".manifest.json")
 COMPACT_FILE = "completion_candidates.json"
 INDEX_FILE = CACHE_DIR / "completion_index.sqlite3"
+
+# Seed database shipped inside the app (replaces the legacy zip asset).
+OUTPUT_DB = ROOT / "assets" / "danbooru_completion.db"
+TEMP_OUTPUT_DB = OUTPUT_DB.with_suffix(".db.tmp")
 
 
 def slugify_tag(tag: str) -> str:
@@ -362,17 +373,97 @@ def build_suggestions_from_index(conn: sqlite3.Connection, tags: list[str]) -> d
     return suggestions
 
 
-def build_successful_suggestions(workers: int, rescan_existing: bool) -> dict:
-    tags = load_successful_tag_list()
-    if not tags:
-        return {}
-
-    conn = open_index()
+def _loads_json(value):
+    if not value:
+        return None
     try:
-        update_successful_index(conn, tags, workers, rescan_existing)
-        return build_suggestions_from_index(conn, tags)
-    finally:
-        conn.close()
+        return json.loads(value)
+    except Exception:
+        return None
+
+
+def load_candidates_from_db() -> list[tuple]:
+    """Load completion candidates for all successful tags from the database."""
+    rows = db.conn.execute(
+        """SELECT t.completion_candidates
+             FROM tags t
+             JOIN sync_status s ON s.tag = t.name AND s.status = 'success'"""
+    ).fetchall()
+    result = []
+    for (payload_json,) in rows:
+        candidates = _loads_json(payload_json)
+        if not isinstance(candidates, list):
+            continue
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            v = c.get("value")
+            i = c.get("insert_value", v)
+            if not isinstance(v, str) or not isinstance(i, str):
+                continue
+            if not v or not i:
+                continue
+            result.append((
+                sys.intern(v),
+                sys.intern(i),
+                c.get("source") if isinstance(c.get("source"), str) else "",
+                c.get("score") if isinstance(c.get("score"), int) else 0,
+            ))
+    return result
+
+
+def load_candidates_from_legacy_zip() -> list[tuple]:
+    """One-time fallback: import candidates from the legacy completion zip.
+
+    Used when the tags table is empty (e.g. right after the JSON->db migration
+    and before the next full sync) so the shipped seed database still contains
+    suggestions.
+    """
+    if not OUTPUT_FILE.exists():
+        return []
+    try:
+        with ZipFile(OUTPUT_FILE, "r") as archive:
+            raw = archive.read(COMPACT_FILE)
+    except Exception:
+        return []
+    try:
+        compact = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return []
+    if not isinstance(compact, list):
+        return []
+    result = []
+    for item in compact:
+        if not isinstance(item, dict):
+            continue
+        v = item.get("v") or item.get("value")
+        i = item.get("i") or item.get("insert_value") or v
+        if not isinstance(v, str) or not isinstance(i, str):
+            continue
+        if not v or not i:
+            continue
+        result.append((
+            sys.intern(v),
+            sys.intern(i),
+            item.get("s") if isinstance(item.get("s"), str) else "",
+            item.get("r") if isinstance(item.get("r"), int) else 0,
+        ))
+    return result
+
+
+def build_successful_suggestions(workers: int, rescan_existing: bool) -> dict:
+    candidates = load_candidates_from_db()
+    if not candidates:
+        print("tags table is empty; falling back to legacy completion zip...")
+        candidates = load_candidates_from_legacy_zip()
+
+    suggestions = {}
+    for v, i, s, r in candidates:
+        key = (v.lower(), i.lower())
+        old = suggestions.get(key)
+        if old is None or r > old[3]:
+            suggestions[key] = (v, i, s, r)
+    return suggestions
 
 
 def _progress_bar(total: int, desc: str):
@@ -507,106 +598,139 @@ def parse_args():
         action="store_true",
         help="For --source successful, stat indexed cache files and refresh changed entries. Slower with huge caches.",
     )
+    parser.add_argument(
+        "--clean-legacy",
+        action="store_true",
+        help="Delete the legacy zip/manifest/JSON leftovers after building the seed database.",
+    )
     return parser.parse_args()
+
+
+def write_seed_db(items: list[tuple], temp_path: Path, final_path: Path):
+    """Write the compact completion seed database (completion_candidates table)."""
+    if temp_path.exists():
+        temp_path.unlink()
+    conn = sqlite3.connect(str(temp_path))
+    try:
+        conn.execute("PRAGMA journal_mode=OFF")
+        conn.execute("BEGIN")
+        conn.execute("DROP TABLE IF EXISTS completion_candidates")
+        conn.execute("DROP TABLE IF EXISTS build_meta")
+        conn.execute(
+            """CREATE TABLE completion_candidates (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   value TEXT NOT NULL,
+                   insert_value TEXT NOT NULL,
+                   source TEXT,
+                   score INTEGER DEFAULT 0
+               )"""
+        )
+        conn.execute("CREATE INDEX idx_completion_value ON completion_candidates(value)")
+        conn.execute("CREATE INDEX idx_completion_insert ON completion_candidates(insert_value)")
+        conn.execute("CREATE TABLE build_meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.executemany(
+            "INSERT INTO completion_candidates (value, insert_value, source, score) VALUES (?, ?, ?, ?)",
+            items,
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO build_meta (key, value) VALUES ('updated_at', ?)",
+            (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    temp_path.replace(final_path)
+
+
+def load_db_manifest():
+    """Read the build fingerprint stored inside the seed database itself."""
+    if not OUTPUT_DB.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(OUTPUT_DB))
+        try:
+            row = conn.execute(
+                "SELECT value FROM build_meta WHERE key = 'fingerprint'"
+            ).fetchone()
+            return json.loads(row[0]) if row else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def save_db_manifest(signature: dict):
+    conn = sqlite3.connect(str(OUTPUT_DB))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO build_meta (key, value) VALUES ('fingerprint', ?)",
+            (json.dumps(signature),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def db_fingerprint() -> dict:
+    max_updated = db.conn.execute(
+        "SELECT MAX(updated_at) FROM tags"
+    ).fetchone()[0]
+    return {
+        "success_count": len(db.list_successful_tags()),
+        "tags_count": db.count_tags(),
+        "max_updated": max_updated,
+    }
 
 
 def main():
     args = parse_args()
-    compression = "stored" if args.store else "deflated"
-    compresslevel = None if args.store else (9 if args.best else args.compresslevel)
 
-    if not SOURCE_DIR.is_dir():
-        raise SystemExit(f"not found: {SOURCE_DIR}")
-
-    if args.source == "successful":
-        signature = output_signature(args.source, compression, compresslevel)
-    else:
-        signature = build_signature(args.source, compresslevel or 0)
-    manifest = load_manifest()
+    signature = db_fingerprint()
     if (
         not args.force
-        and OUTPUT_FILE.exists()
-        and manifest is not None
-        and manifest.get("signature", {}).get("hash") == signature["hash"]
+        and OUTPUT_DB.exists()
+        and load_db_manifest() == signature
     ):
-        print(
-            f"✅ unchanged: {OUTPUT_FILE} "
-            f"({manifest.get('items', 0):,} items, {manifest.get('output_size', 0):,} bytes)"
-        )
-        return
-
-    if args.source == "successful":
-        print(f"📂 successful tags (compression={compression}{'' if compresslevel is None else f':{compresslevel}'})")
-        suggestions = build_successful_suggestions(args.workers, args.rescan_existing)
+        size = OUTPUT_DB.stat().st_size
+        print(f"✅ unchanged: {OUTPUT_DB} ({size:,} bytes)")
     else:
-        files = iter_payload_files(args.source)
-        total = len(files)
+        print(
+            f"📂 building from database "
+            f"(success={signature['success_count']}, tags={signature['tags_count']})..."
+        )
+        suggestions = build_successful_suggestions(args.workers, args.rescan_existing)
 
-        print(f"📂 {total} files ({args.source}, compression={compression}{'' if compresslevel is None else f':{compresslevel}'})")
+        print(f"⚙️ merge {len(suggestions)}")
+        sorted_list = sorted(
+            suggestions.values(),
+            key=lambda x: (-x[3], x[0]),
+        )
 
-        pbar = _progress_bar(total, "loading")
+        print("🗜 writing seed database...")
+        OUTPUT_DB.parent.mkdir(parents=True, exist_ok=True)
+        write_seed_db(sorted_list, TEMP_OUTPUT_DB, OUTPUT_DB)
+        save_db_manifest(signature)
 
-        suggestions = {}
+        size = OUTPUT_DB.stat().st_size
+        print(f"✅ done: {len(sorted_list)} items, {size:,} bytes -> {OUTPUT_DB}")
 
-        with ThreadPoolExecutor(max_workers=args.workers) as ex:
-            futures = {ex.submit(load_candidates, f) for f in files[: args.workers * 4]}
-            next_index = len(futures)
-
-            while futures:
-                for fut in as_completed(futures):
-                    futures.remove(fut)
-                    if next_index < total:
-                        futures.add(ex.submit(load_candidates, files[next_index]))
-                        next_index += 1
-                    break
-
-                pbar.update(1)
-                data = fut.result()
-
-                if not data:
-                    continue
-
-                for v, i, s, r in data:
-                    key = (v.lower(), i.lower())
-
-                    old = suggestions.get(key)
-                    if old is None or r > old[3]:
-                        suggestions[key] = (v, i, s, r)
-
-        pbar.close()
-
-    print(f"⚙️ merge {len(suggestions)}")
-
-    sorted_list = sorted(
-        suggestions.values(),
-        key=lambda x: (-x[3], x[0])
-    )
-
-    compact = [
-        {"v": v, "i": i, "s": s, "r": r}
-        for v, i, s, r in sorted_list
-    ]
-
-    print("🗜 writing zip...")
-
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    compact_json = json_dump(compact)
-
-    compression_type = ZIP_STORED if args.store else ZIP_DEFLATED
-    zip_kwargs = {}
-    if not args.store:
-        zip_kwargs["compresslevel"] = compresslevel
-
-    with ZipFile(TEMP_OUTPUT_FILE, "w", compression_type, **zip_kwargs) as z:
-        z.writestr(COMPACT_FILE, compact_json)
-
-    TEMP_OUTPUT_FILE.replace(OUTPUT_FILE)
-
-    size = OUTPUT_FILE.stat().st_size
-    write_manifest(signature, len(compact), size)
-
-    print(f"✅ done: {len(compact)} items, {size:,} bytes")
+    if args.clean_legacy:
+        leftovers = [
+            OUTPUT_FILE,
+            MANIFEST_FILE,
+            INDEX_FILE,
+        ]
+        removed = 0
+        for path in leftovers:
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(f"  [WARN] cannot delete {path}: {exc}")
+        if removed:
+            print(f"🗑 removed {removed} legacy artifact(s)")
 
 
 if __name__ == "__main__":

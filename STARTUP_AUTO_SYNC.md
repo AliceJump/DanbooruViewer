@@ -39,9 +39,9 @@ check_needs_sync(tag, max_age_hours=24)
 incremental_sync(tags, max_age_hours=24)
   ↓ 返回 (synced_count, total_count, errors)
 
-# 同步元数据记录
-load_sync_metadata()  # 读取 .danbooru_cache/sync_metadata.json
-save_sync_metadata()  # 保存同步时间戳
+# 同步元数据记录（已迁移到 SQLite：cache/danbooru_tags.db 的 sync_metadata 表）
+load_sync_metadata()  # 从数据库读取
+save_sync_metadata()  # 保存同步时间戳到数据库
 ```
 
 ### 2️⃣ 启动同步脚本
@@ -150,8 +150,9 @@ Future<void> _checkCompletionFreshness() async {
 | `view.py` | 核心同步逻辑 + 元数据追踪 |
 | `scripts/startup_auto_sync.py` | **启动时增量同步入口** |
 | `scripts/batch_sync_tags.py` | 批量初始化脚本 |
-| `.danbooru_cache/sync_metadata.json` | 同步元数据（时间戳、版本） |
-| `assets/danbooru_completion/` | 打包的 Flutter 资源 |
+| `scripts/tag_db.py` | 统一 SQLite 存储层（tags / sync_status / api_cursor / sync_metadata / checkpoint 表） |
+| `cache/danbooru_tags.db` | 抓取端唯一数据源（替代原有全部 JSON 缓存） |
+| `assets/danbooru_completion.db` | App 端种子数据库（补全候选表，替代原 zip） |
 
 ## API 参考
 
@@ -210,9 +211,9 @@ python scripts/startup_auto_sync.py --default --quiet
 
 ## 故障排除
 
-**问题：同步元数据文件不存在**
+**问题：同步元数据不存在**
 ```
-解决方案：首次运行时会自动创建 .danbooru_cache/sync_metadata.json
+解决方案：首次同步时会自动在 cache/danbooru_tags.db 的 sync_metadata 表创建记录
 ```
 
 **问题：某个标签同步失败**
@@ -223,8 +224,8 @@ python scripts/startup_auto_sync.py --tags "problem_tag" --max-age 0 --retry
 
 **问题：想强制重新同步所有标签**
 ```
-删除元数据文件：
-rm .danbooru_cache/sync_metadata.json
+删除元数据（从数据库清除）：
+python -c "import sys; sys.path.insert(0,'.'); from scripts.tag_db import db; db.conn.execute('DELETE FROM sync_metadata'); db.conn.commit(); db.close()"
 
 然后运行：
 python scripts/startup_auto_sync.py --all --max-age 0
@@ -235,4 +236,4 @@ python scripts/startup_auto_sync.py --all --max-age 0
 - 🎯 **开发期间**：每次 `flutter run` 前自动运行一遍
 - 📦 **发版前**：集成到 CI/CD，确保资源最新
 - ⏰ **生产环境**：每晚定时运行，保持数据新鲜
-- 💾 **版本控制**：`.danbooru_cache/` 纳入 .gitignore，不提交本地缓存
+- 💾 **版本控制**：`cache/danbooru_tags.db` 与 `assets/danbooru_completion.db` 等产物按需纳入 .gitignore / 发布管理，不把本地抓取缓存提交进代码库

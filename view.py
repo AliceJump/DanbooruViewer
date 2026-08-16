@@ -16,10 +16,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from pprint import pprint
 import argparse
-import json
 import time
 
 import requests
+
+from scripts.tag_db import db
 
 
 BASE = "https://danbooru.donmai.us"
@@ -69,63 +70,37 @@ def slugify_tag(tag: str) -> str:
 
 
 def cache_path(tag: str) -> Path:
-    return CACHE_DIR / f"{slugify_tag(tag)}.json"
+    """Backward-compat accessor; data now lives in the database."""
+    return db.path
 
 
 def load_sync_data(tag: str):
-    path = cache_path(tag)
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def compact_sync_payload(payload: dict) -> dict:
-    candidates = payload.get("completion_candidates")
-    if not isinstance(candidates, list):
-        candidates = []
-
-    return {
-        "tag": payload.get("tag"),
-        "updated_at": payload.get("updated_at"),
-        "completion_candidates": candidates,
-    }
+    """Load a tag's sync payload from the database."""
+    return db.get_tag(tag)
 
 
 def save_sync_data(tag: str, payload: dict):
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    """Store a tag's sync payload in the database (single source of truth).
 
-    path = cache_path(tag)
-    payload_text = json.dumps(compact_sync_payload(payload), ensure_ascii=False, indent=2)
-    path.write_text(payload_text, encoding="utf-8")
-
-    asset_path = ASSET_DIR / f"{slugify_tag(tag)}.json"
-    asset_path.write_text(payload_text, encoding="utf-8")
-
-    return path
+    Returns the database path for reporting purposes.
+    """
+    db.upsert_tag(payload)
+    return db.path
 
 
 def get_sync_metadata_path() -> Path:
-    """Get path to sync metadata file."""
-    return CACHE_DIR / "sync_metadata.json"
+    """Backward-compat accessor; metadata now lives in the database."""
+    return db.path
 
 
 def load_sync_metadata() -> dict:
-    """Load sync metadata (timestamps, versions)."""
-    path = get_sync_metadata_path()
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    """Load sync metadata (timestamps, versions) from the database."""
+    return db.load_metadata()
 
 
 def save_sync_metadata(metadata: dict):
-    """Save sync metadata."""
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = get_sync_metadata_path()
-    path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    """Save sync metadata to the database."""
+    db.save_metadata(metadata)
 
 
 def check_needs_sync(tag: str, max_age_hours: int = 24) -> bool:
@@ -140,20 +115,16 @@ def check_needs_sync(tag: str, max_age_hours: int = 24) -> bool:
     """
     metadata = load_sync_metadata()
     tag_slug = slugify_tag(tag)
-    
-    # 检查本地资源是否存在
-    asset_path = ASSET_DIR / f"{tag_slug}.json"
-    if not asset_path.exists():
+
+    # 检查数据库是否已有同步记录
+    entry = metadata.get(tag_slug)
+    if not isinstance(entry, dict):
         return True
-    
-    # 检查同步时间戳
-    if tag_slug not in metadata:
-        return True
-    
-    last_sync_time = metadata[tag_slug].get("last_sync_time")
+
+    last_sync_time = entry.get("last_sync_time")
     if not last_sync_time:
         return True
-    
+
     try:
         last_sync = datetime.fromisoformat(last_sync_time)
         age = datetime.now(timezone.utc) - last_sync.replace(tzinfo=timezone.utc)
