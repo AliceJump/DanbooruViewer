@@ -70,10 +70,49 @@ class TagDatabase {
     return _db!;
   }
 
+  /// Ensure the database is opened (copies the bundled asset on first run).
+  /// Call this on the UI thread before spawning background isolates so the
+  /// one-time 200MB+ copy is not raced by multiple isolates.
+  static Future<void> ensureOpened() async {
+    await _open();
+  }
+
+  /// Query completion candidates matching [query] (case-insensitive substring
+  /// match on value or insert_value), ordered by score descending.
+  ///
+  /// Returns at most [limit] rows. An empty query returns the top-scored rows.
+  /// This is the fast path used by the search dropdown — it never loads the
+  /// whole table into memory.
+  static Future<List<CompletionSuggestionRow>> querySuggestions(
+    String query, {
+    int limit = 10,
+  }) async {
+    final db = await _open();
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) {
+      final rows = await db.query(
+        'completion_candidates',
+        columns: const ['value', 'insert_value', 'source', 'score', 'category'],
+        orderBy: 'score DESC',
+        limit: limit,
+      );
+      return rows.map(CompletionSuggestionRow.fromMap).toList();
+    }
+    final rows = await db.query(
+      'completion_candidates',
+      columns: const ['value', 'insert_value', 'source', 'score', 'category'],
+      where: 'value LIKE ? OR insert_value LIKE ?',
+      whereArgs: ['%$q%', '%$q%'],
+      orderBy: 'score DESC',
+      limit: limit * 5, // fetch a bit more; caller re-sorts by match position
+    );
+    return rows.map(CompletionSuggestionRow.fromMap).toList();
+  }
+
   /// Load every completion candidate, ordered by score (descending).
   ///
-  /// This mirrors the previous behavior of unpacking the whole zip into
-  /// memory so search filtering keeps working exactly as before.
+  /// Intended for background isolate use only (building the display-name map).
+  /// Do NOT call this on the UI thread — it reads ~2M rows.
   static Future<List<CompletionSuggestionRow>> loadAll() async {
     final db = await _open();
     final rows = await db.query(

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/post_detail_page.dart';
@@ -132,6 +133,34 @@ const Map<int, String> _categoryNames = {
 /// Preferred display order for category groups.
 const List<int> _categoryOrder = [4, 1, 3, 0, 5];
 
+/// 构建 insert_value -> 显示名 / 分类 的映射（后台 isolate 使用）。
+/// 返回 (显示名映射, 分类映射)。
+(Map<String, String>, Map<String, int>) _buildCompletionMaps(
+  List<CompletionSuggestionRow> rows,
+) {
+  final display = <String, String>{};
+  final category = <String, int>{};
+  for (final row in rows) {
+    final key = row.insertValue.toLowerCase();
+    final label = row.value.trim();
+    if (key.isEmpty || label.isEmpty) continue;
+    final existing = display[key];
+    if (existing == null ||
+        (!_containsNonEnglish(existing) && _containsNonEnglish(label))) {
+      display[key] = label;
+    }
+    final cat = row.category;
+    if (cat != null) {
+      category.putIfAbsent(key, () => cat);
+    }
+  }
+  return (display, category);
+}
+
+bool _containsNonEnglish(String value) {
+  return value.runes.any((rune) => rune > 0x7f);
+}
+
 class _SearchToken {
   final String value;
   final int start;
@@ -177,7 +206,6 @@ class _MyHomePageState extends State<MyHomePage> {
   final ScrollController _scrollController = ScrollController();
   final LayerLink _searchLayerLink = LayerLink();
   List<Post> _posts = [];
-  List<SearchCompletionSuggestion> _completionSuggestions = [];
   List<SearchCompletionSuggestion> _visibleSuggestions = [];
   final Map<String, String> _completionDisplayByInsertValue = {};
   final Map<String, int> _completionCategoryByInsertValue = {};
@@ -228,46 +256,24 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _loadCompletionSuggestions() async {
     try {
-      final rows = await TagDatabase.loadAll();
-      final suggestionsByValue = <String, SearchCompletionSuggestion>{};
-
-      for (final row in rows) {
-        final value = row.value.trim();
-        final insertValue = row.insertValue.trim();
-        if (value.isEmpty || insertValue.isEmpty) continue;
-
-        final candidate = SearchCompletionSuggestion(
-          value: value,
-          insertValue: insertValue,
-          source: row.source,
-          score: row.score,
-          category: row.category,
-        );
-        final key = '${value.toLowerCase()}\u0000${insertValue.toLowerCase()}';
-        final existing = suggestionsByValue[key];
-        if (existing == null || candidate.score > existing.score) {
-          suggestionsByValue[key] = candidate;
-        }
-      }
-
-      final candidates = suggestionsByValue.values.toList()
-        ..sort((a, b) => b.score.compareTo(a.score));
-
+      // 先确保数据库就绪（首启复制 227MB 只发生一次），
+      // 再在后台 isolate 构建显示映射，避免阻塞 UI 线程（全量约 200 万行）。
+      await TagDatabase.ensureOpened();
+      final maps = await Isolate.run(() async {
+        final rows = await TagDatabase.loadAll();
+        return _buildCompletionMaps(rows);
+      });
       if (!mounted) return;
       setState(() {
-        _completionSuggestions = candidates;
         _completionDisplayByInsertValue
           ..clear()
-          ..addAll(_buildCompletionDisplayByInsertValue(candidates));
+          ..addAll(maps.$1);
         _completionCategoryByInsertValue
           ..clear()
-          ..addAll(_buildCompletionCategoryByInsertValue(candidates));
+          ..addAll(maps.$2);
         _isCompletionLoading = false;
-        _completionLoadError = candidates.isEmpty
-            ? '未读取到 danbooru_completion 补全数据'
-            : null;
+        _completionLoadError = null;
       });
-      _refreshCompletionSuggestions();
     } catch (e) {
       debugPrint('Failed to load completion suggestions: $e');
       if (!mounted) return;
@@ -278,41 +284,6 @@ class _MyHomePageState extends State<MyHomePage> {
         _completionLoadError = '补全资源加载失败: $e';
       });
     }
-  }
-
-  Map<String, String> _buildCompletionDisplayByInsertValue(
-    List<SearchCompletionSuggestion> candidates,
-  ) {
-    final displays = <String, String>{};
-    for (final candidate in candidates) {
-      final key = candidate.insertValue.toLowerCase();
-      final label = candidate.value.trim();
-      if (key.isEmpty || label.isEmpty) continue;
-
-      final existing = displays[key];
-      if (existing == null ||
-          (!_containsNonEnglish(existing) && _containsNonEnglish(label))) {
-        displays[key] = label;
-      }
-    }
-    return displays;
-  }
-
-  Map<String, int> _buildCompletionCategoryByInsertValue(
-    List<SearchCompletionSuggestion> candidates,
-  ) {
-    final categories = <String, int>{};
-    for (final candidate in candidates) {
-      final key = candidate.insertValue.toLowerCase();
-      final category = candidate.category;
-      if (key.isEmpty || category == null) continue;
-      categories.putIfAbsent(key, () => category);
-    }
-    return categories;
-  }
-
-  bool _containsNonEnglish(String value) {
-    return value.runes.any((rune) => rune > 0x7f);
   }
 
   void _handleSearchFocusChanged() {
@@ -327,49 +298,62 @@ class _MyHomePageState extends State<MyHomePage> {
     });
   }
 
-  void _refreshCompletionSuggestions() {
-    if (!mounted || _isCompletionLoading) {
-      if (_searchFocusNode.hasFocus) {
-        setState(() {
-          _showSuggestions = true;
-        });
-      }
-      return;
-    }
+  int _completionQuerySeq = 0;
 
+  Future<void> _refreshCompletionSuggestions() async {
+    if (!mounted) return;
     final token = _currentSearchToken();
     final query = token.value.toLowerCase();
+    final seq = ++_completionQuerySeq;
 
-    final List<SearchCompletionSuggestion> matches;
-    if (query.isEmpty) {
-      matches = _completionSuggestions.take(10).toList();
-    } else {
-      // 字串序列匹配排序：
-      //   1) 输入串在 value/insertValue 中出现的位置越靠前越优先（前缀=0 最优）
-      //   2) 位置相同时按 score 降序
-      // 只维护全局最小的 10 条，避免对全部候选做排序导致输入卡顿。
-      final best = <(int, SearchCompletionSuggestion)>[];
-      for (final item in _completionSuggestions) {
-        final pos = _matchPosition(item, query);
-        if (pos < 0) continue;
-        final entry = (pos, item);
-        var insertAt = best.length;
-        for (var i = 0; i < best.length; i++) {
-          if (_compareCompletionEntry(entry, best[i]) < 0) {
-            insertAt = i;
-            break;
+    List<SearchCompletionSuggestion> matches;
+    try {
+      final rows = await TagDatabase.querySuggestions(query, limit: 10);
+      if (!mounted || seq != _completionQuerySeq) return;
+      final suggestions = rows
+          .map(
+            (r) => SearchCompletionSuggestion(
+              value: r.value,
+              insertValue: r.insertValue,
+              source: r.source,
+              score: r.score,
+              category: r.category,
+            ),
+          )
+          .toList();
+
+      if (query.isEmpty) {
+        matches = suggestions;
+      } else {
+        // 字串序列匹配排序：匹配位置越靠前越优先，位置相同按 score 降序。
+        final best = <(int, SearchCompletionSuggestion)>[];
+        for (final item in suggestions) {
+          final pos = _matchPosition(item, query);
+          if (pos < 0) continue;
+          final entry = (pos, item);
+          var insertAt = best.length;
+          for (var i = 0; i < best.length; i++) {
+            if (_compareCompletionEntry(entry, best[i]) < 0) {
+              insertAt = i;
+              break;
+            }
+          }
+          if (insertAt < 10) {
+            best.insert(insertAt, entry);
+            if (best.length > 10) {
+              best.removeLast();
+            }
           }
         }
-        if (insertAt < 10) {
-          best.insert(insertAt, entry);
-          if (best.length > 10) {
-            best.removeLast();
-          }
-        }
+        matches = best.map((e) => e.$2).toList();
       }
-      matches = best.map((e) => e.$2).toList();
+    } catch (e) {
+      debugPrint('Failed to query completion: $e');
+      if (!mounted || seq != _completionQuerySeq) return;
+      matches = const [];
     }
 
+    if (!mounted || seq != _completionQuerySeq) return;
     setState(() {
       _visibleSuggestions = matches;
       _showSuggestions = _searchFocusNode.hasFocus;
