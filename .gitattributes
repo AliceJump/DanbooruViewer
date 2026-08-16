@@ -1,1 +1,2 @@
 *.zip filter=lfs diff=lfs merge=lfs -text
+assets/danbooru_completion.db filter=lfs diff=lfs merge=lfs -text
