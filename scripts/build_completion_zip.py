@@ -385,12 +385,12 @@ def _loads_json(value):
 def load_candidates_from_db() -> list[tuple]:
     """Load completion candidates for all successful tags from the database."""
     rows = db.conn.execute(
-        """SELECT t.completion_candidates
+        """SELECT t.completion_candidates, t.category
              FROM tags t
              JOIN sync_status s ON s.tag = t.name AND s.status = 'success'"""
     ).fetchall()
     result = []
-    for (payload_json,) in rows:
+    for payload_json, category in rows:
         candidates = _loads_json(payload_json)
         if not isinstance(candidates, list):
             continue
@@ -408,6 +408,7 @@ def load_candidates_from_db() -> list[tuple]:
                 sys.intern(i),
                 c.get("source") if isinstance(c.get("source"), str) else "",
                 c.get("score") if isinstance(c.get("score"), int) else 0,
+                category if isinstance(category, int) else None,
             ))
     return result
 
@@ -447,22 +448,78 @@ def load_candidates_from_legacy_zip() -> list[tuple]:
             sys.intern(i),
             item.get("s") if isinstance(item.get("s"), str) else "",
             item.get("r") if isinstance(item.get("r"), int) else 0,
+            None,  # legacy zip has no category; backfilled below
         ))
     return result
 
 
+def load_candidates_from_seed_db() -> list[tuple]:
+    """Read candidates from the existing seed database.
+
+    Keeps the previously shipped candidates across rebuilds so a category
+    backfill does not wipe the data (used when the tags table has no
+    completion payloads yet).
+    """
+    if not OUTPUT_DB.exists():
+        return []
+    try:
+        conn = sqlite3.connect(str(OUTPUT_DB))
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(completion_candidates)")]
+            if "category" in cols:
+                rows = conn.execute(
+                    "SELECT value, insert_value, source, score, category "
+                    "FROM completion_candidates"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT value, insert_value, source, score, NULL "
+                    "FROM completion_candidates"
+                ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return []
+    return [
+        (
+            sys.intern(v),
+            sys.intern(i),
+            s if isinstance(s, str) else "",
+            r if isinstance(r, int) else 0,
+            c if isinstance(c, int) else None,
+        )
+        for v, i, s, r, c in rows
+        if isinstance(v, str) and isinstance(i, str) and v and i
+    ]
+
+
 def build_successful_suggestions(workers: int, rescan_existing: bool) -> dict:
     candidates = load_candidates_from_db()
+    source = "database"
     if not candidates:
-        print("tags table is empty; falling back to legacy completion zip...")
-        candidates = load_candidates_from_legacy_zip()
+        candidates = load_candidates_from_seed_db()
+        source = "existing seed db"
+        if not candidates:
+            candidates = load_candidates_from_legacy_zip()
+            source = "legacy zip"
+    if source != "database":
+        print(f"tags table has no completion data; using {source}...")
+
+    # name -> category map, used to backfill candidates without a category
+    category_map = {}
+    for name, cat in db.conn.execute(
+        "SELECT name, category FROM tags WHERE category IS NOT NULL"
+    ):
+        category_map[name] = cat
 
     suggestions = {}
-    for v, i, s, r in candidates:
+    for v, i, s, r, cat in candidates:
         key = (v.lower(), i.lower())
         old = suggestions.get(key)
         if old is None or r > old[3]:
-            suggestions[key] = (v, i, s, r)
+            if cat is None:
+                cat = category_map.get(i)
+            suggestions[key] = (v, i, s, r, cat)
     return suggestions
 
 
@@ -622,14 +679,16 @@ def write_seed_db(items: list[tuple], temp_path: Path, final_path: Path):
                    value TEXT NOT NULL,
                    insert_value TEXT NOT NULL,
                    source TEXT,
-                   score INTEGER DEFAULT 0
+                   score INTEGER DEFAULT 0,
+                   category INTEGER
                )"""
         )
         conn.execute("CREATE INDEX idx_completion_value ON completion_candidates(value)")
         conn.execute("CREATE INDEX idx_completion_insert ON completion_candidates(insert_value)")
+        conn.execute("CREATE INDEX idx_completion_category ON completion_candidates(category)")
         conn.execute("CREATE TABLE build_meta (key TEXT PRIMARY KEY, value TEXT)")
         conn.executemany(
-            "INSERT INTO completion_candidates (value, insert_value, source, score) VALUES (?, ?, ?, ?)",
+            "INSERT INTO completion_candidates (value, insert_value, source, score, category) VALUES (?, ?, ?, ?, ?)",
             items,
         )
         conn.execute(

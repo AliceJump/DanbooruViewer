@@ -216,6 +216,32 @@ class TagDB:
             )
             self.conn.commit()
 
+    def upsert_tag_categories(self, rows: list[tuple]):
+        """Bulk upsert (name, tag_id, category, post_count) into the tags table.
+
+        Only updates the category-related columns; existing completion data
+        (completion_candidates / wiki / aliases / updated_at) is preserved.
+        New rows are inserted as minimal placeholders with empty candidates.
+        """
+        if not rows:
+            return
+        with _write_lock:
+            self.conn.executemany(
+                """INSERT INTO tags
+                       (name, tag_id, slug, category, post_count, updated_at,
+                        wiki_other_names, aliases, completion_candidates, version)
+                   VALUES (?, ?, ?, ?, ?, ?, NULL, '[]', '[]', 1)
+                   ON CONFLICT(name) DO UPDATE SET
+                       tag_id = excluded.tag_id,
+                       category = excluded.category,
+                       post_count = excluded.post_count""",
+                [
+                    (name, tag_id, slugify_tag(name), category, post_count, now_iso())
+                    for name, tag_id, category, post_count in rows
+                ],
+            )
+            self.conn.commit()
+
     @staticmethod
     def _row_to_payload(row) -> dict | None:
         if row is None:
