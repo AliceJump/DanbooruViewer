@@ -17,12 +17,14 @@ class PostDetailPage extends StatefulWidget {
   final List<Post> posts;
   final int initialIndex;
   final Map<String, String> completionDisplayByValue;
+  final Map<String, int> completionCategoryByValue;
 
   const PostDetailPage({
     super.key,
     required this.posts,
     required this.initialIndex,
     required this.completionDisplayByValue,
+    this.completionCategoryByValue = const {},
   });
 
   @override
@@ -34,6 +36,7 @@ Future<Object?> openPostDetailPage({
   required List<Post> posts,
   required int initialIndex,
   required Map<String, String> completionDisplayByValue,
+  Map<String, int> completionCategoryByValue = const {},
 }) {
   if (initialIndex >= 0 && initialIndex < posts.length) {
     final post = posts[initialIndex];
@@ -50,6 +53,7 @@ Future<Object?> openPostDetailPage({
         posts: posts,
         initialIndex: initialIndex,
         completionDisplayByValue: completionDisplayByValue,
+        completionCategoryByValue: completionCategoryByValue,
       ),
     ),
   );
@@ -208,7 +212,11 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Future<void> _toggleFavoriteTag(String tag) async {
-    final newState = await _favoritesManager.toggleFavoriteTag(tag);
+    final category = widget.completionCategoryByValue[tag.toLowerCase()];
+    final newState = await _favoritesManager.toggleFavoriteTag(
+      tag,
+      category: category,
+    );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(

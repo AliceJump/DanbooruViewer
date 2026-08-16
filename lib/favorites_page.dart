@@ -199,8 +199,21 @@ class _FavoritesPageState extends State<FavoritesPage>
     setState(() => _isLoading = true);
 
     final posts = await _favoritesManager.getFavoritePostsFull();
-    final tags = await _favoritesManager.getFavoriteTags();
+    final tagEntries = await _favoritesManager.getFavoriteTagEntries();
     final history = await _favoritesManager.getBrowsingHistory();
+
+    // 用补全分类映射补全旧收藏标签的分类，并持久化（一次性迁移）。
+    final tags = <String>[];
+    for (final entry in tagEntries) {
+      final tag = entry['tag'] as String? ?? '';
+      if (tag.isEmpty) continue;
+      tags.add(tag);
+      final storedCat = entry['category'];
+      final mappedCat = widget.completionCategoryByValue[tag.toLowerCase()];
+      if (storedCat == null && mappedCat != null) {
+        await _favoritesManager.updateFavoriteTagCategory(tag, mappedCat);
+      }
+    }
 
     if (mounted) {
       setState(() {
@@ -277,13 +290,17 @@ class _FavoritesPageState extends State<FavoritesPage>
     }).toList();
   }
 
+  /// 解析标签的分类：优先用补全映射，其次用收藏条目里持久化的分类。
+  int? _categoryForTag(String tag) {
+    return widget.completionCategoryByValue[tag.toLowerCase()];
+  }
+
   List<String> _getFilteredTags() {
     final query = _tagFilterText.toLowerCase();
     return _favoriteTags.where((tag) {
       // 分类过滤
       if (_selectedTagCategory != null &&
-          widget.completionCategoryByValue[tag.toLowerCase()] !=
-              _selectedTagCategory) {
+          _categoryForTag(tag) != _selectedTagCategory) {
         return false;
       }
       // 文本过滤
@@ -301,7 +318,7 @@ class _FavoritesPageState extends State<FavoritesPage>
     final rows = <Object>[];
     final byCategory = <int?, List<String>>{};
     for (final tag in filtered) {
-      final cat = widget.completionCategoryByValue[tag.toLowerCase()];
+      final cat = _categoryForTag(tag);
       byCategory.putIfAbsent(cat, () => []).add(tag);
     }
 
@@ -393,6 +410,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       posts: posts,
       initialIndex: index,
       completionDisplayByValue: widget.completionDisplayByValue,
+      completionCategoryByValue: widget.completionCategoryByValue,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
@@ -405,6 +423,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       posts: posts,
       initialIndex: index,
       completionDisplayByValue: widget.completionDisplayByValue,
+      completionCategoryByValue: widget.completionCategoryByValue,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
