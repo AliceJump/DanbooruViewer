@@ -98,13 +98,42 @@ class FavoritesManager {
 
   // ========== 标签收藏功能 ==========
 
-  /// 获取所有收藏的标签
+  /// 收藏标签的存储格式：
+  /// - 新格式：`[{"tag": "name", "category": 4}, ...]`（带分类）
+  /// - 旧格式：`["name", ...]`（纯字符串，兼容读取）
+  static const String _favoriteTagsV2Key = 'favorite_tags_v2';
+
+  /// 获取所有收藏的标签（纯标签名列表）。
   Future<List<String>> getFavoriteTags() async {
+    final entries = await getFavoriteTagEntries();
+    return entries.map((e) => e['tag'] as String).toList();
+  }
+
+  /// 获取所有收藏的标签条目（含分类），兼容旧格式。
+  Future<List<Map<String, dynamic>>> getFavoriteTagEntries() async {
     await _ensureInitialized();
-    final jsonString = _prefs!.getString(_favoriteTagsKey);
-    if (jsonString == null) return [];
-    final List<dynamic> decoded = jsonDecode(jsonString);
-    return decoded.cast<String>();
+
+    // 优先读新格式
+    final v2 = _prefs!.getString(_favoriteTagsV2Key);
+    if (v2 != null) {
+      final List<dynamic> decoded = jsonDecode(v2);
+      return decoded
+          .whereType<Map>()
+          .map((item) => item.map((k, v) => MapEntry(k.toString(), v)))
+          .toList();
+    }
+
+    // 旧格式：纯字符串列表，迁移为带分类条目（category 由调用方补全）
+    final legacy = _prefs!.getString(_favoriteTagsKey);
+    if (legacy == null) return [];
+    final List<dynamic> decoded = jsonDecode(legacy);
+    final entries = decoded
+        .whereType<String>()
+        .map((tag) => <String, dynamic>{'tag': tag})
+        .toList();
+    // 迁移到新格式存储
+    await _saveFavoriteTagEntries(entries);
+    return entries;
   }
 
   /// 检查标签是否已收藏
@@ -113,38 +142,58 @@ class FavoritesManager {
     return favorites.contains(tag);
   }
 
-  /// 添加标签收藏
-  Future<void> addFavoriteTag(String tag) async {
-    final favorites = await getFavoriteTags();
-    if (!favorites.contains(tag)) {
-      favorites.add(tag);
-      await _saveFavoriteTags(favorites);
+  /// 添加标签收藏（可带分类）。
+  Future<void> addFavoriteTag(String tag, {int? category}) async {
+    final entries = await getFavoriteTagEntries();
+    final exists = entries.any((e) => e['tag'] == tag);
+    if (!exists) {
+      entries.add({
+        'tag': tag,
+        if (category != null) 'category': category,
+      });
+      await _saveFavoriteTagEntries(entries);
+    }
+  }
+
+  /// 更新已收藏标签的分类（用于补全旧收藏标签的分类信息）。
+  Future<void> updateFavoriteTagCategory(String tag, int category) async {
+    final entries = await getFavoriteTagEntries();
+    var changed = false;
+    for (final entry in entries) {
+      if (entry['tag'] == tag && entry['category'] != category) {
+        entry['category'] = category;
+        changed = true;
+      }
+    }
+    if (changed) {
+      await _saveFavoriteTagEntries(entries);
     }
   }
 
   /// 移除标签收藏
   Future<void> removeFavoriteTag(String tag) async {
-    final favorites = await getFavoriteTags();
-    favorites.remove(tag);
-    await _saveFavoriteTags(favorites);
+    final entries = await getFavoriteTagEntries();
+    entries.removeWhere((e) => e['tag'] == tag);
+    await _saveFavoriteTagEntries(entries);
   }
 
   /// 切换标签收藏状态
-  Future<bool> toggleFavoriteTag(String tag) async {
+  Future<bool> toggleFavoriteTag(String tag, {int? category}) async {
     final isFav = await isTagFavorite(tag);
     if (isFav) {
       await removeFavoriteTag(tag);
       return false;
     } else {
-      await addFavoriteTag(tag);
+      await addFavoriteTag(tag, category: category);
       return true;
     }
   }
 
-  Future<void> _saveFavoriteTags(List<String> tags) async {
+  Future<void> _saveFavoriteTagEntries(
+    List<Map<String, dynamic>> entries,
+  ) async {
     await _ensureInitialized();
-    final jsonString = jsonEncode(tags);
-    await _prefs!.setString(_favoriteTagsKey, jsonString);
+    await _prefs!.setString(_favoriteTagsV2Key, jsonEncode(entries));
   }
 
   Future<List<Map<String, dynamic>>> getBrowsingHistory() async {
@@ -186,6 +235,7 @@ class FavoritesManager {
     await _ensureInitialized();
     await _prefs!.remove(_favoritesKey);
     await _prefs!.remove(_favoriteTagsKey);
+    await _prefs!.remove(_favoriteTagsV2Key);
     await _prefs!.remove(_browsingHistoryKey);
   }
 }

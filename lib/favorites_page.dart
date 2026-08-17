@@ -7,10 +7,28 @@ import 'media_utils.dart';
 import 'post_detail_page.dart';
 import 'main.dart';
 
+/// Danbooru tag category display names (0=general, 1=artist, 3=copyright,
+/// 4=character, 5=meta).
+const Map<int, String> _favCategoryNames = {
+  0: '通用',
+  1: '作者',
+  3: '作品',
+  4: '角色',
+  5: '元数据',
+};
+
+/// Preferred display order for category groups.
+const List<int> _favCategoryOrder = [4, 1, 3, 0, 5];
+
 class FavoritesPage extends StatefulWidget {
   final Map<String, String> completionDisplayByValue;
+  final Map<String, int> completionCategoryByValue;
 
-  const FavoritesPage({super.key, this.completionDisplayByValue = const {}});
+  const FavoritesPage({
+    super.key,
+    this.completionDisplayByValue = const {},
+    this.completionCategoryByValue = const {},
+  });
 
   @override
   State<FavoritesPage> createState() => _FavoritesPageState();
@@ -47,6 +65,9 @@ class _FavoritesPageState extends State<FavoritesPage>
   // 标签页的文本筛选
   final TextEditingController _tagFilterController = TextEditingController();
   String _tagFilterText = '';
+
+  // 标签页的分类筛选（null = 全部）
+  int? _selectedTagCategory;
 
   // ============ 标签预览数据 ============
   Map<String, List<Post>> _tagPreviewPosts = {};
@@ -178,8 +199,21 @@ class _FavoritesPageState extends State<FavoritesPage>
     setState(() => _isLoading = true);
 
     final posts = await _favoritesManager.getFavoritePostsFull();
-    final tags = await _favoritesManager.getFavoriteTags();
+    final tagEntries = await _favoritesManager.getFavoriteTagEntries();
     final history = await _favoritesManager.getBrowsingHistory();
+
+    // 用补全分类映射补全旧收藏标签的分类，并持久化（一次性迁移）。
+    final tags = <String>[];
+    for (final entry in tagEntries) {
+      final tag = entry['tag'] as String? ?? '';
+      if (tag.isEmpty) continue;
+      tags.add(tag);
+      final storedCat = entry['category'];
+      final mappedCat = widget.completionCategoryByValue[tag.toLowerCase()];
+      if (storedCat == null && mappedCat != null) {
+        await _favoritesManager.updateFavoriteTagCategory(tag, mappedCat);
+      }
+    }
 
     if (mounted) {
       setState(() {
@@ -256,12 +290,74 @@ class _FavoritesPageState extends State<FavoritesPage>
     }).toList();
   }
 
+  /// 解析标签的分类：优先用补全映射，其次用收藏条目里持久化的分类。
+  int? _categoryForTag(String tag) {
+    return widget.completionCategoryByValue[tag.toLowerCase()];
+  }
+
   List<String> _getFilteredTags() {
-    if (_tagFilterText.isEmpty) return _favoriteTags;
     final query = _tagFilterText.toLowerCase();
-    return _favoriteTags
-        .where((tag) => tag.toLowerCase().contains(query))
-        .toList();
+    return _favoriteTags.where((tag) {
+      // 分类过滤
+      if (_selectedTagCategory != null &&
+          _categoryForTag(tag) != _selectedTagCategory) {
+        return false;
+      }
+      // 文本过滤
+      if (query.isNotEmpty && !tag.toLowerCase().contains(query)) {
+        return false;
+      }
+      return true;
+    }).toList();
+  }
+
+  /// 把收藏标签按分类分组，返回扁平行列表（分组头 + 标签）。
+  /// 分组顺序按 [_favCategoryOrder]，未分类的归到末尾。
+  List<Object> _groupedFavoriteTags() {
+    final filtered = _getFilteredTags();
+    final rows = <Object>[];
+    final byCategory = <int?, List<String>>{};
+    for (final tag in filtered) {
+      final cat = _categoryForTag(tag);
+      byCategory.putIfAbsent(cat, () => []).add(tag);
+    }
+
+    final ordered = [
+      ..._favCategoryOrder.map((c) => c),
+      ...byCategory.keys.where(
+        (c) => c != null && !_favCategoryOrder.contains(c),
+      ),
+      null, // 未分类放最后
+    ];
+
+    for (final category in ordered) {
+      final items = byCategory[category];
+      if (items == null || items.isEmpty) continue;
+      final name = category == null
+          ? '未分类'
+          : _favCategoryNames[category] ?? '分类 $category';
+      rows.add(name);
+      rows.addAll(items);
+    }
+    return rows;
+  }
+
+  /// 分类 tab 栏的单个 chip。
+  Widget _buildTagCategoryChip(int? category, String label) {
+    final selected = _selectedTagCategory == category;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: selected,
+        onSelected: (_) {
+          setState(() {
+            _selectedTagCategory = category;
+          });
+        },
+        visualDensity: VisualDensity.compact,
+      ),
+    );
   }
 
   // ============ 操作 ============
@@ -314,6 +410,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       posts: posts,
       initialIndex: index,
       completionDisplayByValue: widget.completionDisplayByValue,
+      completionCategoryByValue: widget.completionCategoryByValue,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
@@ -326,6 +423,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       posts: posts,
       initialIndex: index,
       completionDisplayByValue: widget.completionDisplayByValue,
+      completionCategoryByValue: widget.completionCategoryByValue,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
@@ -481,13 +579,29 @@ class _FavoritesPageState extends State<FavoritesPage>
   // Tab 2: 收藏的标签 - 每个标签显示预览图 + 文本筛选
   // =====================================================
   Widget _buildTagsTab() {
-    final filteredTags = _getFilteredTags();
+    final rows = _groupedFavoriteTags();
 
     return Column(
       children: [
+        // 分类 tab 栏（全部 / 角色 / 作者 / 作品 / 通用 / 元数据）
+        SizedBox(
+          height: 44,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            children: [
+              _buildTagCategoryChip(null, '全部'),
+              for (final category in _favCategoryOrder)
+                _buildTagCategoryChip(
+                  category,
+                  _favCategoryNames[category] ?? '分类 $category',
+                ),
+            ],
+          ),
+        ),
         // 文本筛选输入
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
           child: TextField(
             controller: _tagFilterController,
             decoration: InputDecoration(
@@ -510,9 +624,9 @@ class _FavoritesPageState extends State<FavoritesPage>
             ),
           ),
         ),
-        // 标签列表
+        // 标签列表（按分类分组）
         Expanded(
-          child: filteredTags.isEmpty
+          child: rows.isEmpty
               ? _buildEmptyState(
                   icon: Icons.label_off,
                   title: '还没有收藏的标签',
@@ -520,9 +634,23 @@ class _FavoritesPageState extends State<FavoritesPage>
                 )
               : ListView.builder(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                  itemCount: filteredTags.length,
+                  itemCount: rows.length,
                   itemBuilder: (context, index) {
-                    final tag = filteredTags[index];
+                    final row = rows[index];
+                    // 分组头
+                    if (row is String && !_favoriteTags.contains(row)) {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
+                        child: Text(
+                          row,
+                          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                                color: Theme.of(context).colorScheme.primary,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      );
+                    }
+                    final tag = row as String;
                     final previewPosts = _tagPreviewPosts[tag] ?? [];
                     final isLoadingPreview = _tagPreviewLoading.contains(tag);
 
