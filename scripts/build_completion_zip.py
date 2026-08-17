@@ -1,4 +1,14 @@
 #!/usr/bin/env python3
+"""Build the compact Danbooru completion zip shipped inside the app.
+
+Data sources (first non-empty wins):
+  1. crawler SQLite db (cache/danbooru_tags.db) -- completion_candidates column
+  2. previously shipped seed db (assets/danbooru_completion.db)
+  3. previously shipped legacy zip (assets/danbooru_completion.zip)
+
+The compact JSON entries carry the tag category (`c`) so the app can group
+completion suggestions by category without a database.
+"""
 import argparse
 import hashlib
 import json
@@ -8,7 +18,11 @@ import time
 import os
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # ========================
 # JSON backend (orjson优先)
@@ -41,152 +55,220 @@ except ImportError:
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_DIR = ROOT / "assets" / "danbooru_completion"
-CACHE_DIR = ROOT / ".danbooru_cache"
-TAG_CACHE_DIR = ROOT / "cache"
-SUCCESS_CACHE_FILE = TAG_CACHE_DIR / "successful_tags.json"
 OUTPUT_FILE = ROOT / "assets" / "danbooru_completion.zip"
 TEMP_OUTPUT_FILE = OUTPUT_FILE.with_suffix(".zip.tmp")
 MANIFEST_FILE = OUTPUT_FILE.with_suffix(".manifest.json")
 COMPACT_FILE = "completion_candidates.json"
-INDEX_FILE = CACHE_DIR / "completion_index.sqlite3"
+
+# Crawler-side SQLite database (kept; the source of tag + category data).
+TAG_DB = ROOT / "cache" / "danbooru_tags.db"
+# Legacy seed database that used to be shipped inside the app.
+SEED_DB = ROOT / "assets" / "danbooru_completion.db"
 
 
-def slugify_tag(tag: str) -> str:
-    return "".join(ch if ch.isalnum() else "_" for ch in tag).strip("_")
+def chunked(values: list, size: int):
+    for index in range(0, len(values), size):
+        yield values[index:index + size]
 
 
-def load_successful_tags() -> set[str]:
-    if not SUCCESS_CACHE_FILE.exists():
-        return set()
-
+def _loads_json(value):
+    if not value:
+        return None
     try:
-        payload = json.loads(SUCCESS_CACHE_FILE.read_text(encoding="utf-8"))
+        return json.loads(value)
     except Exception:
-        return set()
-
-    if not isinstance(payload, list):
-        return set()
-
-    return {t for t in payload if isinstance(t, str)}
+        return None
 
 
-def load_successful_tag_list() -> list[str]:
-    if not SUCCESS_CACHE_FILE.exists():
+# ========================
+# candidate sources
+# ========================
+def load_candidates_from_db() -> list[tuple]:
+    """Candidates from the crawler SQLite db (tags.completion_candidates).
+
+    Each candidate is a 5-tuple (value, insert_value, source, score, category).
+    """
+    if not TAG_DB.exists():
         return []
-
     try:
-        payload = json.loads(SUCCESS_CACHE_FILE.read_text(encoding="utf-8"))
+        conn = sqlite3.connect(f"file:{TAG_DB}?mode=ro", uri=True)
     except Exception:
-        return []
+        conn = sqlite3.connect(str(TAG_DB))
+    try:
+        rows = conn.execute(
+            "SELECT completion_candidates, category FROM tags "
+            "WHERE completion_candidates IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
 
-    if not isinstance(payload, list):
-        return []
-
-    seen = set()
-    tags = []
-    for tag in payload:
-        if isinstance(tag, str) and tag not in seen:
-            seen.add(tag)
-            tags.append(tag)
-    return tags
-
-
-def iter_payload_files(source: str):
-    files = {}
-
-    def add_dir(path: Path, recursive: bool):
-        if not path.is_dir():
-            return
-        iterator = path.rglob("*.json") if recursive else path.glob("*.json")
-        for item in iterator:
-            if item.is_file():
-                files[item.stem] = item
-
-    if source in {"successful", "cache", "both"}:
-        for tag in load_successful_tags():
-            path = CACHE_DIR / f"{slugify_tag(tag)}.json"
-            if path.is_file():
-                files.setdefault(path.stem, path)
-
-    if source in {"cache", "both"}:
-        add_dir(CACHE_DIR, recursive=False)
-
-    if source in {"assets", "both"} or not files:
-        add_dir(SOURCE_DIR, recursive=True)
-
-    return list(files.values())
-
-
-def directory_fingerprint(path: Path, recursive: bool) -> dict:
-    if not path.is_dir():
-        return {"exists": False, "count": 0, "mtime_ns": 0}
-
-    count = 0
-    latest_mtime_ns = path.stat().st_mtime_ns
-    iterator = path.rglob("*.json") if recursive else path.glob("*.json")
-    for item in iterator:
-        if not item.is_file():
+    result = []
+    for payload_json, category in rows:
+        candidates = _loads_json(payload_json)
+        if not isinstance(candidates, list) or not candidates:
             continue
-        count += 1
-        latest_mtime_ns = max(latest_mtime_ns, item.stat().st_mtime_ns)
+        for c in candidates:
+            if not isinstance(c, dict):
+                continue
+            v = c.get("value")
+            i = c.get("insert_value", v)
+            if not isinstance(v, str) or not isinstance(i, str):
+                continue
+            if not v or not i:
+                continue
+            result.append((
+                sys.intern(v),
+                sys.intern(i),
+                c.get("source") if isinstance(c.get("source"), str) else "",
+                c.get("score") if isinstance(c.get("score"), int) else 0,
+                category if isinstance(category, int) else None,
+            ))
+    return result
 
-    return {"exists": True, "count": count, "mtime_ns": latest_mtime_ns}
+
+def load_candidates_from_seed_db() -> list[tuple]:
+    """Candidates from the legacy seed database (kept until migrated)."""
+    if not SEED_DB.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{SEED_DB}?mode=ro", uri=True)
+    except Exception:
+        conn = sqlite3.connect(str(SEED_DB))
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT value, insert_value, source, score, category "
+                "FROM completion_candidates"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = conn.execute(
+                "SELECT value, insert_value, source, score, NULL "
+                "FROM completion_candidates"
+            ).fetchall()
+    finally:
+        conn.close()
+    return [
+        (
+            sys.intern(v),
+            sys.intern(i),
+            s if isinstance(s, str) else "",
+            r if isinstance(r, int) else 0,
+            c if isinstance(c, int) else None,
+        )
+        for v, i, s, r, c in rows
+        if isinstance(v, str) and isinstance(i, str) and v and i
+    ]
 
 
-def build_signature(source: str, compresslevel: int) -> dict:
-    signature = {
-        "source": source,
-        "compresslevel": compresslevel,
-        "assets": directory_fingerprint(SOURCE_DIR, recursive=True)
-        if source in {"assets", "both"}
-        else None,
-        "cache": directory_fingerprint(CACHE_DIR, recursive=False)
-        if source in {"cache", "both"}
-        else None,
-        "cache_dir": {
-            "exists": CACHE_DIR.exists(),
-            "mtime_ns": CACHE_DIR.stat().st_mtime_ns if CACHE_DIR.exists() else 0,
-        }
-        if source == "successful"
-        else None,
-        "successful_tags": {
-            "exists": SUCCESS_CACHE_FILE.exists(),
-            "mtime_ns": SUCCESS_CACHE_FILE.stat().st_mtime_ns
-            if SUCCESS_CACHE_FILE.exists()
-            else 0,
-            "size": SUCCESS_CACHE_FILE.stat().st_size
-            if SUCCESS_CACHE_FILE.exists()
-            else 0,
+def load_candidates_from_legacy_zip() -> list[tuple]:
+    """Candidates from the previously shipped zip (no category)."""
+    if not OUTPUT_FILE.exists():
+        return []
+    try:
+        with ZipFile(OUTPUT_FILE, "r") as archive:
+            raw = archive.read(COMPACT_FILE)
+    except Exception:
+        return []
+    compact = _loads_json(raw)
+    if not isinstance(compact, list):
+        return []
+    result = []
+    for item in compact:
+        if not isinstance(item, dict):
+            continue
+        v = item.get("v") or item.get("value")
+        i = item.get("i") or item.get("insert_value") or v
+        if not isinstance(v, str) or not isinstance(i, str):
+            continue
+        if not v or not i:
+            continue
+        result.append((
+            sys.intern(v),
+            sys.intern(i),
+            item.get("s") if isinstance(item.get("s"), str) else "",
+            item.get("r") if isinstance(item.get("r"), int) else 0,
+            item.get("c") if isinstance(item.get("c"), int) else None,
+        ))
+    return result
+
+
+def load_category_map() -> dict[str, int]:
+    """name -> category map from the crawler SQLite db."""
+    if not TAG_DB.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{TAG_DB}?mode=ro", uri=True)
+    except Exception:
+        conn = sqlite3.connect(str(TAG_DB))
+    try:
+        rows = conn.execute(
+            "SELECT name, category FROM tags WHERE category IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {name: cat for name, cat in rows}
+
+
+def build_suggestions() -> dict:
+    """Merge candidates, keep best score per (value, insert_value)."""
+    candidates = load_candidates_from_db()
+    source = "crawler database"
+    if not candidates:
+        candidates = load_candidates_from_seed_db()
+        source = "legacy seed db"
+    if not candidates:
+        candidates = load_candidates_from_legacy_zip()
+        source = "legacy zip"
+    if not candidates:
+        raise SystemExit(
+            "no completion data found (crawler db / seed db / legacy zip all empty)"
+        )
+
+    print(f"📂 sources: {source} ({len(candidates):,} candidates)")
+    category_map = load_category_map()
+
+    suggestions = {}
+    for v, i, s, r, cat in candidates:
+        key = (v.lower(), i.lower())
+        old = suggestions.get(key)
+        if old is None or r > old[3]:
+            if cat is None:
+                cat = category_map.get(i.lower()) or category_map.get(i)
+            suggestions[key] = (v, i, s, r, cat)
+    return suggestions
+
+
+# ========================
+# signature / manifest
+# ========================
+def db_fingerprint() -> dict:
+    fingerprint = {
+        "output": True,
+        "seed_db": {
+            "exists": SEED_DB.exists(),
+            "mtime_ns": SEED_DB.stat().st_mtime_ns if SEED_DB.exists() else 0,
+            "size": SEED_DB.stat().st_size if SEED_DB.exists() else 0,
         },
     }
-    encoded = json.dumps(signature, sort_keys=True, separators=(",", ":")).encode()
-    signature["hash"] = hashlib.sha256(encoded).hexdigest()
-    return signature
-
-
-def successful_tags_signature() -> dict:
-    return {
-        "exists": SUCCESS_CACHE_FILE.exists(),
-        "mtime_ns": SUCCESS_CACHE_FILE.stat().st_mtime_ns
-        if SUCCESS_CACHE_FILE.exists()
-        else 0,
-        "size": SUCCESS_CACHE_FILE.stat().st_size
-        if SUCCESS_CACHE_FILE.exists()
-        else 0,
-    }
-
-
-def output_signature(source: str, compression: str, compresslevel: int | None) -> dict:
-    signature = {
-        "source": source,
-        "compression": compression,
-        "compresslevel": compresslevel,
-        "successful_tags": successful_tags_signature(),
-    }
-    encoded = json.dumps(signature, sort_keys=True, separators=(",", ":")).encode()
-    signature["hash"] = hashlib.sha256(encoded).hexdigest()
-    return signature
+    if TAG_DB.exists():
+        try:
+            conn = sqlite3.connect(str(TAG_DB))
+            try:
+                success = conn.execute(
+                    "SELECT COUNT(*) FROM sync_status WHERE status = 'success'"
+                ).fetchone()[0]
+                tags = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+                max_updated = conn.execute("SELECT MAX(updated_at) FROM tags").fetchone()[0]
+            finally:
+                conn.close()
+            fingerprint.update({
+                "success_count": success,
+                "tags_count": tags,
+                "max_updated": max_updated,
+            })
+        except Exception:
+            pass
+    return fingerprint
 
 
 def load_manifest() -> dict | None:
@@ -215,169 +297,9 @@ def write_manifest(signature: dict, item_count: int, output_size: int):
     )
 
 
-def open_index() -> sqlite3.Connection:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(INDEX_FILE)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS tag_index ("
-        "tag TEXT PRIMARY KEY, "
-        "slug TEXT NOT NULL, "
-        "file_mtime_ns INTEGER NOT NULL, "
-        "file_size INTEGER NOT NULL, "
-        "candidates_json TEXT NOT NULL"
-        ")"
-    )
-    return conn
-
-
-def chunked(values: list[str], size: int):
-    for index in range(0, len(values), size):
-        yield values[index:index + size]
-
-
-def fetch_indexed_tags(conn: sqlite3.Connection, tags: list[str]) -> set[str]:
-    indexed = set()
-    for chunk in chunked(tags, 900):
-        placeholders = ",".join("?" for _ in chunk)
-        rows = conn.execute(
-            f"SELECT tag FROM tag_index WHERE tag IN ({placeholders})",
-            chunk,
-        )
-        indexed.update(row[0] for row in rows)
-    return indexed
-
-
-def find_tags_to_index(
-    conn: sqlite3.Connection,
-    tags: list[str],
-    rescan_existing: bool,
-) -> list[tuple[str, str, Path, int, int]]:
-    indexed = fetch_indexed_tags(conn, tags)
-    pending = []
-
-    if not rescan_existing:
-        candidates = [tag for tag in tags if tag not in indexed]
-        for tag in candidates:
-            slug = slugify_tag(tag)
-            path = CACHE_DIR / f"{slug}.json"
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-            pending.append((tag, slug, path, stat.st_mtime_ns, stat.st_size))
-        return pending
-
-    for tag in tags:
-        slug = slugify_tag(tag)
-        path = CACHE_DIR / f"{slug}.json"
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-
-        row = conn.execute(
-            "SELECT file_mtime_ns, file_size FROM tag_index WHERE tag = ?",
-            (tag,),
-        ).fetchone()
-        if row is None or row[0] != stat.st_mtime_ns or row[1] != stat.st_size:
-            pending.append((tag, slug, path, stat.st_mtime_ns, stat.st_size))
-
-    return pending
-
-
-def load_index_entry(entry: tuple[str, str, Path, int, int]):
-    tag, slug, path, mtime_ns, size = entry
-    candidates = load_candidates(path) or []
-    return tag, slug, mtime_ns, size, json.dumps(candidates, ensure_ascii=False, separators=(",", ":"))
-
-
-def update_successful_index(conn: sqlite3.Connection, tags: list[str], workers: int, rescan_existing: bool):
-    pending = find_tags_to_index(conn, tags, rescan_existing)
-    if not pending:
-        print(f"📇 index ready: {len(tags):,} tags")
-        return
-
-    print(f"📇 indexing {len(pending):,}/{len(tags):,} tags")
-    pbar = _progress_bar(len(pending), "indexing")
-    rows = []
-
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(load_index_entry, item) for item in pending[: workers * 4]}
-        next_index = len(futures)
-
-        while futures:
-            for fut in as_completed(futures):
-                futures.remove(fut)
-                if next_index < len(pending):
-                    futures.add(ex.submit(load_index_entry, pending[next_index]))
-                    next_index += 1
-                break
-
-            rows.append(fut.result())
-            pbar.update(1)
-
-            if len(rows) >= 5000:
-                conn.executemany(
-                    "INSERT OR REPLACE INTO tag_index "
-                    "(tag, slug, file_mtime_ns, file_size, candidates_json) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    rows,
-                )
-                conn.commit()
-                rows.clear()
-
-    if rows:
-        conn.executemany(
-            "INSERT OR REPLACE INTO tag_index "
-            "(tag, slug, file_mtime_ns, file_size, candidates_json) "
-            "VALUES (?, ?, ?, ?, ?)",
-            rows,
-        )
-        conn.commit()
-
-    pbar.close()
-
-
-def build_suggestions_from_index(conn: sqlite3.Connection, tags: list[str]) -> dict:
-    suggestions = {}
-    pbar = _progress_bar(len(tags), "merging")
-
-    for chunk in chunked(tags, 900):
-        placeholders = ",".join("?" for _ in chunk)
-        rows = conn.execute(
-            f"SELECT candidates_json FROM tag_index WHERE tag IN ({placeholders})",
-            chunk,
-        )
-        for (payload,) in rows:
-            for v, i, s, r in json.loads(payload):
-                key = (v.lower(), i.lower())
-                old = suggestions.get(key)
-                if old is None or r > old[3]:
-                    suggestions[key] = (v, i, s, r)
-        pbar.update(len(chunk))
-
-    pbar.close()
-    return suggestions
-
-
-def build_successful_suggestions(workers: int, rescan_existing: bool) -> dict:
-    tags = load_successful_tag_list()
-    if not tags:
-        return {}
-
-    conn = open_index()
-    try:
-        update_successful_index(conn, tags, workers, rescan_existing)
-        return build_suggestions_from_index(conn, tags)
-    finally:
-        conn.close()
-
-
 def _progress_bar(total: int, desc: str):
     if HAVE_TQDM:
-        return tqdm(total=total, desc=desc, unit="file")
+        return tqdm(total=total, desc=desc, unit="item")
     return _SimpleProgress(total, desc)
 
 
@@ -424,54 +346,9 @@ def _fmt(s):
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
-# ========================
-# worker
-# ========================
-def load_candidates(path: Path):
-    try:
-        payload = json_load(path)
-    except Exception:
-        return None
-
-    cands = payload.get("completion_candidates")
-    if not isinstance(cands, list):
-        return None
-
-    result = []
-    for c in cands:
-        if not isinstance(c, dict):
-            continue
-
-        v = c.get("value")
-        i = c.get("insert_value", v)
-        if not isinstance(v, str) or not isinstance(i, str):
-            continue
-        if not v or not i:
-            continue
-
-        result.append((
-            sys.intern(v),
-            sys.intern(i),
-            c.get("source") if isinstance(c.get("source"), str) else "",
-            c.get("score") if isinstance(c.get("score"), int) else 0
-        ))
-
-    return result
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Build the compact Danbooru completion zip."
-    )
-    parser.add_argument(
-        "--source",
-        choices=("successful", "cache", "assets", "both"),
-        default="successful",
-        help=(
-            "Input source. Default uses cache/successful_tags.json to pick files "
-            "from .danbooru_cache without scanning the whole directory; use 'both' "
-            "for legacy behavior."
-        ),
     )
     parser.add_argument(
         "--compresslevel",
@@ -497,15 +374,9 @@ def parse_args():
         help="Rebuild even if the input signature did not change.",
     )
     parser.add_argument(
-        "--workers",
-        type=int,
-        default=min(32, (os.cpu_count() or 8) * 4),
-        help="JSON loading worker threads.",
-    )
-    parser.add_argument(
-        "--rescan-existing",
+        "--clean-legacy",
         action="store_true",
-        help="For --source successful, stat indexed cache files and refresh changed entries. Slower with huge caches.",
+        help="Delete the legacy seed database (.db) and legacy zip after building.",
     )
     return parser.parse_args()
 
@@ -515,80 +386,38 @@ def main():
     compression = "stored" if args.store else "deflated"
     compresslevel = None if args.store else (9 if args.best else args.compresslevel)
 
-    if not SOURCE_DIR.is_dir():
-        raise SystemExit(f"not found: {SOURCE_DIR}")
-
-    if args.source == "successful":
-        signature = output_signature(args.source, compression, compresslevel)
-    else:
-        signature = build_signature(args.source, compresslevel or 0)
+    signature = db_fingerprint()
     manifest = load_manifest()
     if (
         not args.force
         and OUTPUT_FILE.exists()
         and manifest is not None
-        and manifest.get("signature", {}).get("hash") == signature["hash"]
+        and manifest.get("signature") == signature
     ):
         print(
             f"✅ unchanged: {OUTPUT_FILE} "
             f"({manifest.get('items', 0):,} items, {manifest.get('output_size', 0):,} bytes)"
         )
+        if args.clean_legacy:
+            _clean_legacy()
         return
 
-    if args.source == "successful":
-        print(f"📂 successful tags (compression={compression}{'' if compresslevel is None else f':{compresslevel}'})")
-        suggestions = build_successful_suggestions(args.workers, args.rescan_existing)
-    else:
-        files = iter_payload_files(args.source)
-        total = len(files)
-
-        print(f"📂 {total} files ({args.source}, compression={compression}{'' if compresslevel is None else f':{compresslevel}'})")
-
-        pbar = _progress_bar(total, "loading")
-
-        suggestions = {}
-
-        with ThreadPoolExecutor(max_workers=args.workers) as ex:
-            futures = {ex.submit(load_candidates, f) for f in files[: args.workers * 4]}
-            next_index = len(futures)
-
-            while futures:
-                for fut in as_completed(futures):
-                    futures.remove(fut)
-                    if next_index < total:
-                        futures.add(ex.submit(load_candidates, files[next_index]))
-                        next_index += 1
-                    break
-
-                pbar.update(1)
-                data = fut.result()
-
-                if not data:
-                    continue
-
-                for v, i, s, r in data:
-                    key = (v.lower(), i.lower())
-
-                    old = suggestions.get(key)
-                    if old is None or r > old[3]:
-                        suggestions[key] = (v, i, s, r)
-
-        pbar.close()
+    print(f"📂 building (compression={compression}{'' if compresslevel is None else f':{compresslevel}'})")
+    suggestions = build_suggestions()
 
     print(f"⚙️ merge {len(suggestions)}")
-
     sorted_list = sorted(
         suggestions.values(),
-        key=lambda x: (-x[3], x[0])
+        key=lambda x: (-x[3], x[0]),
     )
 
     compact = [
         {"v": v, "i": i, "s": s, "r": r}
-        for v, i, s, r in sorted_list
+        | ({"c": c} if c is not None else {})
+        for v, i, s, r, c in sorted_list
     ]
 
     print("🗜 writing zip...")
-
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
     compact_json = json_dump(compact)
@@ -606,7 +435,23 @@ def main():
     size = OUTPUT_FILE.stat().st_size
     write_manifest(signature, len(compact), size)
 
-    print(f"✅ done: {len(compact)} items, {size:,} bytes")
+    print(f"✅ done: {len(compact)} items with categories, {size:,} bytes -> {OUTPUT_FILE}")
+
+    if args.clean_legacy:
+        _clean_legacy()
+
+
+def _clean_legacy():
+    removed = 0
+    try:
+        SEED_DB.unlink()
+        removed += 1
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"  [WARN] cannot delete {SEED_DB}: {exc}")
+    if removed:
+        print(f"🗑 removed legacy seed database: {SEED_DB}")
 
 
 if __name__ == "__main__":

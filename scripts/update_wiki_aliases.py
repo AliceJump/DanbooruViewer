@@ -21,9 +21,9 @@ if str(ROOT) not in sys.path:
 
 import view
 
+from scripts.tag_db import db
 
-CACHE_DIR = ROOT / ".danbooru_cache"
-ASSET_DIR = ROOT / "assets" / "danbooru_completion"
+
 WIKI_ENDPOINT = "https://danbooru.donmai.us/wiki_pages"
 request_semaphore = threading.Semaphore(3)
 
@@ -70,24 +70,16 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_local_tags() -> list[tuple[int, Path, dict]]:
+def load_local_tags() -> list[tuple[int, str, dict]]:
+    payloads = db.list_tags()
     tags = []
-    paths = [path for path in CACHE_DIR.glob("*.json") if path.name != "sync_metadata.json"]
-    print(f"Scanning {len(paths)} local cache file(s)...")
-    for index, path in enumerate(paths, start=1):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            tag_info = payload.get("tag_info")
-            tag_id = tag_info.get("id") if isinstance(tag_info, dict) else None
-            tag_name = tag_info.get("name") if isinstance(tag_info, dict) else None
-            if isinstance(tag_id, int) and tag_name:
-                tags.append((tag_id, path, payload))
-        except (OSError, json.JSONDecodeError, AttributeError):
-            print(f"[SKIP] Invalid cache: {path.name}")
-
-        if index % 10000 == 0 or index == len(paths):
-            print(f"  Scanned {index}/{len(paths)} cache file(s)")
-
+    for payload in payloads:
+        tag_info = payload.get("tag_info")
+        tag_id = tag_info.get("id") if isinstance(tag_info, dict) else None
+        tag_name = tag_info.get("name") if isinstance(tag_info, dict) else None
+        if isinstance(tag_id, int) and tag_name:
+            tags.append((tag_id, tag_name, payload))
+    print(f"Loaded {len(tags)} tag(s) from database...")
     return sorted(tags, key=lambda item: item[0], reverse=True)
 
 
@@ -205,30 +197,15 @@ def update_payload(payload: dict, wiki: dict | None) -> dict:
     return payload
 
 
-def atomic_write(path: Path, payload: dict):
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    try:
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def save_payload(cache_path: Path, payload: dict):
-    atomic_write(cache_path, payload)
-    asset_path = ASSET_DIR / cache_path.name
-    if asset_path.exists():
-        atomic_write(asset_path, payload)
+def save_payload(cache_path: Path | None, payload: dict):
+    db.upsert_tag(payload)
 
 
 thread_local = threading.local()
 
 
 def process_tag(item, args):
-    tag_id, cache_path, payload = item
+    tag_id, _tag_name, payload = item
     session = getattr(thread_local, "session", None)
     if session is None:
         session = create_session(not args.no_verify_ssl)
@@ -238,7 +215,7 @@ def process_tag(item, args):
     wiki = fetch_wiki(session, tag, args.retries)
     update_payload(payload, wiki)
     payload["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    save_payload(cache_path, payload)
+    save_payload(None, payload)
     return tag_id, tag, len(payload["wiki"]["other_names"])
 
 

@@ -23,6 +23,8 @@ if str(ROOT) not in sys.path:
 
 import view
 
+from scripts.tag_db import db
+
 
 DEFAULT_TAGS = [
     "oguri_cap_(umamusume)",
@@ -83,18 +85,8 @@ def load_tags_from_file(path: Path) -> list[str]:
 
 
 def get_cached_tags() -> list[str]:
-    """Get list of all cached tags from cache directory."""
-    cache_dir = view.CACHE_DIR
-    if not cache_dir.exists():
-        return []
-    
-    tags = []
-    for json_file in cache_dir.glob("*.json"):
-        if json_file.name == "sync_metadata.json":
-            continue
-        tag_slug = json_file.stem
-        tags.append(tag_slug)
-    return tags
+    """Get list of all successfully synced tags from the database."""
+    return db.list_successful_tags()
 
 
 def get_tags_to_sync(args) -> list[str]:

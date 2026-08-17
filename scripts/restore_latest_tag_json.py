@@ -6,10 +6,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
 from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.tag_db import db
+
 DEFAULT_ARCHIVE = ROOT / "assets" / "danbooru_latest_10000_raw_json.zip"
 CACHE_DIR = ROOT / ".danbooru_cache"
 ASSET_DIR = ROOT / "assets" / "danbooru_completion"
@@ -45,28 +51,29 @@ def restore_archive(
             if not all(isinstance(value, str) for value in (archive_name, slug, expected_hash)):
                 continue
 
-            payload = archive.read(archive_name)
-            actual_hash = sha256_bytes(payload)
+            payload_bytes = archive.read(archive_name)
+            actual_hash = sha256_bytes(payload_bytes)
             if actual_hash != expected_hash:
                 raise SystemExit(
                     f"sha256 mismatch for {archive_name}: "
                     f"expected {expected_hash}, got {actual_hash}"
                 )
 
-            cache_path = cache_dir / f"{slug}.json"
-            asset_path = asset_dir / f"{slug}.json" if asset_dir is not None else None
-
             if not dry_run:
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                cache_path.write_bytes(payload)
-                if asset_path is not None:
-                    asset_path.parent.mkdir(parents=True, exist_ok=True)
-                    asset_path.write_bytes(payload)
+                try:
+                    payload = json.loads(payload_bytes.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    print(f"  [WARN] skip invalid payload {archive_name}: {exc}")
+                    continue
+                if not isinstance(payload, dict) or not payload.get("tag"):
+                    print(f"  [WARN] skip payload without 'tag': {archive_name}")
+                    continue
+                db.upsert_tag(payload)
 
             restored += 1
 
     print(
-        f"Restored {restored} JSON files from {archive_path}"
+        f"Restored {restored} tag payloads from {archive_path} into the database"
         f"{' (dry run)' if dry_run else ''}."
     )
 

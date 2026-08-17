@@ -23,6 +23,8 @@ if str(ROOT) not in sys.path:
 
 import view
 
+from scripts.tag_db import db
+
 
 # === Config ===
 
@@ -113,36 +115,55 @@ def normalize_failed(entry: dict) -> dict:
 
 
 def load_caches(ctx: SyncContext):
-    raw = load_json(CACHE["success"], [])
-    ctx.success = set(raw) if isinstance(raw, list) else set()
-
-    failed_raw = load_json(CACHE["failed"], {})
-    ctx.failed = {t: normalize_failed(e) for t, e in failed_raw.items()} if isinstance(failed_raw, dict) else {}
-
-    blocked_raw = load_json(CACHE["blocked"], {})
-    ctx.blocked = {t: normalize_failed(e) for t, e in blocked_raw.items()} if isinstance(blocked_raw, dict) else {}
-
-    cursor_raw = load_json(CACHE["cursor"], {})
-    if isinstance(cursor_raw, dict):
-        mid = cursor_raw.get("min_id")
-        mad = cursor_raw.get("max_id")
-        ctx.cursor = {
-            "min_id": mid if isinstance(mid, int) else None,
-            "max_id": mad if isinstance(mad, int) else None,
-            "updated_at": cursor_raw.get("updated_at"),
-        }
-    else:
-        ctx.cursor = {}
+    status_map = db.list_sync_status()
+    ctx.success = {t for t, e in status_map.items() if e["status"] == "success"}
+    ctx.failed = {t: normalize_failed(e) for t, e in status_map.items() if e["status"] == "failed"}
+    ctx.blocked = {t: normalize_failed(e) for t, e in status_map.items() if e["status"] == "blocked"}
+    ctx.cursor = db.load_cursor()
 
 
 def save_caches(ctx: SyncContext):
-    save_json(CACHE["success"], sorted(ctx.success))
-    save_json(CACHE["failed"], dict(sorted(ctx.failed.items())))
-    save_json(CACHE["blocked"], dict(sorted(ctx.blocked.items())))
-    mid = ctx.cursor.get("min_id")
-    mad = ctx.cursor.get("max_id")
-    if isinstance(mid, int) and isinstance(mad, int):
-        save_json(CACHE["cursor"], {"min_id": mid, "max_id": mad, "updated_at": datetime.now(timezone.utc).isoformat()})
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+
+    for tag in sorted(ctx.success):
+        meta = ctx.metadata.get(view.slugify_tag(tag), {})
+        if not isinstance(meta, dict):
+            meta = {}
+        rows.append((tag, "success", None, 0, meta.get("last_sync_time") or now, None))
+
+    for tag in sorted(ctx.failed):
+        entry = ctx.failed[tag]
+        if not isinstance(entry, dict):
+            entry = {}
+        rows.append(
+            (
+                tag,
+                "failed",
+                str(entry.get("reason") or "unknown"),
+                int(entry.get("failures") or 1),
+                None,
+                entry.get("last_failed_at"),
+            )
+        )
+
+    for tag in sorted(ctx.blocked):
+        entry = ctx.blocked[tag]
+        if not isinstance(entry, dict):
+            entry = {}
+        rows.append(
+            (
+                tag,
+                "blocked",
+                str(entry.get("reason") or "unknown"),
+                int(entry.get("failures") or 1),
+                None,
+                entry.get("last_failed_at"),
+            )
+        )
+
+    db.upsert_sync_status_many(rows)
+    db.save_cursor(ctx.cursor)
 
 
 def quarantine_exhausted_failures(ctx: SyncContext) -> int:
@@ -304,8 +325,11 @@ def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
                     ctx.success.add(tag)
                     ctx.failed.pop(tag, None)
                     ctx.blocked.pop(tag, None)
-                    save_json(CACHE["failed"], dict(sorted(ctx.failed.items())))
-                    save_json(CACHE["blocked"], dict(sorted(ctx.blocked.items())))
+                    db.set_sync_status(
+                        tag,
+                        "success",
+                        last_sync_time=datetime.now(timezone.utc).isoformat(),
+                    )
                 return "skipped", record
 
         if tag in ctx.blocked:
@@ -315,7 +339,7 @@ def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
         print(f"[SYNC] {tag}")
         view.sync_data(tag)
         slug = view.slugify_tag(tag)
-        print(f"  \u2713 {view.ASSET_DIR / f'{slug}.json'}")
+        print(f"  \u2713 stored in db: {tag}")
 
         with ctx.lock:
             ctx.metadata[slug] = {
@@ -326,8 +350,11 @@ def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
             ctx.success.add(tag)
             ctx.failed.pop(tag, None)
             ctx.blocked.pop(tag, None)
-            save_json(CACHE["failed"], dict(sorted(ctx.failed.items())))
-            save_json(CACHE["blocked"], dict(sorted(ctx.blocked.items())))
+            db.set_sync_status(
+                tag,
+                "success",
+                last_sync_time=ctx.metadata[slug]["last_sync_time"],
+            )
         return "synced", record
 
     except Exception as exc:
@@ -340,10 +367,22 @@ def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
             if entry["failures"] >= MAX_FAILED_ATTEMPTS:
                 ctx.failed.pop(tag, None)
                 ctx.blocked[tag] = entry
+                db.set_sync_status(
+                    tag,
+                    "blocked",
+                    reason=entry["reason"],
+                    failures=entry["failures"],
+                    last_failed_at=entry["last_failed_at"],
+                )
             else:
                 ctx.failed[tag] = entry
-            save_json(CACHE["failed"], dict(sorted(ctx.failed.items())))
-            save_json(CACHE["blocked"], dict(sorted(ctx.blocked.items())))
+                db.set_sync_status(
+                    tag,
+                    "failed",
+                    reason=entry["reason"],
+                    failures=entry["failures"],
+                    last_failed_at=entry["last_failed_at"],
+                )
         print(f"[FAIL] {tag}: {exc}")
         return "failed", record
 
@@ -527,7 +566,7 @@ def main():
 
     if args.reset_api_cursor:
         ctx.cursor = {}
-        save_json(CACHE["cursor"], {})
+        db.clear_cursor()
 
     if args.retry_failed:
         tags = (TagRecord(t) for t in sorted(ctx.failed.keys()) if t not in ctx.blocked)
@@ -575,47 +614,31 @@ FAILED_CACHE_PATH = CACHE["failed"]
 SUCCESS_CACHE_PATH = CACHE["success"]
 
 
-def load_json_set(path: Path) -> set[str]:
-    data = load_json(path, [])
-    return set(data) if isinstance(data, list) else set()
+def load_json_set(path: Path | None = None) -> set[str]:
+    """Backward-compat: successful tag names now come from the database."""
+    return set(db.list_successful_tags())
 
 
-def load_failed_cache(path: Path = FAILED_CACHE_PATH) -> dict[str, dict]:
-    data = load_json(path, {})
-    if isinstance(data, dict):
-        return {t: normalize_failed(e) for t, e in data.items()}
-    return {}
-
-
-def load_do_not_retry_cache(path: Path = DO_NOT_RETRY_CACHE_PATH) -> dict[str, dict]:
-    data = load_json(path, {})
-    if isinstance(data, dict):
-        return {t: normalize_failed(e) for t, e in data.items()}
-    return {}
-
-
-def load_tag_cursor(path: Path | None = None) -> dict:
-    data = load_json(path or CACHE["cursor"], {})
-    if not isinstance(data, dict):
-        return {}
-    mid = data.get("min_id")
-    mad = data.get("max_id")
+def load_failed_cache(path: Path | None = None) -> dict[str, dict]:
     return {
-        "min_id": mid if isinstance(mid, int) else None,
-        "max_id": mad if isinstance(mad, int) else None,
-        "updated_at": data.get("updated_at"),
+        t: normalize_failed(e)
+        for t, e in db.list_sync_status("failed").items()
     }
 
 
+def load_do_not_retry_cache(path: Path | None = None) -> dict[str, dict]:
+    return {
+        t: normalize_failed(e)
+        for t, e in db.list_sync_status("blocked").items()
+    }
+
+
+def load_tag_cursor(path: Path | None = None) -> dict:
+    return db.load_cursor()
+
+
 def save_tag_cursor(cursor: dict, path: Path | None = None):
-    mid = cursor.get("min_id")
-    mad = cursor.get("max_id")
-    if not isinstance(mid, int) or not isinstance(mad, int):
-        return
-    save_json(path or CACHE["cursor"], {
-        "min_id": mid, "max_id": mad,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    })
+    db.save_cursor(cursor)
 
 
 def update_cursor_boundary(cursor: dict, record: TagRecord, mode: str) -> bool:
@@ -628,9 +651,7 @@ def sync_single_tag(record: TagRecord, args, metadata: dict, successful_tags: se
                       failed=failed_tags, blocked=do_not_retry_tags,
                       cursor={}, lock=metadata_lock)
     result = sync_tag(record, ctx)
-    save_json(SUCCESS_CACHE_PATH, sorted(ctx.success))
-    save_json(FAILED_CACHE_PATH, dict(sorted(ctx.failed.items())))
-    save_json(DO_NOT_RETRY_CACHE_PATH, dict(sorted(ctx.blocked.items())))
+    save_caches(ctx)
     return result
 
 

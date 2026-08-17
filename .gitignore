@@ -45,3 +45,4 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 .danbooru_cache/
+/cache/danbooru_tags.db
