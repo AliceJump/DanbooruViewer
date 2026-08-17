@@ -1,5 +1,7 @@
-## 变更日志 (v1.0.60)
+## 变更日志 (v1.0.61)
 
-- 去数据库化：App 端恢复 zip 补全资源（条目带分类字段），移除 sqflite 依赖
-- 抓取端保留 SQLite（cache/danbooru_tags.db），build_completion_zip.py 只输出 zip
-- 保留功能：补全/收藏按分类分组、旧收藏分类一次性迁移、后台 isolate 补全加载优化
+8991b8b chore(android): disable Kotlin incremental compilation
+61c6c26 fix(app): rate-limit tag preview requests and URL-encode tags
+605c8d0 feat(app): merge ugoira zip frames into GIF for playback and save
+d097e4f feat(app): cache artist commentary to make sharing instant
+
