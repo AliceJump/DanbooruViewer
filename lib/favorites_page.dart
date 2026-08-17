@@ -73,6 +73,13 @@ class _FavoritesPageState extends State<FavoritesPage>
   Map<String, List<Post>> _tagPreviewPosts = {};
   final Set<String> _tagPreviewLoading = {};
 
+  // 请求失败（网络错误 / 429 限流等）的标签，刷新时会重新拉取。
+  final Set<String> _tagPreviewFailed = {};
+
+  // Danbooru 读取接口建议约 1 请求/秒（突发上限 10/秒），
+  // 顺序拉取每个收藏标签的预览时留出间隔，避免触发 429 限流。
+  static const Duration _previewRequestDelay = Duration(milliseconds: 300);
+
   // ============ 补全数据（从主页传入，通过widget.completionDisplayByValue） ============
 
   @override
@@ -230,21 +237,31 @@ class _FavoritesPageState extends State<FavoritesPage>
   // ============ 标签预览图加载 ============
   Future<void> _loadTagPreviews() async {
     for (final tag in _favoriteTags) {
-      if (_tagPreviewPosts.containsKey(tag) ||
-          _tagPreviewLoading.contains(tag)) {
+      if (!mounted) return;
+
+      // 已成功（或确认无图）的标签跳过；失败的标签在刷新时重试。
+      final existing = _tagPreviewPosts[tag];
+      if (existing != null && !_tagPreviewFailed.contains(tag)) {
+        continue;
+      }
+      if (_tagPreviewLoading.contains(tag)) {
         continue;
       }
 
       setState(() {
         _tagPreviewLoading.add(tag);
+        _tagPreviewFailed.remove(tag);
       });
 
       try {
-        final response = await http.get(
-          Uri.parse(
-            'https://danbooru.donmai.us/posts.json?tags=$tag&limit=8&page=1',
-          ),
-        );
+        // 用 Uri.https + queryParameters 自动做百分号编码，
+        // 避免含括号等特殊字符的标签（如 maree_rouge_(3d)_(daiblos_core)）构造出非法 URL。
+        final uri = Uri.https('danbooru.donmai.us', '/posts.json', {
+          'tags': tag,
+          'limit': '8',
+          'page': '1',
+        });
+        final response = await http.get(uri);
         if (response.statusCode == 200) {
           final List<dynamic> postsJson = json.decode(response.body);
           final posts = postsJson.map((json) => Post.fromJson(json)).toList();
@@ -256,6 +273,7 @@ class _FavoritesPageState extends State<FavoritesPage>
         } else if (mounted) {
           setState(() {
             _tagPreviewPosts[tag] = const [];
+            _tagPreviewFailed.add(tag);
           });
         }
       } catch (e) {
@@ -263,6 +281,7 @@ class _FavoritesPageState extends State<FavoritesPage>
         if (mounted) {
           setState(() {
             _tagPreviewPosts[tag] = const [];
+            _tagPreviewFailed.add(tag);
           });
         }
       } finally {
@@ -272,6 +291,9 @@ class _FavoritesPageState extends State<FavoritesPage>
           });
         }
       }
+
+      // 限流保护：每个标签请求之间留出间隔。
+      await Future<void>.delayed(_previewRequestDelay);
     }
   }
 
@@ -375,6 +397,7 @@ class _FavoritesPageState extends State<FavoritesPage>
     await _favoritesManager.removeFavoriteTag(tag);
     _tagPreviewPosts.remove(tag);
     _tagPreviewLoading.remove(tag);
+    _tagPreviewFailed.remove(tag);
     await _loadData();
     if (mounted) {
       ScaffoldMessenger.of(
