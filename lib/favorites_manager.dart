@@ -230,6 +230,24 @@ class FavoritesManager {
     await _prefs!.setString(_browsingHistoryKey, jsonEncode(history));
   }
 
+  // ========== 分享简介缓存 ==========
+  // 分享时用到的艺术家简介（title + description）。
+  // 在拉图时顺带拉取并持久化，分享时直接读取缓存，不再发网络请求。
+
+  static String _commentaryKey(int postId) => 'post_commentary_$postId';
+
+  /// 读取缓存的简介；未缓存过返回 null。
+  Future<String?> getCachedCommentary(int postId) async {
+    await _ensureInitialized();
+    return _prefs!.getString(_commentaryKey(postId));
+  }
+
+  /// 保存简介到缓存。
+  Future<void> setCachedCommentary(int postId, String intro) async {
+    await _ensureInitialized();
+    await _prefs!.setString(_commentaryKey(postId), intro);
+  }
+
   /// 清空所有收藏（用于测试或重置）
   Future<void> clearAllFavorites() async {
     await _ensureInitialized();

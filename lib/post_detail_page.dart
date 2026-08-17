@@ -129,6 +129,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }) async {
     if (index < 0 || index >= widget.posts.length) return;
     final post = widget.posts[index];
+    // 拉图时顺带拉取并缓存分享简介，分享时无需再发请求。
+    _prefetchCommentary(post);
     final previewUrl = post.previewFileUrl;
     final highResUrl = post.fileUrl ?? post.largeFileUrl;
 
@@ -248,12 +250,18 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Future<void> _sharePost(Post post) async {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('正在获取分享简介...'),
-        duration: Duration(milliseconds: 800),
-      ),
-    );
+    // 简介已缓存时直接分享，无需等待网络请求。
+    final hasCachedIntro = _commentaryByPostId[post.id] != null ||
+        await _favoritesManager.getCachedCommentary(post.id) != null;
+    if (!mounted) return;
+    if (!hasCachedIntro) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('正在获取分享简介...'),
+          duration: Duration(milliseconds: 800),
+        ),
+      );
+    }
 
     final postUrl = _postUrl(post);
     final intro = await _postIntro(post);
@@ -273,14 +281,44 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   Future<String?> _postIntro(Post post) async {
     final cached = _commentaryByPostId[post.id];
-    if (cached != null) return cached;
+    if (cached != null) return cached.isEmpty ? null : cached;
+
+    // 读取持久化缓存（上次拉图时已保存的简介）。
+    final persisted = await _favoritesManager.getCachedCommentary(post.id);
+    if (persisted != null) {
+      _commentaryByPostId[post.id] = persisted;
+      return persisted.isEmpty ? null : persisted;
+    }
 
     final commentary = await _fetchArtistCommentary(post.id);
+    if (commentary != null) {
+      await _favoritesManager.setCachedCommentary(post.id, commentary);
+    }
     final intro = commentary ?? _fallbackPostIntro(post);
     if (intro != null && intro.isNotEmpty) {
       _commentaryByPostId[post.id] = intro;
     }
     return intro;
+  }
+
+  /// 拉图时后台预取简介：优先用持久化缓存，否则请求一次并保存，
+  /// 这样点分享时 `_postIntro` 直接从缓存读取，无需再发网络请求。
+  Future<void> _prefetchCommentary(Post post) async {
+    if (_commentaryByPostId.containsKey(post.id)) return;
+
+    final persisted = await _favoritesManager.getCachedCommentary(post.id);
+    if (persisted != null) {
+      _commentaryByPostId[post.id] = persisted;
+      return;
+    }
+
+    final commentary = await _fetchArtistCommentary(post.id);
+    if (commentary != null) {
+      await _favoritesManager.setCachedCommentary(post.id, commentary);
+      if (!_commentaryByPostId.containsKey(post.id)) {
+        _commentaryByPostId[post.id] = commentary;
+      }
+    }
   }
 
   Future<String?> _fetchArtistCommentary(int postId) async {
