@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,6 +12,7 @@ import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
 import 'main.dart';
 import 'media_utils.dart';
+import 'ugoira_utils.dart';
 import 'video_controls.dart';
 
 class PostDetailPage extends StatefulWidget {
@@ -63,6 +65,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
   late PageController _pageController;
   late int _currentIndex;
   final Map<int, String> _imageUrls = {};
+  final Map<int, File> _imageFiles = {};
   final Map<int, String> _commentaryByPostId = {};
   final Map<int, VideoPlayerController> _videoControllers = {};
   bool _didChangeDependenciesRun = false;
@@ -145,7 +148,21 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
     if (highResUrl != null &&
         _imageUrls[index] == null &&
-        _videoControllers[index] == null) {
+        _videoControllers[index] == null &&
+        _imageFiles[index] == null) {
+      if (isUgoiraUrl(highResUrl)) {
+        try {
+          final gifFile = await getUgoiraGifFile(highResUrl);
+          if (!mounted) return;
+          setState(() {
+            _imageFiles[index] = gifFile;
+          });
+        } catch (e) {
+          debugPrint('Failed to process ugoira for post ${post.id}: $e');
+        }
+        return;
+      }
+
       if (isVideoUrl(highResUrl)) {
         final videoController = VideoPlayerController.networkUrl(
           Uri.parse(highResUrl),
@@ -617,6 +634,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
           final post = widget.posts[index];
           final previewUrl = post.previewFileUrl;
           final highResUrlForDetailPage = _imageUrls[index];
+          final localImageFile = _imageFiles[index];
           final videoController = _videoControllers[index];
           final definitiveHighResUrl = post.fileUrl ?? post.largeFileUrl;
           final isVideo =
@@ -668,6 +686,16 @@ class _PostDetailPageState extends State<PostDetailPage> {
                     color: Colors.white.withValues(alpha: 0.7),
                   ),
                 ),
+              if (localImageFile != null)
+                Center(
+                  child: Image.file(
+                    localImageFile,
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) {
+                      return const SizedBox.shrink();
+                    },
+                  ),
+                ),
               if (_canShowLoadedImage &&
                   highResUrlForDetailPage != null &&
                   videoController == null)
@@ -687,7 +715,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
           if (definitiveHighResUrl != null) {
             mediaContent = TimedMediaHoldGesture(
-              media: definitiveHighResUrl,
+              media: localImageFile?.path ?? definitiveHighResUrl,
               child: mediaContent,
             );
           }

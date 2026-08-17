@@ -12,6 +12,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import 'media_utils.dart';
+import 'ugoira_utils.dart';
 
 void main() {
   runApp(const MyApp());
@@ -562,9 +563,15 @@ class _MyHomePageState extends State<MyHomePage> {
         final imageUrl = post.fileUrl ?? post.largeFileUrl;
         if (imageUrl != null) {
           try {
-            final path = '${tempDir.path}/${imageUrl.split('/').last}';
-            await dio.download(imageUrl, path);
-            await Gal.putImage(path, album: 'danbooru_viewer');
+            if (isUgoiraUrl(imageUrl)) {
+              // ugoira 动画帖：合并为 GIF 后保存
+              final gifFile = await getUgoiraGifFile(imageUrl);
+              await Gal.putImage(gifFile.path, album: 'danbooru_viewer');
+            } else {
+              final path = '${tempDir.path}/${imageUrl.split('/').last}';
+              await dio.download(imageUrl, path);
+              await Gal.putImage(path, album: 'danbooru_viewer');
+            }
             successCount++;
           } catch (e) {
             // Log individual download error if needed

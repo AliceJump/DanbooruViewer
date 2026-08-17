@@ -5,6 +5,7 @@ import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:video_player/video_player.dart';
 import 'media_utils.dart';
+import 'ugoira_utils.dart';
 import 'video_controls.dart';
 
 class FullScreenImagePage extends StatefulWidget {
@@ -64,6 +65,9 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
   }
 
   Future<File> _getCachedFile(String url, {int retries = 2}) async {
+    if (isUgoiraUrl(url)) {
+      return getUgoiraGifFile(url);
+    }
     var attempt = 0;
     while (true) {
       try {

@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 // drag_utils.dart
 import 'package:danbooru_viewer/DragHelper.dart';
+import 'ugoira_utils.dart';
 
 /// 判断 URL 是否是视频
 bool isVideoUrl(String url) {
@@ -19,11 +20,17 @@ bool isVideoUrl(String url) {
 
 Future<File?> getCachedMediaFile(String? url) async {
   if (url == null || isVideoUrl(url)) return null;
+  if (isUgoiraUrl(url)) {
+    return getCachedUgoiraGifFile(url);
+  }
   return (await DefaultCacheManager().getFileFromCache(url))?.file;
 }
 
 Future<File?> getCachedOrDownloadedMediaFile(String? url) async {
   if (url == null || isVideoUrl(url)) return null;
+  if (isUgoiraUrl(url)) {
+    return getUgoiraGifFile(url);
+  }
   return DefaultCacheManager().getSingleFile(url);
 }
 
@@ -32,7 +39,11 @@ void warmPostImages({String? previewUrl, String? highResUrl}) {
     DefaultCacheManager().downloadFile(previewUrl);
   }
   if (highResUrl != null && !isVideoUrl(highResUrl)) {
-    DefaultCacheManager().downloadFile(highResUrl);
+    if (isUgoiraUrl(highResUrl)) {
+      ensureUgoiraGifCached(highResUrl);
+    } else {
+      DefaultCacheManager().downloadFile(highResUrl);
+    }
   }
 }
 
@@ -281,8 +292,10 @@ Future<void> startDrag(BuildContext context, String media) async {
 
   try {
     if (media.startsWith('http://') || media.startsWith('https://')) {
-      // URL → 获取缓存文件
-      filePath = (await getCachedFile(media)).path;
+      // URL → 获取缓存文件（ugoira 压缩包先合并为 GIF）
+      filePath = isUgoiraUrl(media)
+          ? (await getUgoiraGifFile(media)).path
+          : (await getCachedFile(media)).path;
     } else {
       // 本地文件路径
       filePath = media;
@@ -314,7 +327,9 @@ Future<void> saveMediaToGallery(BuildContext context, String mediaUrl) async {
     // 判断是网络 URL 还是本地路径
     final file =
         (mediaUrl.startsWith('http://') || mediaUrl.startsWith('https://'))
-        ? await DefaultCacheManager().getSingleFile(mediaUrl)
+        ? (isUgoiraUrl(mediaUrl)
+              ? await getUgoiraGifFile(mediaUrl)
+              : await DefaultCacheManager().getSingleFile(mediaUrl))
         : File(mediaUrl);
 
     final isVideo = mediaUrl.toLowerCase().endsWith('.mp4');
