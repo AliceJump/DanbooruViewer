@@ -1,16 +1,16 @@
 {
   "signature": {
-    "source": "successful",
-    "compression": "deflated",
-    "compresslevel": 3,
-    "successful_tags": {
+    "output": true,
+    "seed_db": {
       "exists": true,
-      "mtime_ns": 1785676311045020700,
-      "size": 37326534
+      "mtime_ns": 1786909615724292600,
+      "size": 227422208
     },
-    "hash": "8367b7b904d2decbea5094c292af72596f9842bed74d47d3b881834af6b01866"
+    "success_count": 1700231,
+    "tags_count": 1804609,
+    "max_updated": "2026-08-16T19:34:10.816410+00:00"
   },
   "items": 1977879,
-  "output_size": 25283550,
-  "updated_at": 1785835749
+  "output_size": 26226230,
+  "updated_at": 1786985735
 }
