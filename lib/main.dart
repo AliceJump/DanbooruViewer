@@ -1,10 +1,10 @@
 import 'dart:convert';
-import 'dart:isolate';
 
 import 'package:archive/archive.dart';
 import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/post_detail_page.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
@@ -308,7 +308,8 @@ class _MyHomePageState extends State<MyHomePage> {
           .map((c) => (c.value, c.insertValue, c.source, c.score, c.category))
           .toList();
 
-      final maps = await Isolate.run(() => _buildCompletionMaps(records));
+      // 以「顶层函数 + 消息参数」方式调用，避免闭包捕获不可发送对象。
+      final maps = await compute(_buildCompletionMaps, records);
       if (!mounted) return;
       setState(() {
         _completionSuggestions = candidates;
