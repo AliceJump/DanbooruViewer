@@ -162,6 +162,60 @@ bool _containsNonEnglish(String value) {
   return value.runes.any((rune) => rune > 0x7f);
 }
 
+/// 在后台 isolate 中完成 zip 的加载/解码/JSON 解析与映射构建，避免阻塞首帧。
+/// 返回 (候选列表, 显示名映射, 分类映射)。
+(List<SearchCompletionSuggestion>, Map<String, String>, Map<String, int>)
+_loadCompletionData(Uint8List bytes) {
+  final archive = ZipDecoder().decodeBytes(bytes);
+  final jsonFiles =
+      archive.files
+          .where((file) => file.isFile && file.name.endsWith('.json'))
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+  final suggestionsByValue = <String, SearchCompletionSuggestion>{};
+
+  for (final file in jsonFiles) {
+    try {
+      final content = utf8.decode(file.content as List<int>);
+      final payload = json.decode(content);
+      final candidateJson = payload is List<dynamic>
+          ? payload
+          : payload is Map<String, dynamic>
+          ? payload['completion_candidates'] as List<dynamic>? ?? []
+          : const <dynamic>[];
+      final candidates = candidateJson
+          .whereType<Map<String, dynamic>>()
+          .map(SearchCompletionSuggestion.fromJson)
+          .where(
+            (item) =>
+                item.value.trim().isNotEmpty &&
+                item.insertValue.trim().isNotEmpty,
+          );
+
+      for (final candidate in candidates) {
+        final key =
+            '${candidate.value.toLowerCase()}\u0000${candidate.insertValue.toLowerCase()}';
+        final existing = suggestionsByValue[key];
+        if (existing == null || candidate.score > existing.score) {
+          suggestionsByValue[key] = candidate;
+        }
+      }
+    } catch (e) {
+      debugPrint('Skipped completion asset ${file.name}: $e');
+    }
+  }
+
+  final candidates = suggestionsByValue.values.toList()
+    ..sort((a, b) => b.score.compareTo(a.score));
+
+  final records = candidates
+      .map((c) => (c.value, c.insertValue, c.source, c.score, c.category))
+      .toList();
+
+  final maps = _buildCompletionMaps(records);
+  return (candidates, maps.$1, maps.$2);
+}
+
 class _SearchToken {
   final String value;
   final int start;
@@ -258,59 +312,15 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _loadCompletionSuggestions() async {
     try {
-      // 补全数据以 zip 打包。读取/解析在主 isolate 完成，
-      // 构建显示名/分类映射的纯计算放到后台 isolate，避免阻塞 UI。
+      // 补全数据以 zip 打包。整个加载/解码/解析/建映射都在后台 isolate
+      // 完成，避免阻塞 UI 首帧渲染。
       final bytes = await rootBundle.load('assets/danbooru_completion.zip');
-      final archive = ZipDecoder().decodeBytes(
+      final result = await compute(
+        _loadCompletionData,
         bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
       );
-      final jsonFiles =
-          archive.files
-              .where((file) => file.isFile && file.name.endsWith('.json'))
-              .toList()
-            ..sort((a, b) => a.name.compareTo(b.name));
-      final suggestionsByValue = <String, SearchCompletionSuggestion>{};
-
-      for (final file in jsonFiles) {
-        try {
-          final content = utf8.decode(file.content as List<int>);
-          final payload = json.decode(content);
-          final candidateJson = payload is List<dynamic>
-              ? payload
-              : payload is Map<String, dynamic>
-              ? payload['completion_candidates'] as List<dynamic>? ?? []
-              : const <dynamic>[];
-          final candidates = candidateJson
-              .whereType<Map<String, dynamic>>()
-              .map(SearchCompletionSuggestion.fromJson)
-              .where(
-                (item) =>
-                    item.value.trim().isNotEmpty &&
-                    item.insertValue.trim().isNotEmpty,
-              );
-
-          for (final candidate in candidates) {
-            final key =
-                '${candidate.value.toLowerCase()}\u0000${candidate.insertValue.toLowerCase()}';
-            final existing = suggestionsByValue[key];
-            if (existing == null || candidate.score > existing.score) {
-              suggestionsByValue[key] = candidate;
-            }
-          }
-        } catch (e) {
-          debugPrint('Skipped completion asset ${file.name}: $e');
-        }
-      }
-
-      final candidates = suggestionsByValue.values.toList()
-        ..sort((a, b) => b.score.compareTo(a.score));
-
-      final records = candidates
-          .map((c) => (c.value, c.insertValue, c.source, c.score, c.category))
-          .toList();
-
-      // 以「顶层函数 + 消息参数」方式调用，避免闭包捕获不可发送对象。
-      final maps = await compute(_buildCompletionMaps, records);
+      final candidates = result.$1;
+      final maps = (result.$2, result.$3);
       if (!mounted) return;
       setState(() {
         _completionSuggestions = candidates;
