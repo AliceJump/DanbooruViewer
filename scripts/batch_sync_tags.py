@@ -53,6 +53,7 @@ request_semaphore = threading.Semaphore(3)
 class TagRecord(NamedTuple):
     name: str
     tag_id: int | None = None
+    created_at: str | None = None
 
 
 @dataclass
@@ -252,7 +253,13 @@ def fetch_tags_from_api_page(session: requests.Session, *, order: str, cursor_id
         tid = tag.get("id")
         name = tag.get("name")
         if name:
-            records.append(TagRecord(name, tid if isinstance(tid, int) else None))
+            records.append(
+                TagRecord(
+                    name,
+                    tid if isinstance(tid, int) else None,
+                    tag.get("created_at") if isinstance(tag.get("created_at"), str) else None,
+                )
+            )
     print(f"Got {len(records)} tags in current batch")
     return records
 
@@ -434,6 +441,14 @@ def parse_args():
     p.add_argument("--max-age", type=int, default=24, help="Max cache age")
     p.add_argument("--limit", type=int, default=0, help="Maximum processed tags")
     p.add_argument("--workers", type=int, default=3, help="Concurrent workers")
+    p.add_argument(
+        "--resync-months",
+        type=int,
+        default=0,
+        help="Force overwrite-sync tags created within the last N months. "
+             "Walks tags from newest (id_desc), reads each tag's created_at, and "
+             "stops as soon as a tag is older than N months.",
+    )
     return p.parse_args()
 
 
@@ -531,6 +546,77 @@ def run_api_sync(ctx: SyncContext):
         run_api_loop(ctx, order="id_desc", start=mid, id_lt=mid, mode="min")
 
 
+def run_resync_months(ctx: SyncContext, months: int):
+    """Force overwrite-sync tags created within the last `months` months.
+
+    Walks tags from newest (id_desc), reading each tag's created_at, and stops
+    as soon as a tag is older than `months` months. Since ids increase over
+    time, walking id_desc means the remaining tags are only older, so we can
+    stop immediately.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=months * 30)
+    session = create_session(not ctx.args.no_verify_ssl)
+    if ctx.args.no_verify_ssl:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    def parse_ts(value: str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    print(f"\n[RESYNC] Overwrite-syncing tags created within last {months} month(s) "
+          f"(cutoff: {cutoff.isoformat()})...")
+
+    cur: int | None = None
+    scanned = 0
+    while True:
+        if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
+            print("Reached processing limit.")
+            return
+        records = fetch_tags_from_api_page(
+            session,
+            order="id_desc",
+            cursor_id=cur,
+            limit=ctx.args.api_limit,
+            max_retries=ctx.args.retries,
+        )
+        if not records:
+            print("No more tags.")
+            return
+
+        # Since we walk newest->oldest, stop as soon as we hit a tag older than cutoff.
+        stop = False
+        for rec in records:
+            scanned += 1
+            if rec.created_at:
+                ts = parse_ts(rec.created_at)
+                if ts is not None and ts < cutoff:
+                    print(f"[RESYNC] Reached cutoff at {rec.name} (created {rec.created_at}); stopping.")
+                    stop = True
+                    break
+            # Force overwrite regardless of cache freshness.
+            ctx.args.force = True
+            status, done_rec = sync_tag(rec, ctx)
+            finish_task(ctx, status, done_rec, advance=True, mode="both")
+            if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
+                print("Reached processing limit.")
+                return
+
+        if stop:
+            return
+
+        cur = next((r.tag_id for r in reversed(records) if r.tag_id is not None), None)
+        if cur is None:
+            return
+        time.sleep(ctx.args.delay)
+
+    print(f"[RESYNC] Scanned {scanned} tags total.")
+
+
 # === Main ===
 
 def main():
@@ -580,7 +666,9 @@ def main():
 
     print(f"\nStarting sync (workers={args.workers})...")
     try:
-        if args.all_from_api:
+        if args.resync_months > 0:
+            run_resync_months(ctx, args.resync_months)
+        elif args.all_from_api:
             run_api_sync(ctx)
         else:
             run_pool(ctx, tags)
