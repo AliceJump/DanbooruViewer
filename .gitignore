@@ -54,6 +54,7 @@ app.*.map.json
 /cache/tag_api_cursor.json
 /cache/tags_checkpoint.json
 /cache/sync_metadata.json
+/cache/danbooru_tags_backup_*.db
 
 # Release auto-generated changelog
 /RELEASE_CHANGELOG.md
