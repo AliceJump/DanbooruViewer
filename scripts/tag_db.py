@@ -302,6 +302,18 @@ class TagDB:
     def count_tags(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
 
+    def existing_tag_ids(self, tag_ids: list[int]) -> set[int]:
+        """Return the subset of `tag_ids` that already exist in the tags table."""
+        if not tag_ids:
+            return set()
+        placeholders = ",".join("?" * len(tag_ids))
+        rows = self.conn.execute(
+            f"SELECT tag_id FROM tags WHERE tag_id IN ({placeholders})",
+            tag_ids,
+        ).fetchall()
+        return {r[0] for r in rows}
+
+
     def delete_tag(self, name: str):
         with _write_lock:
             self.conn.execute("DELETE FROM tags WHERE name = ?", (name,))
