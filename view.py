@@ -17,9 +17,17 @@ from pathlib import Path
 from pprint import pprint
 import argparse
 import json
+import sys
 import time
 
 import requests
+
+# Ensure print() output uses UTF-8 regardless of the console code page
+# (Windows cmd often uses GBK, which breaks non-ASCII chars like ✓ / ✗).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 BASE = "https://danbooru.donmai.us"
@@ -31,26 +39,157 @@ ASSET_DIR = Path(__file__).resolve().parent / "assets" / "danbooru_completion"
 session = requests.Session()
 session.headers.update({"User-Agent": "DanbooruTagInspector/1.0"})
 
+# File + console logging. All [REQ]/[TAG]/[OK] diagnostics go through log() so
+# they appear on the terminal AND in crawl.log for later inspection.
+import os as _os
+_LOG_PATH = _os.environ.get(
+    "DANBOORU_LOG",
+    str(Path(__file__).resolve().parent / "crawl.log"),
+)
+_log_file = None
+
+
+def _get_log_file():
+    global _log_file
+    if _log_file is None:
+        try:
+            _log_file = open(_LOG_PATH, "a", encoding="utf-8", buffering=1)
+        except Exception:
+            _log_file = None
+    return _log_file
+
+
+def log(msg: str = ""):
+    print(msg, flush=True)
+    lf = _get_log_file()
+    if lf is not None:
+        try:
+            lf.write(msg + "\n")
+            lf.flush()
+        except Exception:
+            pass
+
+
+def log_to_file(msg: str):
+    """Append to crawl.log only (no console output)."""
+    lf = _get_log_file()
+    if lf is not None:
+        try:
+            lf.write(msg + "\n")
+            lf.flush()
+        except Exception:
+            pass
+
+
+# Global request RATE limiter (tokens per second), not just concurrency.
+# Danbooru starts returning 429 once sustained request rate exceeds ~8/s
+# (measured). Keep a conservative cap well below that. All HTTP requests go
+# through `rate_limiter.wait()` so the global rate stays bounded regardless of
+# how many worker threads are running.
+import threading as _threading
+import time as _time
+
+
+class _RateLimiter:
+    """Serializes all HTTP requests globally with a rate cap.
+
+    A single lock ensures only ONE request is in flight at a time (no bursts),
+    and a spacing interval enforces the requests/second cap. This is what
+    actually prevents Danbooru's 429 rate limiting under high worker counts.
+    """
+
+    def __init__(self, rate_per_sec):
+        self.min_interval = 1.0 / rate_per_sec
+        self._sema = _threading.Semaphore(1)  # one request in flight globally
+        self._lock = _threading.Lock()
+        self._next = 0.0
+
+    def wait(self):
+        self._sema.acquire()
+        try:
+            with self._lock:
+                now = _time.monotonic()
+                if now < self._next:
+                    delay = self._next - now
+                    self._next += self.min_interval
+                else:
+                    delay = 0.0
+                    self._next = now + self.min_interval
+            if delay > 0:
+                _time.sleep(delay)
+        except Exception:
+            self._sema.release()
+            raise
+        return self
+
+    def release(self):
+        self._sema.release()
+
+    # Support `with request_semaphore:` used by batch_sync_tags.safe_get.
+    def __enter__(self):
+        self.wait()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
+
+# Global request rate cap in requests/second.
+request_limiter = _RateLimiter(7.0)
+# Backwards-compat alias: any code that used request_semaphore now shares the
+# same global limiter so concurrency AND rate are both bounded.
+request_semaphore = request_limiter
+
+
+def set_request_rate(rate_per_sec: float):
+    """Adjust the global request rate cap (requests per second)."""
+    global request_limiter, request_semaphore
+    request_limiter = _RateLimiter(rate_per_sec)
+    request_semaphore = request_limiter
+
 
 def get_json(path: str, **params):
     max_retries = params.pop("max_retries", 5)
 
     for retry in range(max_retries):
-        response = session.get(
-            f"{BASE}{path}",
-            params=params,
-            timeout=30,
-        )
+        with request_limiter:
+            t0 = _time.monotonic()
+            try:
+                response = session.get(
+                    f"{BASE}{path}",
+                    params=params,
+                    timeout=30,
+                )
+            except Exception as exc:
+                log(f"  [REQ] GET {path} -> EXC {type(exc).__name__} ({_time.monotonic()-t0:.2f}s)")
+                if retry >= max_retries - 1:
+                    raise
+                wait = 2 ** (retry + 1)
+                log(f"  [REQ] retry in {wait}s...")
+                _time.sleep(wait)
+                continue
+            dt = _time.monotonic() - t0
 
-        if response.status_code == 429 and retry < max_retries - 1:
-            retry_after = response.headers.get("Retry-After")
-            wait_time = int(retry_after) if retry_after else 2 ** (retry + 1)
-            print(f"[429] Rate limited. Sleeping {wait_time}s...")
-            time.sleep(wait_time)
-            continue
+            if response.status_code == 429 and retry < max_retries - 1:
+                retry_after = response.headers.get("Retry-After")
+                wait_time = int(retry_after) if retry_after else 2 ** (retry + 1)
+                log(f"  [REQ] GET {path} -> 429 (retry {retry+1}/{max_retries}, sleep {wait_time}s, {dt:.2f}s)")
+                time.sleep(wait_time)
+                continue
 
-        response.raise_for_status()
-        return response.json()
+            log(f"  [REQ] GET {path} -> {response.status_code} ({dt:.2f}s)")
+            response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "")
+            # Some endpoints (e.g. /wiki_pages/<tag>.json) return an HTML page
+            # instead of JSON when the tag name contains special characters. Treat
+            # that as an HTTP error so callers (sync_data) can fall back gracefully.
+            if "application/json" not in content_type:
+                raise requests.HTTPError(
+                    f"Expected JSON, got {content_type or 'no content-type'} for {path}",
+                    response=response,
+                )
+            return response.json()
 
     raise RuntimeError("get_json failed")
 
@@ -244,6 +383,7 @@ def build_completion_candidates(
 
 
 def sync_data(tag: str = DEFAULT_TAG):
+    log(f"  [TAG] syncing {tag!r}")
     tags = get_json(
         "/tags.json",
         **{"search[name]": tag},
@@ -253,6 +393,7 @@ def sync_data(tag: str = DEFAULT_TAG):
         raise RuntimeError("Tag not found")
 
     tag_info = tags[0]
+    log(f"  [TAG] id={tag_info.get('id')} category={tag_info.get('category')} posts={tag_info.get('post_count')}")
 
     try:
         wiki = get_json(f"/wiki_pages/{tag}.json")
@@ -266,35 +407,6 @@ def sync_data(tag: str = DEFAULT_TAG):
             "limit": 10,
         },
     )
-
-    implications = get_json(
-        "/tag_implications.json",
-        **{
-            "search[antecedent_name]": tag,
-            "limit": 10,
-        },
-    )
-
-    posts = get_json(
-        "/posts.json",
-        tags=tag,
-        limit=POST_LIMIT,
-    )
-
-    character_counter = Counter()
-    general_counter = Counter()
-    artist_counter = Counter()
-
-    for post in posts:
-        for candidate in post.get("tag_string_character", "").split():
-            if candidate != tag:
-                character_counter[candidate] += 1
-
-        for candidate in post.get("tag_string_general", "").split():
-            general_counter[candidate] += 1
-
-        for candidate in post.get("tag_string_artist", "").split():
-            artist_counter[candidate] += 1
 
     completion_candidates = build_completion_candidates(
         tag,
@@ -364,3 +476,4 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     main(args.tag)
+
