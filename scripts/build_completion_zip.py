@@ -210,21 +210,25 @@ def load_category_map() -> dict[str, int]:
 
 
 def build_suggestions() -> dict:
-    """Merge candidates, keep best score per (value, insert_value)."""
-    candidates = load_candidates_from_db()
-    source = "crawler database"
-    if not candidates:
-        candidates = load_candidates_from_seed_db()
-        source = "legacy seed db"
-    if not candidates:
-        candidates = load_candidates_from_legacy_zip()
-        source = "legacy zip"
-    if not candidates:
+    """Merge candidates from ALL available sources; keep best score per pair."""
+    sources = []
+    db_candidates = load_candidates_from_db()
+    if db_candidates:
+        sources.append(("crawler database", db_candidates))
+    seed_candidates = load_candidates_from_seed_db()
+    if seed_candidates:
+        sources.append(("legacy seed db", seed_candidates))
+    zip_candidates = load_candidates_from_legacy_zip()
+    if zip_candidates:
+        sources.append(("legacy zip", zip_candidates))
+    if not sources:
         raise SystemExit(
             "no completion data found (crawler db / seed db / legacy zip all empty)"
         )
 
-    print(f"📂 sources: {source} ({len(candidates):,} candidates)")
+    for name, cands in sources:
+        print(f"📂 source {name}: {len(cands):,} candidates")
+    candidates = [c for _, cands in sources for c in cands]
     category_map = load_category_map()
 
     suggestions = {}

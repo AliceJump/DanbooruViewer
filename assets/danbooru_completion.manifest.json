@@ -2,15 +2,15 @@
   "signature": {
     "output": true,
     "seed_db": {
-      "exists": true,
-      "mtime_ns": 1786909615724292600,
-      "size": 227422208
+      "exists": false,
+      "mtime_ns": 0,
+      "size": 0
     },
-    "success_count": 1700231,
-    "tags_count": 1804609,
-    "max_updated": "2026-08-16T19:34:10.816410+00:00"
+    "success_count": 1806897,
+    "tags_count": 1809242,
+    "max_updated": "2026-08-23T07:04:46.513504+00:00"
   },
-  "items": 1977879,
-  "output_size": 26226230,
-  "updated_at": 1786985735
+  "items": 2123046,
+  "output_size": 27803586,
+  "updated_at": 1787469022
 }
