@@ -46,3 +46,15 @@ app.*.map.json
 /android/app/release
 .danbooru_cache/
 /cache/danbooru_tags.db
+/cache/danbooru_tags.db-shm
+/cache/danbooru_tags.db-wal
+/cache/do_not_retry_tags.json
+/cache/failed_tags.json
+/cache/successful_tags.json
+/cache/tag_api_cursor.json
+/cache/tags_checkpoint.json
+/cache/sync_metadata.json
+/cache/danbooru_tags_backup_*.db
+
+# Release auto-generated changelog
+/RELEASE_CHANGELOG.md
