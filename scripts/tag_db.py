@@ -72,6 +72,18 @@ CREATE TABLE IF NOT EXISTS checkpoint (
     id   INTEGER PRIMARY KEY CHECK (id = 1),
     data TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sync_queue (
+    tag_id      INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    created_at  TEXT,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    enqueued_at TEXT NOT NULL,
+    claimed_by  TEXT,
+    claimed_at  REAL,
+    done_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status);
 """
 
 
@@ -302,6 +314,18 @@ class TagDB:
     def count_tags(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
 
+    def existing_tag_ids(self, tag_ids: list[int]) -> set[int]:
+        """Return the subset of `tag_ids` that already exist in the tags table."""
+        if not tag_ids:
+            return set()
+        placeholders = ",".join("?" * len(tag_ids))
+        rows = self.conn.execute(
+            f"SELECT tag_id FROM tags WHERE tag_id IN ({placeholders})",
+            tag_ids,
+        ).fetchall()
+        return {r[0] for r in rows}
+
+
     def delete_tag(self, name: str):
         with _write_lock:
             self.conn.execute("DELETE FROM tags WHERE name = ?", (name,))
@@ -481,6 +505,94 @@ class TagDB:
                     for slug, entry in metadata.items()
                 ],
             )
+            self.conn.commit()
+
+    # ------------------------------------------------------------------
+    # sync_queue (producer/consumer pipeline)
+    # ------------------------------------------------------------------
+    def enqueue_many(self, rows: list[tuple]):
+        """rows: (tag_id, name, created_at). INSERT OR IGNORE by tag_id."""
+        if not rows:
+            return 0
+        with _write_lock:
+            cur = self.conn.executemany(
+                """INSERT OR IGNORE INTO sync_queue
+                       (tag_id, name, created_at, status, enqueued_at)
+                   VALUES (?, ?, ?, 'pending', ?)""",
+                [
+                    (tid, name, created_at, now_iso())
+                    for tid, name, created_at in rows
+                    if tid is not None
+                ],
+            )
+            self.conn.commit()
+            return cur.rowcount
+
+    def claim_batch(self, limit: int = 10, claimer: str = "syncer",
+                    claim_seconds: int = 600) -> list[tuple]:
+        """Atomically claim up to `limit` pending queue rows.
+
+        Uses BEGIN IMMEDIATE so only one process/thread claims a given row.
+        Rows claimed longer than `claim_seconds` ago are treated as abandoned
+        (crashed consumer) and reclaimed.
+        """
+        import time as _t
+        now = _t.time()
+        with _write_lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute(
+                    "UPDATE sync_queue SET status='claimed', claimed_by=?, claimed_at=?, done_at=NULL "
+                    "WHERE tag_id IN (SELECT tag_id FROM sync_queue "
+                    "  WHERE status='pending' "
+                    "     OR (status='claimed' AND claimed_at IS NOT NULL AND ? - claimed_at > ?) "
+                    "  ORDER BY tag_id LIMIT ?)",
+                    (claimer, now, now, claim_seconds, limit),
+                )
+                rows = self.conn.execute(
+                    "SELECT tag_id, name, created_at FROM sync_queue "
+                    "WHERE status='claimed' AND claimed_by=? AND claimed_at>=? "
+                    "ORDER BY tag_id LIMIT ?",
+                    (claimer, now - 1, limit),
+                ).fetchall()
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+            return [(r[0], r[1], r[2]) for r in rows]
+
+    def mark_done(self, tag_id: int, status: str):
+        with _write_lock:
+            self.conn.execute(
+                "UPDATE sync_queue SET status=?, done_at=? WHERE tag_id=?",
+                (status, now_iso(), tag_id),
+            )
+            self.conn.commit()
+
+    def queue_count(self, status: str | None = None) -> int:
+        if status is None:
+            n = self.conn.execute("SELECT COUNT(*) FROM sync_queue").fetchone()[0]
+        else:
+            n = self.conn.execute(
+                "SELECT COUNT(*) FROM sync_queue WHERE status=?", (status,)
+            ).fetchone()[0]
+        return n
+
+    def queue_status_counts(self) -> dict:
+        rows = self.conn.execute(
+            "SELECT status, COUNT(*) FROM sync_queue GROUP BY status"
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def queue_pending_ids(self) -> set[int]:
+        rows = self.conn.execute(
+            "SELECT tag_id FROM sync_queue WHERE status='pending'"
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def drop_queue(self):
+        with _write_lock:
+            self.conn.execute("DELETE FROM sync_queue")
             self.conn.commit()
 
     # ------------------------------------------------------------------
