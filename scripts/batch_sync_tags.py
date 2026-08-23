@@ -368,7 +368,14 @@ def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
             return "blocked", record
 
         log(f"[SYNC] {tag}")
-        view.sync_data(tag)
+        payload = view.sync_data(tag)
+        # Write the FULL record (completion_candidates + tag_id/category/
+        # post_count + wiki other_names + aliases) straight into the tags
+        # table so no post-hoc JSON backfill pass is ever needed.
+        try:
+            db.upsert_tag(payload)
+        except Exception as db_exc:
+            log(f"  [WARN] upsert_tag failed for {tag}: {db_exc}")
         slug = view.slugify_tag(tag)
         log(f"  [OK] stored in db: {tag}")
 

@@ -218,7 +218,11 @@ def sync_queue_tag(rec: tuple, *, force: bool) -> tuple[str, int]:
                 tag, "success", last_sync_time=datetime.now(timezone.utc).isoformat()
             )
             return "skipped", tag_id
-        view.sync_data(tag)
+        payload = view.sync_data(tag)
+        try:
+            db.upsert_tag(payload)
+        except Exception as db_exc:
+            log(f"  [WARN] upsert_tag failed for {tag}: {db_exc}")
         slug = view.slugify_tag(tag)
         db.set_sync_status(
             tag, "success",
