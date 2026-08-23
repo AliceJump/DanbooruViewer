@@ -17,6 +17,12 @@ from typing import Iterator, NamedTuple
 
 import requests
 
+# Ensure print() output uses UTF-8 regardless of the console code page.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -27,6 +33,14 @@ from scripts.tag_db import db
 
 
 # === Config ===
+
+def log(msg: str = ""):
+    """Print (with a local HH:MM:SS timestamp prefix) to console AND crawl.log."""
+    from datetime import datetime as _dt
+    line = f"{_dt.now().strftime('%H:%M:%S')} {msg}"
+    print(line, flush=True)
+    view.log_to_file(line)  # append to the shared crawl.log file
+
 
 DEFAULT_TAGS = [
     "oguri_cap_(umamusume)", "special_week_(umamusume)", "silence_suzuka_(umamusume)",
@@ -47,12 +61,16 @@ CACHE = {
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 metadata_lock = threading.Lock()
-request_semaphore = threading.Semaphore(3)
+# Shared with view.request_semaphore so ALL HTTP requests (both sync_data and
+# list-page fetches) are throttled by a single global concurrency cap of 3.
+# Two independent Semaphore(3)s let concurrency reach 6 and trigger 429s.
+request_semaphore = view.request_semaphore
 
 
 class TagRecord(NamedTuple):
     name: str
     tag_id: int | None = None
+    created_at: str | None = None
 
 
 @dataclass
@@ -182,6 +200,13 @@ def create_session(verify_ssl: bool = True) -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": "DanbooruTagInspector/1.0"})
     session.verify = verify_ssl
+    # Optional authentication via HTTP Basic auth (login = username, password =
+    # api key). If both env vars are set, all requests are authenticated, which
+    # lifts the anonymous limit (max 1000/page) and relaxes rate limiting.
+    login = os.environ.get("DANBOORU_LOGIN")
+    api_key = os.environ.get("DANBOORU_API_KEY")
+    if login and api_key:
+        session.auth = (login, api_key)
     proxy = os.environ.get("DANBOORU_PROXY")
     if proxy is None and os.environ.get("GITHUB_ACTIONS") != "true":
         proxy = "http://127.0.0.1:10808"
@@ -197,7 +222,7 @@ def safe_get(session: requests.Session, url: str, *, max_retries: int = 5, **kwa
                 resp = session.get(url, **kwargs)
             if resp.status_code == 429:
                 wait = int(resp.headers.get("Retry-After", 0)) or 2 ** (retry + 1)
-                print(f"[429] Rate limited. Sleeping {wait}s...")
+                log(f"[429] Rate limited. Sleeping {wait}s...")
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
@@ -206,7 +231,7 @@ def safe_get(session: requests.Session, url: str, *, max_retries: int = 5, **kwa
             if retry >= max_retries - 1:
                 raise
             wait = 2 ** (retry + 1)
-            print(f"[RETRY] {url} in {wait}s...")
+            log(f"[RETRY] {url} in {wait}s...")
             time.sleep(wait)
     raise RuntimeError("safe_get failed")
 
@@ -245,15 +270,21 @@ def fetch_tags_from_api_page(session: requests.Session, *, order: str, cursor_id
             params["search[id_gt]"] = id_gt
         if id_lt is not None:
             params["search[id_lt]"] = id_lt
-    print(f"Fetching batch (order={order}, cursor_id={cursor_id}, id_gt={id_gt}, id_lt={id_lt})...")
+    log(f"Fetching batch (order={order}, cursor_id={cursor_id}, id_gt={id_gt}, id_lt={id_lt})...")
     resp = safe_get(session, "https://danbooru.donmai.us/tags.json", max_retries=max_retries, params=params, timeout=30)
     records = []
     for tag in resp.json():
         tid = tag.get("id")
         name = tag.get("name")
         if name:
-            records.append(TagRecord(name, tid if isinstance(tid, int) else None))
-    print(f"Got {len(records)} tags in current batch")
+            records.append(
+                TagRecord(
+                    name,
+                    tid if isinstance(tid, int) else None,
+                    tag.get("created_at") if isinstance(tag.get("created_at"), str) else None,
+                )
+            )
+    log(f"Got {len(records)} tags in current batch")
     return records
 
 
@@ -314,13 +345,13 @@ def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
     tag = record.name
     try:
         if tag in ctx.success and not ctx.args.force:
-            print(f"[CACHE SKIP] {tag}")
+            log(f"[CACHE SKIP] {tag}")
             return "skipped", record
 
         if not ctx.args.force:
             needs = view.check_needs_sync(tag, max_age_hours=ctx.args.max_age)
             if not needs:
-                print(f"[SKIP] {tag}")
+                log(f"[SKIP] {tag}")
                 with ctx.lock:
                     ctx.success.add(tag)
                     ctx.failed.pop(tag, None)
@@ -333,13 +364,20 @@ def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
                 return "skipped", record
 
         if tag in ctx.blocked:
-            print(f"[DO NOT RETRY] {tag}")
+            log(f"[DO NOT RETRY] {tag}")
             return "blocked", record
 
-        print(f"[SYNC] {tag}")
-        view.sync_data(tag)
+        log(f"[SYNC] {tag}")
+        payload = view.sync_data(tag)
+        # Write the FULL record (completion_candidates + tag_id/category/
+        # post_count + wiki other_names + aliases) straight into the tags
+        # table so no post-hoc JSON backfill pass is ever needed.
+        try:
+            db.upsert_tag(payload)
+        except Exception as db_exc:
+            log(f"  [WARN] upsert_tag failed for {tag}: {db_exc}")
         slug = view.slugify_tag(tag)
-        print(f"  \u2713 stored in db: {tag}")
+        log(f"  [OK] stored in db: {tag}")
 
         with ctx.lock:
             ctx.metadata[slug] = {
@@ -383,7 +421,7 @@ def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
                     failures=entry["failures"],
                     last_failed_at=entry["last_failed_at"],
                 )
-        print(f"[FAIL] {tag}: {exc}")
+        log(f"[FAIL] {tag}: {exc}")
         return "failed", record
 
 
@@ -412,8 +450,10 @@ def finish_task(ctx: SyncContext, status: str, record: TagRecord, advance: bool 
         ctx.counts["failed"] += 1
     if advance and status in ("synced", "skipped", "blocked"):
         with ctx.lock:
-            if update_cursor(ctx.cursor, record, mode):
-                save_caches(ctx)
+            # Only update the in-memory cursor here; persistence is done in
+            # batches (see save_caches calls in the run_* loops) to avoid
+            # rewriting the whole success set on every single tag.
+            update_cursor(ctx.cursor, record, mode)
 
 
 # === Args ===
@@ -434,6 +474,33 @@ def parse_args():
     p.add_argument("--max-age", type=int, default=24, help="Max cache age")
     p.add_argument("--limit", type=int, default=0, help="Maximum processed tags")
     p.add_argument("--workers", type=int, default=3, help="Concurrent workers")
+    p.add_argument(
+        "--rate",
+        type=float,
+        default=7.0,
+        help="Global request rate cap in requests/second (default 7). "
+             "Danbooru starts returning 429 beyond ~8 req/s.",
+    )
+    p.add_argument(
+        "--resync-months",
+        type=int,
+        default=0,
+        help="Force overwrite-sync tags created within the last N months. "
+             "Walks tags from newest (id_desc), reads each tag's created_at, and "
+             "stops as soon as a tag is older than N months.",
+    )
+    p.add_argument(
+        "--fill-gaps",
+        action="store_true",
+        help="Walk the full Danbooru tag list from the API and sync only tags "
+             "missing from the local database. Existing tags are skipped.",
+    )
+    p.add_argument(
+        "--from-id",
+        type=int,
+        default=None,
+        help="Resume from a specific tag id (id_desc direction). Useful with --resync-months.",
+    )
     return p.parse_args()
 
 
@@ -453,21 +520,36 @@ def get_tag_source(args) -> Iterator[TagRecord]:
 # === Workers ===
 
 def run_pool(ctx: SyncContext, tags, advance: bool = True, mode: str = "both"):
-    futures = set()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=ctx.args.workers) as exe:
-        for rec in tags:
-            if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
-                print("Reached processing limit.")
-                break
-            futures.add(exe.submit(sync_tag, rec, ctx))
-            if len(futures) >= ctx.args.workers * 4:
-                done, futures = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
-                for f in done:
-                    st, rec = f.result()
-                    finish_task(ctx, st, rec, advance, mode)
-        for f in concurrent.futures.as_completed(futures):
-            st, rec = f.result()
-            finish_task(ctx, st, rec, advance, mode)
+    """Smooth concurrency: keep at most `workers` syncs running at once.
+
+    Uses a bounded semaphore so a new tag is submitted the moment a worker
+    frees up, instead of batching up to `workers*4` tasks and releasing them
+    in bursts. This keeps API request load steady and reduces 429 spikes.
+    """
+    workers = max(1, ctx.args.workers)
+    sem = threading.BoundedSemaphore(workers)
+    it = iter(tags)
+
+    def worker():
+        while True:
+            sem.acquire()
+            try:
+                try:
+                    rec = next(it)
+                except StopIteration:
+                    return
+                if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
+                    return
+                st, done_rec = sync_tag(rec, ctx)
+                finish_task(ctx, st, done_rec, advance, mode)
+            finally:
+                sem.release()
+
+    threads = [threading.Thread(target=worker, daemon=True) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
 
 def run_failed_first(ctx: SyncContext):
@@ -488,27 +570,60 @@ def run_api_loop(ctx: SyncContext, *, order: str, start: int | None = None,
     if ctx.args.no_verify_ssl:
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # Background flusher: periodically persist the full cache so the expensive
+    # full rewrite (save_caches walks the whole success set) never blocks the
+    # network-request loop.
+    stop_flag = threading.Event()
+
+    def flusher():
+        while not stop_flag.is_set():
+            stop_flag.wait(60.0)
+            if stop_flag.is_set():
+                break
+            try:
+                with ctx.lock:
+                    save_caches(ctx)
+            except Exception as exc:
+                print(f"[FLUSH] save_caches error: {exc}")
+                continue
+            print(f"[FLUSH] saved cache ({len(ctx.success)} success)", flush=True)
+
+    fthread = threading.Thread(target=flusher, daemon=True)
+    fthread.start()
+
     cur = start
-    while True:
-        if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
-            print("Reached processing limit.")
-            return
-        records = fetch_tags_from_api_page(session, order=order, cursor_id=cur,
-                                           id_gt=id_gt, id_lt=id_lt, limit=ctx.args.api_limit,
-                                           max_retries=ctx.args.retries)
-        if not records:
-            print("No more tags.")
-            return
-        rem = ctx.args.limit - ctx.counts["processed"] if ctx.args.limit > 0 else len(records)
-        batch = records[:rem] if ctx.args.limit > 0 else records
-        run_pool(ctx, batch, advance=True, mode=mode)
-        if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
-            print("Reached processing limit.")
-            return
-        cur = next((r.tag_id for r in reversed(batch) if r.tag_id is not None), None)
-        if cur is None:
-            return
-        time.sleep(ctx.args.delay)
+    try:
+        while True:
+            if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
+                print("Reached processing limit.")
+                return
+            records = fetch_tags_from_api_page(session, order=order, cursor_id=cur,
+                                               id_gt=id_gt, id_lt=id_lt, limit=ctx.args.api_limit,
+                                               max_retries=ctx.args.retries)
+            if not records:
+                print("No more tags.")
+                return
+            rem = ctx.args.limit - ctx.counts["processed"] if ctx.args.limit > 0 else len(records)
+            batch = records[:rem] if ctx.args.limit > 0 else records
+            run_pool(ctx, batch, advance=True, mode=mode)
+            # Persist cursor (cheap). Full-cache persistence is handled by the
+            # background flusher thread so network requests are not blocked.
+            with ctx.lock:
+                db.save_cursor(ctx.cursor)
+            if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
+                print("Reached processing limit.")
+                return
+            cur = next((r.tag_id for r in reversed(batch) if r.tag_id is not None), None)
+            if cur is None:
+                return
+            time.sleep(ctx.args.delay)
+    finally:
+        stop_flag.set()
+        fthread.join(timeout=2)
+        # Final flush so the last batch's changes are persisted.
+        with ctx.lock:
+            save_caches(ctx)
 
 
 def run_api_sync(ctx: SyncContext):
@@ -531,6 +646,135 @@ def run_api_sync(ctx: SyncContext):
         run_api_loop(ctx, order="id_desc", start=mid, id_lt=mid, mode="min")
 
 
+def run_resync_months(ctx: SyncContext, months: int):
+    """Force overwrite-sync tags created within the last `months` months.
+
+    Walks tags from newest (id_desc), reading each tag's created_at, and stops
+    as soon as a tag is older than `months` months. Since ids increase over
+    time, walking id_desc means the remaining tags are only older, so we can
+    stop immediately.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=months * 30)
+    session = create_session(not ctx.args.no_verify_ssl)
+    if ctx.args.no_verify_ssl:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    def parse_ts(value: str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    cur: int | None = ctx.args.from_id or None
+    print(f"\n[RESYNC] Overwrite-syncing tags created within last {months} month(s) "
+          f"(cutoff: {cutoff.isoformat()})"
+          f"{' from id ' + str(cur) if cur else ''}...")
+
+    scanned = 0
+    while True:
+        if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
+            print("Reached processing limit.")
+            return
+        records = fetch_tags_from_api_page(
+            session,
+            order="id_desc",
+            cursor_id=cur,
+            limit=ctx.args.api_limit,
+            max_retries=ctx.args.retries,
+        )
+        if not records:
+            print("No more tags.")
+            return
+
+        # Since we walk newest->oldest, stop as soon as we hit a tag older than cutoff.
+        stop = False
+        for rec in records:
+            scanned += 1
+            if rec.created_at:
+                ts = parse_ts(rec.created_at)
+                if ts is not None and ts < cutoff:
+                    print(f"[RESYNC] Reached cutoff at {rec.name} (created {rec.created_at}); stopping.")
+                    stop = True
+                    break
+            # Force overwrite regardless of cache freshness.
+            ctx.args.force = True
+            status, done_rec = sync_tag(rec, ctx)
+            finish_task(ctx, status, done_rec, advance=True, mode="both")
+            if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
+                print("Reached processing limit.")
+                return
+
+        if stop:
+            return
+
+        cur = next((r.tag_id for r in reversed(records) if r.tag_id is not None), None)
+        if cur is None:
+            return
+        time.sleep(ctx.args.delay)
+
+    print(f"[RESYNC] Scanned {scanned} tags total.")
+
+
+def run_fill_gaps(ctx: SyncContext):
+    """Walk the full Danbooru tag list from the API and sync only tags missing
+    from the local database.
+
+    Walks tags from newest (id_desc) page by page (max 1000/page). For each page
+    it checks which tag_ids are already in the DB and skips them, syncing only
+    the missing ones. This covers the whole range including any gaps in the
+    middle (min_id..max_id) that `--all-from-api` does not visit.
+    """
+    session = create_session(not ctx.args.no_verify_ssl)
+    if ctx.args.no_verify_ssl:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    print("\n[FILL-GAPS] Walking full Danbooru tag list, syncing only missing tags...")
+
+    cur: int | None = None
+    scanned = 0
+    missing_total = 0
+    while True:
+        if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
+            print("Reached processing limit.")
+            return
+        records = fetch_tags_from_api_page(
+            session,
+            order="id_desc",
+            cursor_id=cur,
+            limit=ctx.args.api_limit,
+            max_retries=ctx.args.retries,
+        )
+        if not records:
+            print("No more tags.")
+            break
+
+        scanned += len(records)
+        ids = [r.tag_id for r in records if r.tag_id is not None]
+        existing = db.existing_tag_ids(ids) if ids else set()
+        for rec in records:
+            if rec.tag_id is not None and rec.tag_id in existing:
+                continue
+            # Only sync tags that are missing from the DB (or lack a tag_id).
+            missing_total += 1
+            status, done_rec = sync_tag(rec, ctx)
+            finish_task(ctx, status, done_rec, advance=False, mode="none")
+            if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:
+                print("Reached processing limit.")
+                return
+        save_caches(ctx)
+
+        cur = next((r.tag_id for r in reversed(records) if r.tag_id is not None), None)
+        if cur is None:
+            return
+        time.sleep(ctx.args.delay)
+
+    print(f"[FILL-GAPS] Scanned {scanned} tags, synced {missing_total} missing.")
+
+
 # === Main ===
 
 def main():
@@ -546,6 +790,8 @@ def main():
         else:
             sys.exit(1)
     view.session = session
+    view.set_request_rate(args.rate)
+    print(f"Global request rate: {args.rate} req/s")
 
     print("\nLoading metadata...")
     try:
@@ -580,7 +826,11 @@ def main():
 
     print(f"\nStarting sync (workers={args.workers})...")
     try:
-        if args.all_from_api:
+        if args.resync_months > 0:
+            run_resync_months(ctx, args.resync_months)
+        elif args.fill_gaps:
+            run_fill_gaps(ctx)
+        elif args.all_from_api:
             run_api_sync(ctx)
         else:
             run_pool(ctx, tags)
