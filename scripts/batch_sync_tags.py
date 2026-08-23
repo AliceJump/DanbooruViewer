@@ -488,6 +488,12 @@ def parse_args():
         help="Walk the full Danbooru tag list from the API and sync only tags "
              "missing from the local database. Existing tags are skipped.",
     )
+    p.add_argument(
+        "--from-id",
+        type=int,
+        default=None,
+        help="Resume from a specific tag id (id_desc direction). Useful with --resync-months.",
+    )
     return p.parse_args()
 
 
@@ -655,10 +661,11 @@ def run_resync_months(ctx: SyncContext, months: int):
         except Exception:
             return None
 
+    cur: int | None = ctx.args.from_id or None
     print(f"\n[RESYNC] Overwrite-syncing tags created within last {months} month(s) "
-          f"(cutoff: {cutoff.isoformat()})...")
+          f"(cutoff: {cutoff.isoformat()})"
+          f"{' from id ' + str(cur) if cur else ''}...")
 
-    cur: int | None = None
     scanned = 0
     while True:
         if ctx.args.limit > 0 and ctx.counts["processed"] >= ctx.args.limit:

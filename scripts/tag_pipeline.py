@@ -132,9 +132,10 @@ def run_list_incremental(args):
 
 def run_list_resync_months(args, months: int):
     cutoff = datetime.now(timezone.utc) - __import__("datetime").timedelta(days=months * 30)
-    log(f"[LIST] Resync-months={months}, cutoff={cutoff.isoformat()}, walking id_desc...")
+    cur = getattr(args, "from_id", None)
+    log(f"[LIST] Resync-months={months}, cutoff={cutoff.isoformat()}, walking id_desc"
+        f"{' from id ' + str(cur) if cur else ' from newest'}...")
     session = create_session(not args.no_verify_ssl)
-    cur = None
     scanned = 0
     while True:
         records = fetch_tags_from_api_page(
@@ -171,8 +172,9 @@ def run_list_full_desc(args, session=None):
     """Walk entire tag list newest->oldest, enqueueing everything not yet in tags table."""
     if session is None:
         session = create_session(not args.no_verify_ssl)
-    log("[LIST] Full id_desc walk (fill-gaps): enqueueing only missing tags...")
-    cur = None
+    cur = getattr(args, "from_id", None)
+    log(f"[LIST] Full id_desc walk (fill-gaps): enqueueing only missing tags"
+        f"{' from id ' + str(cur) if cur else ''}...")
     scanned = 0
     while True:
         records = fetch_tags_from_api_page(
@@ -328,6 +330,7 @@ def parse_args():
     pl = sub.add_parser("list", help="Producer: crawl list pages into sync_queue")
     pl.add_argument("--incremental", action="store_true", help="Walk by saved cursor (new+older)")
     pl.add_argument("--resync-months", type=int, default=0, help="Walk newest N months, force re-sync")
+    pl.add_argument("--from-id", type=int, default=None, help="Start id (resume). id_desc: skip ids >= this")
     pl.add_argument("--fill-gaps", action="store_true", help="Walk full range, enqueue only missing")
     pl.add_argument("--api-limit", type=int, default=1000)
     pl.add_argument("--no-verify-ssl", action="store_true")
