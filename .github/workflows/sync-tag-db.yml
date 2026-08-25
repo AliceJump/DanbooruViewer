@@ -1,0 +1,107 @@
+name: Sync Danbooru Tag DB
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: danbooru-tag-db
+  cancel-in-progress: false
+
+jobs:
+  sync-tag-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      DANBOORU_LOGIN: ${{ secrets.DANBOORU_LOGIN }}
+      DANBOORU_API_KEY: ${{ secrets.DANBOORU_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          lfs: true
+          fetch-depth: 0
+
+      - name: Install Git LFS
+        run: |
+          git lfs install
+          git lfs track "*.db"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Show DB baseline
+        run: |
+          ls -lh cache/danbooru_tags.db
+          python scripts/tag_pipeline.py status || true
+
+      - name: Crawl new tag list into queue
+        run: |
+          python scripts/tag_pipeline.py list \
+            --incremental \
+            --api-limit 1000 \
+            --retries 5 \
+            --delay 0.2 \
+            --rate 2.0
+
+      - name: Sync queued tags into DB
+        run: |
+          python scripts/tag_pipeline.py sync \
+            --workers 4 \
+            --rate 5.0 \
+            --poll 3.0 \
+            --idle-stop 30
+
+      - name: Checkpoint WAL and show stats
+        run: |
+          python -c "import sqlite3; conn = sqlite3.connect('cache/danbooru_tags.db'); print('checkpoint:', conn.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall()); print('tags:', conn.execute('SELECT COUNT(*), MAX(tag_id) FROM tags').fetchone()); conn.close()"
+          python scripts/tag_pipeline.py status || true
+
+      - name: Rebuild completion zip from DB
+        run: python scripts/build_completion_zip.py
+
+      - name: Commit updated DB and completion data
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git status --short
+
+          git add -f cache/danbooru_tags.db
+          if [ -f assets/danbooru_completion.zip ]; then
+            git add assets/danbooru_completion.zip assets/danbooru_completion.manifest.json .gitattributes
+          fi
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: weekly danbooru tag db sync"
+
+          push_ok=false
+          for attempt in 1 2 3; do
+            if git push origin HEAD:${{ github.ref_name }}; then
+              push_ok=true
+              break
+            fi
+            echo "::warning::push attempt ${attempt} failed, retrying after rebase"
+            sleep 10
+            git fetch origin ${{ github.ref_name }}
+            git rebase origin/${{ github.ref_name }} || { git rebase --abort || true; break; }
+          done
+
+          if [ "$push_ok" != "true" ]; then
+            echo "Failed to push after 3 attempts"
+            exit 1
+          fi
