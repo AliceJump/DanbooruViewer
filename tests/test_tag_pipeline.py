@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from scripts import tag_pipeline
+from scripts import batch_sync_tags
 from scripts.batch_sync_tags import TagRecord
 from scripts.tag_db import TagDB
 
@@ -186,6 +187,26 @@ class TagDBQueueTest(unittest.TestCase):
                 self.assertTrue(db.has_tag("test"))
             finally:
                 db.close()
+
+
+class BatchSyncTest(unittest.TestCase):
+    def test_failed_tag_write_keeps_tag_out_of_success_set(self):
+        ctx = batch_sync_tags.SyncContext(
+            args=SimpleNamespace(force=False, max_age=24),
+            metadata={}, success=set(), failed={}, blocked={}, cursor={},
+        )
+        with patch.object(batch_sync_tags, "db") as fake_db, patch.object(
+            batch_sync_tags.view, "sync_data", return_value={"tag": "test"},
+        ), patch.object(
+            batch_sync_tags.view, "check_needs_sync", return_value=True,
+        ), patch.object(batch_sync_tags, "log"):
+            fake_db.upsert_tag.side_effect = RuntimeError("disk full")
+            result = batch_sync_tags.sync_tag(TagRecord("test", 1), ctx)
+
+        self.assertEqual(result[0], "failed")
+        self.assertNotIn("test", ctx.success)
+        self.assertEqual(ctx.failed["test"]["failures"], 1)
+        self.assertEqual(fake_db.set_sync_status.call_args.args[:2], ("test", "failed"))
 
 
 if __name__ == "__main__":
