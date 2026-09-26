@@ -288,6 +288,11 @@ class TagDB:
         ).fetchone()
         return self._row_to_payload(row)
 
+    def has_tag(self, name: str) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM tags WHERE name = ?", (name,)
+        ).fetchone() is not None
+
     def get_tag_by_slug(self, slug: str) -> dict | None:
         row = self.conn.execute(
             "SELECT name, tag_id, slug, category, post_count, updated_at, "
@@ -524,6 +529,21 @@ class TagDB:
                     for tid, name, created_at in rows
                     if tid is not None
                 ],
+            )
+            self.conn.commit()
+            return cur.rowcount
+
+    def requeue_failed(self) -> int:
+        """Retry failed queue items on the next sync run, unless blocked."""
+        with _write_lock:
+            cur = self.conn.execute(
+                """UPDATE sync_queue
+                   SET status='pending', claimed_by=NULL, claimed_at=NULL, done_at=NULL
+                   WHERE status='failed' AND NOT EXISTS (
+                       SELECT 1 FROM sync_status
+                       WHERE sync_status.tag=sync_queue.name
+                         AND sync_status.status='blocked'
+                   )"""
             )
             self.conn.commit()
             return cur.rowcount

@@ -53,7 +53,6 @@ from scripts.batch_sync_tags import (
 )
 
 MAX_FAILED_ATTEMPTS = 5
-MAX_AGE_HOURS = 24
 
 
 def log(msg: str = ""):
@@ -224,19 +223,15 @@ def sync_queue_tag(rec: tuple, *, force: bool) -> tuple[str, int]:
     tag_id, name, _created = rec
     tag = name
     try:
-        if not force and tag in db.list_sync_status("success"):
-            return "skipped", tag_id
-        if not force and not view.check_needs_sync(tag, MAX_AGE_HOURS):
-            db.set_sync_status(
-                tag, "success", last_sync_time=datetime.now(timezone.utc).isoformat()
-            )
-            return "skipped", tag_id
+        if not force:
+            status = db.get_sync_status(tag)
+            if status is not None:
+                if status["status"] == "blocked":
+                    return "blocked", tag_id
+                if status["status"] == "success" and db.has_tag(tag):
+                    return "skipped", tag_id
         payload = view.sync_data(tag)
-        try:
-            db.upsert_tag(payload)
-        except Exception as db_exc:
-            log(f"  [WARN] upsert_tag failed for {tag}: {db_exc}")
-        slug = view.slugify_tag(tag)
+        db.upsert_tag(payload)
         db.set_sync_status(
             tag, "success",
             last_sync_time=datetime.now(timezone.utc).isoformat(),
@@ -252,26 +247,30 @@ def sync_queue_tag(rec: tuple, *, force: bool) -> tuple[str, int]:
         entry["failures"] = entry.get("failures", 0) + 1
         entry["last_failed_at"] = datetime.now(timezone.utc).isoformat()
         if entry["failures"] >= MAX_FAILED_ATTEMPTS:
+            result = "blocked"
             db.set_sync_status(
                 tag, "blocked", reason=entry["reason"],
                 failures=entry["failures"], last_failed_at=entry["last_failed_at"],
             )
         else:
+            result = "failed"
             db.set_sync_status(
                 tag, "failed", reason=entry["reason"],
                 failures=entry["failures"], last_failed_at=entry["last_failed_at"],
             )
         log(f"[FAIL] {tag}: {exc}")
-        return "failed", tag_id
+        return result, tag_id
 
 
 def run_sync(args):
     view.set_request_rate(args.rate)
     session = create_session(not args.no_verify_ssl)
     view.session = session
+    retried = db.requeue_failed()
     log(f"[SYNC] Consumer started. rate={args.rate} req/s, workers={args.workers}, "
-        f"queue pending={db.queue_count('pending')}, claimed={db.queue_count('claimed')}")
-    counts = {"synced": 0, "skipped": 0, "failed": 0, "processed": 0}
+        f"retried={retried}, queue pending={db.queue_count('pending')}, "
+        f"claimed={db.queue_count('claimed')}")
+    counts = {"synced": 0, "skipped": 0, "failed": 0, "blocked": 0, "processed": 0}
     idle_rounds = 0
     stop = threading.Event()
 
@@ -315,7 +314,8 @@ def run_sync(args):
             t.join()
 
         log(f"[SYNC] batch done: processed={counts['processed']} "
-            f"synced={counts['synced']} skipped={counts['skipped']} failed={counts['failed']} "
+            f"synced={counts['synced']} skipped={counts['skipped']} "
+            f"failed={counts['failed']} blocked={counts['blocked']} "
             f"queue pending={db.queue_count('pending')}")
 
     # Flush metadata
@@ -324,7 +324,7 @@ def run_sync(args):
     except Exception:
         pass
     log(f"[SYNC] Done. processed={counts['processed']} synced={counts['synced']} "
-        f"skipped={counts['skipped']} failed={counts['failed']}")
+        f"skipped={counts['skipped']} failed={counts['failed']} blocked={counts['blocked']}")
 
 
 def run_status(args):
