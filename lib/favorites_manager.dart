@@ -14,6 +14,17 @@ class FavoritesManager {
   FavoritesManager._internal();
 
   SharedPreferences? _prefs;
+  Future<void> _mutationTail = Future<void>.value();
+
+  Future<T> _mutate<T>(Future<T> Function() action) {
+    final result = _mutationTail.then((_) => action());
+    // The caller receives the error through result; later writes must still run.
+    _mutationTail = result.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace stackTrace) {},
+    );
+    return result;
+  }
 
   Future<void> _ensureInitialized() async {
     _prefs ??= await SharedPreferences.getInstance();
@@ -46,47 +57,50 @@ class FavoritesManager {
   }
 
   /// 添加收藏（存储完整数据）
-  Future<void> addFavorite(Map<String, dynamic> postJson) async {
+  Future<void> addFavorite(Map<String, dynamic> postJson) {
     final postId = postJson['id'];
-    if (postId == null) return;
+    if (postId == null) return Future<void>.value();
 
-    // 存储完整数据
-    final fullFavorites = await getFavoritePostsFull();
-    fullFavorites.removeWhere((item) => item['id'] == postId);
-    fullFavorites.insert(0, postJson);
-    await _saveFavoritePostsFull(fullFavorites);
-
-    // 同时保存旧格式ID列表
-    final idList = fullFavorites.map((e) => e['id'] as int).toList();
-    await _saveFavoriteIds(idList);
+    return _mutate(() async {
+      final fullFavorites = await getFavoritePostsFull();
+      fullFavorites.removeWhere((item) => item['id'] == postId);
+      fullFavorites.insert(0, postJson);
+      await _saveFavorites(fullFavorites);
+    });
   }
 
   /// 移除收藏
-  Future<void> removeFavorite(int postId) async {
-    // 从完整数据中移除
-    final fullFavorites = await getFavoritePostsFull();
-    fullFavorites.removeWhere((item) => item['id'] == postId);
-    await _saveFavoritePostsFull(fullFavorites);
-
-    // 同时从旧格式中移除
-    final idList = fullFavorites.map((e) => e['id'] as int).toList();
-    await _saveFavoriteIds(idList);
+  Future<void> removeFavorite(int postId) {
+    return _mutate(() async {
+      final fullFavorites = await getFavoritePostsFull();
+      fullFavorites.removeWhere((item) => item['id'] == postId);
+      await _saveFavorites(fullFavorites);
+    });
   }
 
   /// 切换收藏状态
-  Future<bool> toggleFavorite(Map<String, dynamic> postJson) async {
+  Future<bool> toggleFavorite(Map<String, dynamic> postJson) {
     final postId = postJson['id'];
-    final isFav = await isFavorite(postId);
-    if (isFav) {
-      await removeFavorite(postId);
-      return false;
-    } else {
-      await addFavorite(postJson);
-      return true;
-    }
+    if (postId == null) return Future<bool>.value(false);
+    return _mutate(() async {
+      final favorites = await getFavoritePostsFull();
+      final wasFavorite = favorites.any((item) => item['id'] == postId);
+      favorites.removeWhere((item) => item['id'] == postId);
+      if (!wasFavorite) favorites.insert(0, postJson);
+      await _saveFavorites(favorites);
+      return !wasFavorite;
+    });
   }
 
-  Future<void> _saveFavoritePostsFull(List<Map<String, dynamic>> favorites) async {
+  Future<void> _saveFavorites(List<Map<String, dynamic>> favorites) async {
+    await _saveFavoritePostsFull(favorites);
+    final idList = favorites.map((e) => e['id'] as int).toList();
+    await _saveFavoriteIds(idList);
+  }
+
+  Future<void> _saveFavoritePostsFull(
+    List<Map<String, dynamic>> favorites,
+  ) async {
     await _ensureInitialized();
     await _prefs!.setString(_favoritePostsFullKey, jsonEncode(favorites));
   }
@@ -110,7 +124,10 @@ class FavoritesManager {
   }
 
   /// 获取所有收藏的标签条目（含分类），兼容旧格式。
-  Future<List<Map<String, dynamic>>> getFavoriteTagEntries() async {
+  Future<List<Map<String, dynamic>>> getFavoriteTagEntries() =>
+      _mutate(_readFavoriteTagEntries);
+
+  Future<List<Map<String, dynamic>>> _readFavoriteTagEntries() async {
     await _ensureInitialized();
 
     // 优先读新格式
@@ -143,50 +160,56 @@ class FavoritesManager {
   }
 
   /// 添加标签收藏（可带分类）。
-  Future<void> addFavoriteTag(String tag, {int? category}) async {
-    final entries = await getFavoriteTagEntries();
-    final exists = entries.any((e) => e['tag'] == tag);
-    if (!exists) {
-      entries.add({
-        'tag': tag,
-        if (category != null) 'category': category,
-      });
-      await _saveFavoriteTagEntries(entries);
-    }
+  Future<void> addFavoriteTag(String tag, {int? category}) {
+    return _mutate(() async {
+      final entries = await _readFavoriteTagEntries();
+      final exists = entries.any((e) => e['tag'] == tag);
+      if (!exists) {
+        entries.add({'tag': tag, if (category != null) 'category': category});
+        await _saveFavoriteTagEntries(entries);
+      }
+    });
   }
 
   /// 更新已收藏标签的分类（用于补全旧收藏标签的分类信息）。
-  Future<void> updateFavoriteTagCategory(String tag, int category) async {
-    final entries = await getFavoriteTagEntries();
-    var changed = false;
-    for (final entry in entries) {
-      if (entry['tag'] == tag && entry['category'] != category) {
-        entry['category'] = category;
-        changed = true;
+  Future<void> updateFavoriteTagCategory(String tag, int category) {
+    return _mutate(() async {
+      final entries = await _readFavoriteTagEntries();
+      var changed = false;
+      for (final entry in entries) {
+        if (entry['tag'] == tag && entry['category'] != category) {
+          entry['category'] = category;
+          changed = true;
+        }
       }
-    }
-    if (changed) {
-      await _saveFavoriteTagEntries(entries);
-    }
+      if (changed) {
+        await _saveFavoriteTagEntries(entries);
+      }
+    });
   }
 
   /// 移除标签收藏
-  Future<void> removeFavoriteTag(String tag) async {
-    final entries = await getFavoriteTagEntries();
-    entries.removeWhere((e) => e['tag'] == tag);
-    await _saveFavoriteTagEntries(entries);
+  Future<void> removeFavoriteTag(String tag) {
+    return _mutate(() async {
+      final entries = await _readFavoriteTagEntries();
+      entries.removeWhere((e) => e['tag'] == tag);
+      await _saveFavoriteTagEntries(entries);
+    });
   }
 
   /// 切换标签收藏状态
-  Future<bool> toggleFavoriteTag(String tag, {int? category}) async {
-    final isFav = await isTagFavorite(tag);
-    if (isFav) {
-      await removeFavoriteTag(tag);
-      return false;
-    } else {
-      await addFavoriteTag(tag, category: category);
-      return true;
-    }
+  Future<bool> toggleFavoriteTag(String tag, {int? category}) {
+    return _mutate(() async {
+      final entries = await _readFavoriteTagEntries();
+      final wasFavorite = entries.any((e) => e['tag'] == tag);
+      if (wasFavorite) {
+        entries.removeWhere((e) => e['tag'] == tag);
+      } else {
+        entries.add({'tag': tag, if (category != null) 'category': category});
+      }
+      await _saveFavoriteTagEntries(entries);
+      return !wasFavorite;
+    });
   }
 
   Future<void> _saveFavoriteTagEntries(
@@ -206,23 +229,27 @@ class FavoritesManager {
     }).toList();
   }
 
-  Future<void> addBrowsingHistory(Map<String, dynamic> postJson) async {
+  Future<void> addBrowsingHistory(Map<String, dynamic> postJson) {
     final postId = postJson['id'];
-    if (postId == null) return;
+    if (postId == null) return Future<void>.value();
 
-    final history = await getBrowsingHistory();
-    history.removeWhere((item) => item['id'] == postId);
-    history.insert(0, {
-      ...postJson,
-      'viewed_at': DateTime.now().toIso8601String(),
+    return _mutate(() async {
+      final history = await getBrowsingHistory();
+      history.removeWhere((item) => item['id'] == postId);
+      history.insert(0, {
+        ...postJson,
+        'viewed_at': DateTime.now().toIso8601String(),
+      });
+
+      await _saveBrowsingHistory(history.take(_maxBrowsingHistory).toList());
     });
-
-    await _saveBrowsingHistory(history.take(_maxBrowsingHistory).toList());
   }
 
-  Future<void> clearBrowsingHistory() async {
-    await _ensureInitialized();
-    await _prefs!.remove(_browsingHistoryKey);
+  Future<void> clearBrowsingHistory() {
+    return _mutate(() async {
+      await _ensureInitialized();
+      await _prefs!.remove(_browsingHistoryKey);
+    });
   }
 
   Future<void> _saveBrowsingHistory(List<Map<String, dynamic>> history) async {
@@ -249,11 +276,14 @@ class FavoritesManager {
   }
 
   /// 清空所有收藏（用于测试或重置）
-  Future<void> clearAllFavorites() async {
-    await _ensureInitialized();
-    await _prefs!.remove(_favoritesKey);
-    await _prefs!.remove(_favoriteTagsKey);
-    await _prefs!.remove(_favoriteTagsV2Key);
-    await _prefs!.remove(_browsingHistoryKey);
+  Future<void> clearAllFavorites() {
+    return _mutate(() async {
+      await _ensureInitialized();
+      await _prefs!.remove(_favoritesKey);
+      await _prefs!.remove(_favoritePostsFullKey);
+      await _prefs!.remove(_favoriteTagsKey);
+      await _prefs!.remove(_favoriteTagsV2Key);
+      await _prefs!.remove(_browsingHistoryKey);
+    });
   }
 }
