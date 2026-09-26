@@ -56,14 +56,6 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
     }
   }
 
-  bool _isVideoUrl(String url) {
-    final lower = url.toLowerCase();
-    return lower.endsWith('.mp4') ||
-        lower.endsWith('.webm') ||
-        lower.endsWith('.mov') ||
-        lower.endsWith('.m4v');
-  }
-
   Future<File> _getCachedFile(String url, {int retries = 2}) async {
     if (isUgoiraUrl(url)) {
       return getUgoiraGifFile(url);
@@ -83,28 +75,30 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
     final highResUrl = widget.highResUrl;
     if (highResUrl == null || highResUrl == widget.previewUrl) return;
 
+    VideoPlayerController? pendingVideoController;
     try {
-      if (_isVideoUrl(highResUrl)) {
+      if (isVideoUrl(highResUrl)) {
         setState(() {
           _videoLoading = true;
           _videoLoadError = null;
         });
 
-        final controller = VideoPlayerController.networkUrl(
+        pendingVideoController = VideoPlayerController.networkUrl(
           Uri.parse(highResUrl),
         );
-        await controller.initialize().timeout(const Duration(seconds: 12));
+        await pendingVideoController.initialize().timeout(
+          const Duration(seconds: 12),
+        );
         if (!mounted) {
-          controller.dispose();
+          await pendingVideoController.dispose();
           return;
         }
-        if (mounted) {
-          setState(() {
-            _videoController = controller;
-            _isVideo = true;
-            _videoLoading = false;
-          });
-        }
+        setState(() {
+          _videoController = pendingVideoController;
+          _isVideo = true;
+          _videoLoading = false;
+        });
+        pendingVideoController = null;
       } else {
         final file = await _getCachedFile(highResUrl);
         if (mounted) {
@@ -116,9 +110,10 @@ class _FullScreenImagePageState extends State<FullScreenImagePage> {
         }
       }
     } catch (_) {
+      await pendingVideoController?.dispose();
       if (mounted) {
         setState(() {
-          if (_isVideoUrl(highResUrl)) {
+          if (isVideoUrl(highResUrl)) {
             _videoLoading = false;
             _videoLoadError = '视频加载失败';
           }
