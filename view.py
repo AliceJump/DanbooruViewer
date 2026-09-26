@@ -382,7 +382,7 @@ def build_completion_candidates(
     return candidates
 
 
-def sync_data(tag: str = DEFAULT_TAG):
+def sync_data(tag: str = DEFAULT_TAG, *, persist_files: bool = True):
     log(f"  [TAG] syncing {tag!r}")
     tags = get_json(
         "/tags.json",
@@ -432,7 +432,8 @@ def sync_data(tag: str = DEFAULT_TAG):
         "completion_candidates": completion_candidates,
     }
 
-    save_sync_data(tag, payload)
+    if persist_files:
+        save_sync_data(tag, payload)
     return payload
 
 

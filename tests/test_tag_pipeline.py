@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import view
 from scripts import tag_pipeline
 from scripts import batch_sync_tags
 from scripts.batch_sync_tags import TagRecord
@@ -140,6 +141,9 @@ class TagPipelineConsumerTest(unittest.TestCase):
         result = tag_pipeline.sync_queue_tag((1, "test", None), force=False)
 
         self.assertEqual(result, ("synced", 1))
+        tag_pipeline.view.sync_data.assert_called_once_with(
+            "test", persist_files=False,
+        )
         self.db.upsert_tag.assert_called_once_with({"tag": "test"})
         self.db.set_sync_status.assert_called_once()
         self.assertEqual(self.db.set_sync_status.call_args.args[:2], ("test", "success"))
@@ -207,6 +211,29 @@ class BatchSyncTest(unittest.TestCase):
         self.assertNotIn("test", ctx.success)
         self.assertEqual(ctx.failed["test"]["failures"], 1)
         self.assertEqual(fake_db.set_sync_status.call_args.args[:2], ("test", "failed"))
+
+
+class ViewSyncDataTest(unittest.TestCase):
+    def test_database_pipeline_can_skip_legacy_json_writes(self):
+        tag_info = {"id": 1, "name": "test", "category": 0, "post_count": 1}
+        responses = [[tag_info], {"other_names": []}, []]
+        with patch.object(view, "get_json", side_effect=responses), patch.object(
+            view, "save_sync_data",
+        ) as save_files, patch.object(view, "log"):
+            payload = view.sync_data("test", persist_files=False)
+
+        self.assertEqual(payload["tag_info"]["id"], 1)
+        save_files.assert_not_called()
+
+    def test_direct_sync_keeps_existing_file_writes(self):
+        tag_info = {"id": 1, "name": "test", "category": 0, "post_count": 1}
+        responses = [[tag_info], {"other_names": []}, []]
+        with patch.object(view, "get_json", side_effect=responses), patch.object(
+            view, "save_sync_data",
+        ) as save_files, patch.object(view, "log"):
+            payload = view.sync_data("test")
+
+        save_files.assert_called_once_with("test", payload)
 
 
 if __name__ == "__main__":

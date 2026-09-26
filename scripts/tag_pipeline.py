@@ -230,7 +230,7 @@ def sync_queue_tag(rec: tuple, *, force: bool) -> tuple[str, int]:
                     return "blocked", tag_id
                 if status["status"] == "success" and db.has_tag(tag):
                     return "skipped", tag_id
-        payload = view.sync_data(tag)
+        payload = view.sync_data(tag, persist_files=False)
         db.upsert_tag(payload)
         db.set_sync_status(
             tag, "success",
