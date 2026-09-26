@@ -93,11 +93,11 @@ def run_list_incremental(args):
     session = create_session(not args.no_verify_ssl)
     if not isinstance(mid, int) or not isinstance(mad, int):
         log("[LIST] No cursor; walking full range id_desc...")
-        run_list_full_desc(args, session)
+        run_list_full_desc(args, session, update_cursor=True)
         return
     # New tags (id > max)
     log(f"[LIST] Enqueuing tags with id > {mad}...")
-    cur = None
+    cur = mad
     while True:
         records = fetch_tags_from_api_page(
             session, order="id_asc", cursor_id=cur, limit=args.api_limit,
@@ -107,25 +107,31 @@ def run_list_incremental(args):
             break
         added = enqueue_page_records(records)
         log(f"[LIST] id>max page: +{added} enqueued")
-        cur = next((r.tag_id for r in reversed(records) if r.tag_id is not None), None)
-        if cur is None:
+        ids = [r.tag_id for r in records if r.tag_id is not None]
+        if not ids:
             break
+        cur = max(ids)
+        cursor["max_id"] = cur
+        db.save_cursor(cursor)
         time.sleep(args.delay)
     # Older tags (id < min)
     log(f"[LIST] Enqueuing tags with id < {mid}...")
-    cur = None
+    cur = mid
     while True:
         records = fetch_tags_from_api_page(
-            session, order="id_desc", cursor_id=cur, id_lt=mid, limit=args.api_limit,
+            session, order="id_desc", cursor_id=cur, limit=args.api_limit,
             max_retries=args.retries,
         )
         if not records:
             break
         added = enqueue_page_records(records)
         log(f"[LIST] id<min page: +{added} enqueued")
-        cur = next((r.tag_id for r in reversed(records) if r.tag_id is not None), None)
-        if cur is None:
+        ids = [r.tag_id for r in records if r.tag_id is not None]
+        if not ids:
             break
+        cur = min(ids)
+        cursor["min_id"] = cur
+        db.save_cursor(cursor)
         time.sleep(args.delay)
     log("[LIST] Incremental walk complete.")
 
@@ -168,10 +174,11 @@ def run_list_resync_months(args, months: int):
     log(f"[LIST] Resync-months walk complete. Scanned {scanned}.")
 
 
-def run_list_full_desc(args, session=None):
+def run_list_full_desc(args, session=None, *, update_cursor=False):
     """Walk entire tag list newest->oldest, enqueueing everything not yet in tags table."""
     if session is None:
         session = create_session(not args.no_verify_ssl)
+    cursor = db.load_cursor() if update_cursor else None
     cur = getattr(args, "from_id", None)
     log(f"[LIST] Full id_desc walk (fill-gaps): enqueueing only missing tags"
         f"{' from id ' + str(cur) if cur else ''}...")
@@ -191,6 +198,12 @@ def run_list_full_desc(args, session=None):
             if r.tag_id is not None and r.name and r.tag_id not in existing
         ]
         added = db.enqueue_many(rows)
+        if cursor is not None and ids:
+            old_min = cursor.get("min_id")
+            old_max = cursor.get("max_id")
+            cursor["min_id"] = min(min(ids), old_min) if isinstance(old_min, int) else min(ids)
+            cursor["max_id"] = max(max(ids), old_max) if isinstance(old_max, int) else max(ids)
+            db.save_cursor(cursor)
         scanned += len(records)
         log(f"[LIST] fill page: +{added} enqueued ({len(existing)} already exist, scanned {scanned})")
         cur = next((r.tag_id for r in reversed(records) if r.tag_id is not None), None)
