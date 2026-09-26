@@ -247,9 +247,10 @@ class MyApp extends StatelessWidget {
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+  const MyHomePage({super.key, required this.title, this.fetchPosts});
 
   final String title;
+  final Future<http.Response> Function(Uri)? fetchPosts;
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
@@ -271,6 +272,8 @@ class _MyHomePageState extends State<MyHomePage> {
   bool _showSuggestions = false;
   String? _completionLoadError;
   int _page = 1;
+  int _requestGeneration = 0;
+  bool _hasMorePosts = true;
 
   // Multi-select state
   bool _isMultiSelectMode = false;
@@ -291,7 +294,8 @@ class _MyHomePageState extends State<MyHomePage> {
     _scrollController.addListener(() {
       if (_scrollController.position.pixels ==
               _scrollController.position.maxScrollExtent &&
-          !_isLoading) {
+          !_isLoading &&
+          _hasMorePosts) {
         _fetchPosts(isLoadMore: true);
       }
     });
@@ -656,19 +660,24 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _fetchPosts({bool isLoadMore = false}) async {
-    if (_isLoading) return;
+    if (!mounted || (isLoadMore && (_isLoading || !_hasMorePosts))) return;
+
+    final requestGeneration = isLoadMore
+        ? _requestGeneration
+        : ++_requestGeneration;
+    final requestPage = isLoadMore ? _page + 1 : 1;
 
     setState(() {
       _isLoading = true;
+      if (!isLoadMore) {
+        _posts = [];
+        _page = 1;
+        _hasMorePosts = true;
+      }
     });
 
-    if (isLoadMore) {
-      _page++;
-    } else {
-      _page = 1;
-      if (_scrollController.hasClients) {
-        _scrollController.jumpTo(0);
-      }
+    if (!isLoadMore && _scrollController.hasClients) {
+      _scrollController.jumpTo(0);
     }
 
     try {
@@ -678,31 +687,22 @@ class _MyHomePageState extends State<MyHomePage> {
         ..._searchController.text.split(' ').where((s) => s.isNotEmpty),
       ];
 
-      String ratingTags = ratings.isNotEmpty
-          ? 'rating:${ratings.join(',')}'
-          : '';
-      String searchTags = queryTags.join('+');
-      String finalTags = searchTags;
-      if (ratingTags.isNotEmpty) {
-        if (finalTags.isNotEmpty) {
-          finalTags += '+$ratingTags';
-        } else {
-          finalTags = ratingTags;
-        }
-      }
-
-      final response = await http.get(
-        Uri.parse(
-          'https://danbooru.donmai.us/posts.json?tags=$finalTags&limit=100&page=$_page',
-        ),
-      );
+      final tags = [
+        ...queryTags,
+        if (ratings.isNotEmpty) 'rating:${ratings.join(',')}',
+      ].join(' ');
+      final uri = Uri.https('danbooru.donmai.us', '/posts.json', {
+        'tags': tags,
+        'limit': '100',
+        'page': '$requestPage',
+      });
+      final response = await (widget.fetchPosts?.call(uri) ?? http.get(uri));
+      if (!mounted || requestGeneration != _requestGeneration) return;
 
       if (response.statusCode == 200) {
         final List<dynamic> postsJson = json.decode(response.body);
         if (postsJson.isEmpty) {
-          if (isLoadMore) {
-            _page--;
-          }
+          setState(() => _hasMorePosts = false);
           return;
         }
         final newPosts = postsJson.map((json) => Post.fromJson(json)).toList();
@@ -712,18 +712,21 @@ class _MyHomePageState extends State<MyHomePage> {
           } else {
             _posts = newPosts;
           }
+          _page = requestPage;
         });
       } else {
-        if (isLoadMore) _page--;
         debugPrint('Failed to load posts');
       }
     } catch (e) {
-      if (isLoadMore) _page--;
-      debugPrint('Error fetching posts: $e');
+      if (mounted && requestGeneration == _requestGeneration) {
+        debugPrint('Error fetching posts: $e');
+      }
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted && requestGeneration == _requestGeneration) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
