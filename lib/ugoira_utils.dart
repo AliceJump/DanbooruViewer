@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 
 /// frame_data.json 缺失时使用的默认帧时长（毫秒）。
 const int _defaultFrameDelayMs = 60;
+final Map<String, Future<File>> _pendingGifConversions = {};
 
 /// 判断 URL 是否是 ugoira 动画压缩包（.zip）。
 bool isUgoiraUrl(String? url) {
@@ -55,25 +56,65 @@ Future<File?> getCachedUgoiraGifFile(String zipUrl) async {
 /// 已缓存时直接返回，避免重复处理。
 Future<File> getUgoiraGifFile(String zipUrl, {int retries = 2}) async {
   final cached = await _cachedGifFile(zipUrl);
-  if (await cached.exists() && await cached.length() > 0) {
-    return cached;
+  return cacheUgoiraGifFile(cached, () async {
+    var attempt = 0;
+    late File zipFile;
+    while (true) {
+      try {
+        zipFile = await DefaultCacheManager().getSingleFile(zipUrl);
+        break;
+      } catch (_) {
+        if (attempt++ >= retries) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 300 * attempt));
+      }
+    }
+    return compute(mergeUgoiraToGifSync, zipFile.path);
+  });
+}
+
+@visibleForTesting
+Future<File> cacheUgoiraGifFile(
+  File cached,
+  Future<Uint8List> Function() convert,
+) {
+  final cachePath = cached.path;
+  final pending = _pendingGifConversions[cachePath];
+  if (pending != null) return pending;
+
+  late Future<File> conversion;
+  conversion = _convertAndCacheGif(cached, convert).whenComplete(() {
+    if (identical(_pendingGifConversions[cachePath], conversion)) {
+      _pendingGifConversions.remove(cachePath);
+    }
+  });
+  _pendingGifConversions[cachePath] = conversion;
+  return conversion;
+}
+
+Future<File> _convertAndCacheGif(
+  File cached,
+  Future<Uint8List> Function() convert,
+) async {
+  if (await cached.exists()) {
+    if (await cached.length() > 0) return cached;
+    await cached.delete();
   }
 
-  var attempt = 0;
-  late File zipFile;
-  while (true) {
+  final gifBytes = await convert();
+  final temporary = File(
+    '${cached.path}.$pid.${DateTime.now().microsecondsSinceEpoch}.tmp',
+  );
+  try {
+    await temporary.writeAsBytes(gifBytes, flush: true);
+    await temporary.rename(cached.path);
+    return cached;
+  } finally {
     try {
-      zipFile = await DefaultCacheManager().getSingleFile(zipUrl);
-      break;
-    } catch (_) {
-      if (attempt++ >= retries) rethrow;
-      await Future<void>.delayed(Duration(milliseconds: 300 * attempt));
+      if (await temporary.exists()) await temporary.delete();
+    } on FileSystemException {
+      // Preserve the original conversion or rename failure.
     }
   }
-
-  final gifBytes = await compute(mergeUgoiraToGifSync, zipFile.path);
-  await cached.writeAsBytes(gifBytes, flush: true);
-  return cached;
 }
 
 /// 触发 ugoira GIF 处理（不等待结果），用于预热。

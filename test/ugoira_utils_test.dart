@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:danbooru_viewer/ugoira_utils.dart';
@@ -86,5 +88,82 @@ void main() {
     expect(isUgoiraUrl('https://cdn.donmai.us/original/a/b/123.png'), isFalse);
     expect(isUgoiraUrl('https://cdn.donmai.us/original/a/b/123.mp4'), isFalse);
     expect(isUgoiraUrl(null), isFalse);
+  });
+
+  test(
+    'concurrent requests convert a GIF once and share the cached file',
+    () async {
+      final dir = await Directory.systemTemp.createTemp('ugoira_cache_test');
+      try {
+        final cached = File('${dir.path}${Platform.pathSeparator}shared.gif');
+        final converted = Completer<Uint8List>();
+        var conversions = 0;
+        Future<Uint8List> convert() {
+          conversions++;
+          return converted.future;
+        }
+
+        final first = cacheUgoiraGifFile(cached, convert);
+        final second = cacheUgoiraGifFile(cached, convert);
+        await Future<void>.delayed(Duration.zero);
+        expect(conversions, 1);
+        expect(await cached.exists(), isFalse);
+
+        converted.complete(Uint8List.fromList([71, 73, 70, 56, 57, 97]));
+        expect((await first).path, cached.path);
+        expect((await second).path, cached.path);
+        expect(await cached.readAsBytes(), [71, 73, 70, 56, 57, 97]);
+        expect((await cacheUgoiraGifFile(cached, convert)).path, cached.path);
+        expect(conversions, 1);
+      } finally {
+        await dir.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'failed cache publication removes temporary files and permits retry',
+    () async {
+      final dir = await Directory.systemTemp.createTemp('ugoira_cache_test');
+      try {
+        final cached = File('${dir.path}${Platform.pathSeparator}retry.gif');
+        final occupied = Directory(cached.path)..createSync();
+        var conversions = 0;
+        Future<Uint8List> convert() async {
+          conversions++;
+          return Uint8List.fromList([71, 73, 70, 56, 57, 97]);
+        }
+
+        await expectLater(
+          cacheUgoiraGifFile(cached, convert),
+          throwsA(isA<FileSystemException>()),
+        );
+        expect(
+          await dir.list().where((file) => file.path.endsWith('.tmp')).toList(),
+          isEmpty,
+        );
+
+        await occupied.delete();
+        expect((await cacheUgoiraGifFile(cached, convert)).path, cached.path);
+        expect(conversions, 2);
+      } finally {
+        await dir.delete(recursive: true);
+      }
+    },
+  );
+
+  test('zero-length cache entries are replaced', () async {
+    final dir = await Directory.systemTemp.createTemp('ugoira_cache_test');
+    try {
+      final cached = File('${dir.path}${Platform.pathSeparator}empty.gif');
+      await cached.writeAsBytes([]);
+      await cacheUgoiraGifFile(
+        cached,
+        () async => Uint8List.fromList([71, 73, 70, 56, 57, 97]),
+      );
+      expect(await cached.length(), 6);
+    } finally {
+      await dir.delete(recursive: true);
+    }
   });
 }
