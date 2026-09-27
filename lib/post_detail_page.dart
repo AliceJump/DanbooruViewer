@@ -20,6 +20,7 @@ class PostDetailPage extends StatefulWidget {
   final int initialIndex;
   final Map<String, String> completionDisplayByValue;
   final Map<String, int> completionCategoryByValue;
+  final Future<bool> Function(int)? isFavoriteLookup;
 
   const PostDetailPage({
     super.key,
@@ -27,6 +28,7 @@ class PostDetailPage extends StatefulWidget {
     required this.initialIndex,
     required this.completionDisplayByValue,
     this.completionCategoryByValue = const {},
+    this.isFavoriteLookup,
   });
 
   @override
@@ -72,6 +74,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   final _favoritesManager = FavoritesManager();
   bool _isFavorite = false;
+  int _favoriteRequestGeneration = 0;
   bool _didTriggerDragAction = false;
   bool _canShowLoadedImage = false;
   double? _verticalDragStartDy;
@@ -99,8 +102,11 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   Future<void> _checkFavoriteStatus() async {
     final currentPost = widget.posts[_currentIndex];
-    final isFav = await _favoritesManager.isFavorite(currentPost.id);
-    if (mounted) {
+    final requestGeneration = ++_favoriteRequestGeneration;
+    final isFav =
+        await (widget.isFavoriteLookup?.call(currentPost.id) ??
+            _favoritesManager.isFavorite(currentPost.id));
+    if (mounted && requestGeneration == _favoriteRequestGeneration) {
       setState(() {
         _isFavorite = isFav;
       });
@@ -200,6 +206,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
   void _onPageChanged(int index) {
     setState(() {
       _currentIndex = index;
+      _isFavorite = false;
     });
     _loadMediaForIndex(index, prioritizePreview: true);
     _checkFavoriteStatus();
@@ -214,10 +221,11 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   Future<void> _toggleFavorite() async {
     final currentPost = widget.posts[_currentIndex];
+    final requestGeneration = ++_favoriteRequestGeneration;
     final newState = await _favoritesManager.toggleFavorite(
       currentPost.toJson(),
     );
-    if (mounted) {
+    if (mounted && requestGeneration == _favoriteRequestGeneration) {
       setState(() {
         _isFavorite = newState;
       });
