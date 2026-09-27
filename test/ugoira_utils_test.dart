@@ -90,6 +90,17 @@ void main() {
     expect(isUgoiraUrl(null), isFalse);
   });
 
+  test('cache file names use a stable digest of the full URL', () {
+    expect(
+      ugoiraGifCacheFileName('https://example.test/a.zip'),
+      'ugoira_a13fafbbf9d82f3de42004da13e538c8bccd21b3328514dbbcb845891f71167c.gif',
+    );
+    expect(
+      ugoiraGifCacheFileName('https://example.test/a.zip?size=large'),
+      isNot(ugoiraGifCacheFileName('https://example.test/a.zip')),
+    );
+  });
+
   test(
     'concurrent requests convert a GIF once and share the cached file',
     () async {

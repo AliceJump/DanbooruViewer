@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:image/image.dart' as img;
@@ -35,14 +36,17 @@ Future<Directory> _cacheDir() async {
   return dir;
 }
 
-String _cacheFileName(String url) {
-  final hash = url.hashCode.toRadixString(16);
+@visibleForTesting
+String ugoiraGifCacheFileName(String url) {
+  final hash = sha256.convert(utf8.encode(url));
   return 'ugoira_$hash.gif';
 }
 
 Future<File> _cachedGifFile(String url) async {
   final dir = await _cacheDir();
-  return File('${dir.path}${Platform.pathSeparator}${_cacheFileName(url)}');
+  return File(
+    '${dir.path}${Platform.pathSeparator}${ugoiraGifCacheFileName(url)}',
+  );
 }
 
 /// 仅返回已缓存的 ugoira GIF 文件；未处理过时返回 null（不会触发处理）。
