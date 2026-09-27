@@ -21,6 +21,7 @@ class PostDetailPage extends StatefulWidget {
   final Map<String, String> completionDisplayByValue;
   final Map<String, int> completionCategoryByValue;
   final Future<bool> Function(int)? isFavoriteLookup;
+  final VideoPlayerController Function(Uri)? videoControllerFactory;
 
   const PostDetailPage({
     super.key,
@@ -29,6 +30,7 @@ class PostDetailPage extends StatefulWidget {
     required this.completionDisplayByValue,
     this.completionCategoryByValue = const {},
     this.isFavoriteLookup,
+    this.videoControllerFactory,
   });
 
   @override
@@ -70,6 +72,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
   final Map<int, File> _imageFiles = {};
   final Map<int, String> _commentaryByPostId = {};
   final Map<int, VideoPlayerController> _videoControllers = {};
+  final Set<int> _initializingVideoIndices = {};
   bool _didChangeDependenciesRun = false;
 
   final _favoritesManager = FavoritesManager();
@@ -170,24 +173,32 @@ class _PostDetailPageState extends State<PostDetailPage> {
       }
 
       if (isVideoUrl(highResUrl)) {
-        final videoController = VideoPlayerController.networkUrl(
-          Uri.parse(highResUrl),
-        );
-        videoController
-            .initialize()
-            .timeout(const Duration(seconds: 12))
-            .then((_) {
-              if (!mounted) {
-                videoController.dispose();
-                return;
-              }
-              setState(() {
-                _videoControllers[index] = videoController;
-              });
-            })
-            .catchError((_) {
-              videoController.dispose();
-            });
+        if (!_initializingVideoIndices.add(index)) return;
+        VideoPlayerController? pendingController;
+        try {
+          pendingController =
+              widget.videoControllerFactory?.call(Uri.parse(highResUrl)) ??
+              VideoPlayerController.networkUrl(Uri.parse(highResUrl));
+          await pendingController.initialize().timeout(
+            const Duration(seconds: 12),
+          );
+          if (!mounted) return;
+          setState(() {
+            _videoControllers[index] = pendingController!;
+          });
+          pendingController = null;
+        } catch (e) {
+          debugPrint('Failed to initialize video for post ${post.id}: $e');
+        } finally {
+          _initializingVideoIndices.remove(index);
+          if (pendingController != null) {
+            try {
+              await pendingController.dispose();
+            } catch (e) {
+              debugPrint('Failed to dispose video for post ${post.id}: $e');
+            }
+          }
+        }
         return;
       }
 
