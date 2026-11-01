@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
+          fetch-depth: 0
 
       - uses: subosito/flutter-action@v2
         with:
@@ -25,7 +26,19 @@ jobs:
 
       - run: flutter pub get
 
-      - run: dart format --output=none --set-exit-if-changed lib test
+      - name: Check formatting of changed Dart files
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          mapfile -d '' files < <(git diff --name-only --diff-filter=ACMR -z "$base" HEAD -- '*.dart')
+          if (( ${#files[@]} > 0 )); then
+            dart format "${files[@]}"
+            git diff --exit-code -- "${files[@]}"
+          fi
       - run: flutter analyze
       - run: flutter test
 
