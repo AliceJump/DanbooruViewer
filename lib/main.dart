@@ -490,8 +490,7 @@ class _MyHomePageState extends State<MyHomePage> {
     }
 
     setState(() {
-      final display =
-          _completionDisplayByInsertValue[tag.toLowerCase()] ?? tag;
+      final display = _completionDisplayByInsertValue[tag.toLowerCase()] ?? tag;
       _upsertSearchChip(SearchChip(label: display, queryValue: tag));
       _searchController.clear();
       _showSuggestions = false;
@@ -847,7 +846,8 @@ class _MyHomePageState extends State<MyHomePage> {
                         padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
                         child: Text(
                           row,
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
                                 color: Theme.of(context).colorScheme.primary,
                                 fontWeight: FontWeight.w500,
                               ),

@@ -9,22 +9,23 @@ class AppTheme {
 
   static ThemeData _build(Brightness brightness) {
     final dark = brightness == Brightness.dark;
-    final scheme = ColorScheme.fromSeed(
-      seedColor: _accent,
-      brightness: brightness,
-    ).copyWith(
-      primary: dark ? const Color(0xFFAAD1D5) : _accent,
-      surface: dark ? const Color(0xFF15181A) : const Color(0xFFFAFAF9),
-      surfaceContainerLow: dark
-          ? const Color(0xFF202427)
-          : const Color(0xFFFFFFFF),
-      surfaceContainerHighest: dark
-          ? const Color(0xFF292E32)
-          : const Color(0xFFF0F2F1),
-      outlineVariant: dark
-          ? const Color(0xFF3D4548)
-          : const Color(0xFFD9DDDC),
-    );
+    final scheme =
+        ColorScheme.fromSeed(
+          seedColor: _accent,
+          brightness: brightness,
+        ).copyWith(
+          primary: dark ? const Color(0xFFAAD1D5) : _accent,
+          surface: dark ? const Color(0xFF15181A) : const Color(0xFFFAFAF9),
+          surfaceContainerLow: dark
+              ? const Color(0xFF202427)
+              : const Color(0xFFFFFFFF),
+          surfaceContainerHighest: dark
+              ? const Color(0xFF292E32)
+              : const Color(0xFFF0F2F1),
+          outlineVariant: dark
+              ? const Color(0xFF3D4548)
+              : const Color(0xFFD9DDDC),
+        );
     final outline = BorderSide(color: scheme.outlineVariant, width: 0.5);
     final inputBorder = OutlineInputBorder(
       borderRadius: BorderRadius.circular(8),
@@ -115,9 +116,7 @@ class AppTheme {
       chipTheme: ChipThemeData(
         backgroundColor: scheme.surfaceContainerLow,
         selectedColor: scheme.surfaceContainerHighest,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         side: outline,
       ),
       dividerTheme: DividerThemeData(

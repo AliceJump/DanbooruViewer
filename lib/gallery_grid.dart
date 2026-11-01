@@ -6,9 +6,9 @@ const double _targetTileExtent = 152;
 
 int galleryColumnCount(double width) {
   final contentWidth = width - _galleryPadding * 2;
-  final count = ((contentWidth + _gallerySpacing) /
-          (_targetTileExtent + _gallerySpacing))
-      .floor();
+  final count =
+      ((contentWidth + _gallerySpacing) / (_targetTileExtent + _gallerySpacing))
+          .floor();
   return count.clamp(2, 8).toInt();
 }
 
@@ -65,11 +65,7 @@ class GalleryEmptyState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              icon,
-              size: 40,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+            Icon(icon, size: 40, color: theme.colorScheme.onSurfaceVariant),
             const SizedBox(height: 16),
             Text(title, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),

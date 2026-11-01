@@ -30,10 +30,7 @@ void main() {
             child: SizedBox(
               width: 360,
               height: 400,
-              child: GalleryGrid(
-                itemCount: 0,
-                itemBuilder: _emptyTile,
-              ),
+              child: GalleryGrid(itemCount: 0, itemBuilder: _emptyTile),
             ),
           ),
         ),

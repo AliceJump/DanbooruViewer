@@ -661,7 +661,8 @@ class _FavoritesPageState extends State<FavoritesPage>
                         padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
                         child: Text(
                           row,
-                          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          style: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(
                                 color: Theme.of(context).colorScheme.primary,
                                 fontWeight: FontWeight.w500,
                               ),
@@ -689,7 +690,9 @@ class _FavoritesPageState extends State<FavoritesPage>
                                   Icon(
                                     Icons.label,
                                     size: 18,
-                                    color: Theme.of(context).colorScheme.primary,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(
@@ -717,7 +720,9 @@ class _FavoritesPageState extends State<FavoritesPage>
                                     icon: Icon(
                                       Icons.delete,
                                       size: 20,
-                                      color: Theme.of(context).colorScheme.error,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.error,
                                     ),
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints(

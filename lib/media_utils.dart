@@ -198,11 +198,7 @@ class PostThumbnailTile extends StatelessWidget {
       ],
     );
 
-    final content = SizedBox(
-      width: width,
-      height: height,
-      child: image,
-    );
+    final content = SizedBox(width: width, height: height, child: image);
 
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -214,11 +210,7 @@ class PostThumbnailTile extends StatelessWidget {
         ),
       ),
       clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        child: content,
-      ),
+      child: InkWell(onTap: onTap, onLongPress: onLongPress, child: content),
     );
   }
 }

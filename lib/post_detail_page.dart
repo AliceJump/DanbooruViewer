@@ -287,7 +287,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   Future<void> _sharePost(Post post) async {
     // 简介已缓存时直接分享，无需等待网络请求。
-    final hasCachedIntro = _commentaryByPostId[post.id] != null ||
+    final hasCachedIntro =
+        _commentaryByPostId[post.id] != null ||
         await _favoritesManager.getCachedCommentary(post.id) != null;
     if (!mounted) return;
     if (!hasCachedIntro) {
@@ -778,10 +779,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Text(
-            '作品信息',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
+          child: Text('作品信息', style: Theme.of(context).textTheme.titleMedium),
         ),
         _buildLinkButtons(post),
         _buildTagSection('作者', post.tagStringArtist, context),
