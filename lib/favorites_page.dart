@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'favorites_manager.dart';
+import 'gallery_grid.dart';
 import 'media_utils.dart';
 import 'post_detail_page.dart';
 import 'main.dart';
@@ -550,13 +551,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                   title: '还没有收藏的图片',
                   subtitle: '在图片详情页点击收藏按钮来添加收藏',
                 )
-              : GridView.builder(
-                  padding: const EdgeInsets.all(4),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 4.0,
-                    mainAxisSpacing: 4.0,
-                  ),
+              : GalleryGrid(
                   itemCount: filteredPosts.length,
                   itemBuilder: (context, index) {
                     final post = filteredPosts[index];
@@ -668,7 +663,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                           row,
                           style: Theme.of(context).textTheme.labelLarge?.copyWith(
                                 color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.w700,
+                                fontWeight: FontWeight.w500,
                               ),
                         ),
                       );
@@ -694,7 +689,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                                   const Icon(
                                     Icons.label,
                                     size: 18,
-                                    color: Colors.amber,
+                                    color: Theme.of(context).colorScheme.primary,
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(
@@ -702,7 +697,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                                       tag,
                                       style: const TextStyle(
                                         fontSize: 15,
-                                        fontWeight: FontWeight.w600,
+                                        fontWeight: FontWeight.w500,
                                       ),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
@@ -722,7 +717,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                                     icon: const Icon(
                                       Icons.delete,
                                       size: 20,
-                                      color: Colors.red,
+                                      color: Theme.of(context).colorScheme.error,
                                     ),
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints(
@@ -828,13 +823,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                   title: '还没有浏览历史',
                   subtitle: '浏览图片后会自动记录',
                 )
-              : GridView.builder(
-                  padding: const EdgeInsets.all(4),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 4.0,
-                    mainAxisSpacing: 4.0,
-                  ),
+              : GalleryGrid(
                   itemCount: filteredHistory.length,
                   itemBuilder: (context, index) {
                     final post = filteredHistory[index];
@@ -980,21 +969,7 @@ class _FavoritesPageState extends State<FavoritesPage>
     required String title,
     required String subtitle,
   }) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 64, color: Colors.grey),
-          const SizedBox(height: 16),
-          Text(title, style: const TextStyle(fontSize: 16, color: Colors.grey)),
-          const SizedBox(height: 8),
-          Text(
-            subtitle,
-            style: const TextStyle(fontSize: 14, color: Colors.grey),
-          ),
-        ],
-      ),
-    );
+    return GalleryEmptyState(icon: icon, title: title, subtitle: subtitle);
   }
 
   Future<void> _showTagOptions(String tag) async {
@@ -1007,7 +982,7 @@ class _FavoritesPageState extends State<FavoritesPage>
           children: [
             Text(
               tag,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
             ),
             const SizedBox(height: 16),
             ListTile(
@@ -1025,8 +1000,8 @@ class _FavoritesPageState extends State<FavoritesPage>
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title: const Text('取消收藏', style: TextStyle(color: Colors.red)),
+              leading: const Icon(Icons.delete, color: Theme.of(context).colorScheme.error),
+              title: const Text('取消收藏', style: TextStyle(color: Theme.of(context).colorScheme.error)),
               onTap: () {
                 Navigator.pop(context, 'remove');
               },
