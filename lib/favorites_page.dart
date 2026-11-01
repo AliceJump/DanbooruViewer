@@ -686,7 +686,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                               // 标签名 + 操作按钮
                               Row(
                                 children: [
-                                  const Icon(
+                                  Icon(
                                     Icons.label,
                                     size: 18,
                                     color: Theme.of(context).colorScheme.primary,
@@ -714,7 +714,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                                     tooltip: '搜索此标签',
                                   ),
                                   IconButton(
-                                    icon: const Icon(
+                                    icon: Icon(
                                       Icons.delete,
                                       size: 20,
                                       color: Theme.of(context).colorScheme.error,
@@ -1000,8 +1000,14 @@ class _FavoritesPageState extends State<FavoritesPage>
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete, color: Theme.of(context).colorScheme.error),
-              title: const Text('取消收藏', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+              leading: Icon(
+                Icons.delete,
+                color: Theme.of(context).colorScheme.error,
+              ),
+              title: Text(
+                '取消收藏',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
               onTap: () {
                 Navigator.pop(context, 'remove');
               },
