@@ -22,6 +22,30 @@ void main() {
     expect(dark.textTheme.bodyLarge?.fontSize, 16);
   });
 
+  testWidgets('empty gallery state fits short viewports', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              width: 240,
+              height: 80,
+              child: GalleryEmptyState(
+                icon: Icons.image_outlined,
+                title: 'No results',
+                subtitle: 'Try other filters',
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+    expect(find.byType(SingleChildScrollView), findsOneWidget);
+  });
+
   testWidgets('gallery grid uses its available width', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
