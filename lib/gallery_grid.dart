@@ -9,7 +9,7 @@ int galleryColumnCount(double width) {
   final count = ((contentWidth + _gallerySpacing) /
           (_targetTileExtent + _gallerySpacing))
       .floor();
-  return count.clamp(2, 8);
+  return count.clamp(2, 8).toInt();
 }
 
 class GalleryGrid extends StatelessWidget {
