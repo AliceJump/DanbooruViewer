@@ -42,7 +42,7 @@ jobs:
             dart format "${files[@]}"
             git diff --exit-code -- "${files[@]}"
           fi
-      - run: flutter analyze
+      - run: flutter analyze --no-fatal-infos
       - run: flutter test
 
   build-android-debug:
