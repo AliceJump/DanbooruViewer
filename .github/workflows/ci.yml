@@ -119,7 +119,7 @@ jobs:
             "https://github.com/${{ github.repository }}/releases/latest/download/danbooru-viewer-android-arm64-v8a.apk"
           signer_digest() {
             "$apksigner" verify --print-certs "$1" |
-              sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1
+              sed -nE 's/^.*certificate SHA-256 digest:[[:space:]]*([[:xdigit:]]{64})[[:space:]]*$/\1/p' | head -n 1
           }
           version_code() {
             "$aapt" dump badging "$1" |
