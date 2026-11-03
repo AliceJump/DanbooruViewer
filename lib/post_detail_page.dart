@@ -287,7 +287,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   Future<void> _sharePost(Post post) async {
     // 简介已缓存时直接分享，无需等待网络请求。
-    final hasCachedIntro = _commentaryByPostId[post.id] != null ||
+    final hasCachedIntro =
+        _commentaryByPostId[post.id] != null ||
         await _favoritesManager.getCachedCommentary(post.id) != null;
     if (!mounted) return;
     if (!hasCachedIntro) {
@@ -440,41 +441,36 @@ class _PostDetailPageState extends State<PostDetailPage> {
     final tagList = tags.trim().split(' ');
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0, horizontal: 16.0),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 80,
-            child: Text(
-              title,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
           ),
-          const SizedBox(width: 16.0),
-          Expanded(
-            child: Wrap(
-              spacing: 6.0,
-              runSpacing: 4.0,
-              children: tagList.map((tag) {
-                final displayLabel = _displayLabelForTag(tag);
-                return GestureDetector(
-                  onLongPress: () {
-                    _showTagMenu(context, tag);
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: tagList.map((tag) {
+              final displayLabel = _displayLabelForTag(tag);
+              return GestureDetector(
+                onLongPress: () => _showTagMenu(context, tag),
+                child: InputChip(
+                  label: Text(displayLabel),
+                  onPressed: () {
+                    Navigator.pop(
+                      context,
+                      SearchChip(label: displayLabel, queryValue: tag),
+                    );
                   },
-                  child: InputChip(
-                    label: Text(displayLabel),
-                    onPressed: () {
-                      Navigator.pop(
-                        context,
-                        SearchChip(label: displayLabel, queryValue: tag),
-                      );
-                    },
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                );
-              }).toList(),
-            ),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              );
+            }).toList(),
           ),
         ],
       ),
@@ -495,7 +491,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
           children: [
             Text(
               tag,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
             ),
             const SizedBox(height: 16),
             ListTile(
@@ -781,6 +777,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return ListView(
       padding: const EdgeInsets.only(top: 16, bottom: 24),
       children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Text('作品信息', style: Theme.of(context).textTheme.titleMedium),
+        ),
         _buildLinkButtons(post),
         _buildTagSection('作者', post.tagStringArtist, context),
         _buildTagSection('版权', post.tagStringCopyright, context),
@@ -804,7 +804,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
           IconButton(
             icon: Icon(
               _isFavorite ? Icons.favorite : Icons.favorite_border,
-              color: _isFavorite ? Colors.red : null,
+              color: _isFavorite ? Theme.of(context).colorScheme.primary : null,
             ),
             onPressed: _toggleFavorite,
             tooltip: _isFavorite ? '取消收藏' : '收藏',

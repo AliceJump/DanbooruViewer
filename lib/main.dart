@@ -11,6 +11,8 @@ import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
+import 'app_theme.dart';
+import 'gallery_grid.dart';
 import 'media_utils.dart';
 import 'ugoira_utils.dart';
 
@@ -237,10 +239,9 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Danbooru Viewer',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      themeMode: ThemeMode.system,
       home: const MyHomePage(title: 'Danbooru Viewer'),
     );
   }
@@ -489,8 +490,7 @@ class _MyHomePageState extends State<MyHomePage> {
     }
 
     setState(() {
-      final display =
-          _completionDisplayByInsertValue[tag.toLowerCase()] ?? tag;
+      final display = _completionDisplayByInsertValue[tag.toLowerCase()] ?? tag;
       _upsertSearchChip(SearchChip(label: display, queryValue: tag));
       _searchController.clear();
       _showSuggestions = false;
@@ -745,7 +745,6 @@ class _MyHomePageState extends State<MyHomePage> {
 
   AppBar _buildDefaultAppBar() {
     return AppBar(
-      backgroundColor: Theme.of(context).colorScheme.inversePrimary,
       title: Text(widget.title),
       actions: [
         IconButton(
@@ -847,9 +846,10 @@ class _MyHomePageState extends State<MyHomePage> {
                         padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
                         child: Text(
                           row,
-                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
                                 color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.w600,
+                                fontWeight: FontWeight.w500,
                               ),
                         ),
                       );
@@ -931,7 +931,7 @@ class _MyHomePageState extends State<MyHomePage> {
         child: TextFieldTapRegion(
           child: Material(
             color: Colors.transparent,
-            elevation: 6,
+            elevation: 0,
             borderRadius: BorderRadius.circular(12),
             child: _buildCompletionPanel(),
           ),
@@ -985,17 +985,33 @@ class _MyHomePageState extends State<MyHomePage> {
                       }).toList(),
                     ),
                   ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                    child: Row(
+                      children: [
+                        Text(
+                          '浏览作品',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const Spacer(),
+                        Text(
+                          '${_posts.length} 张作品',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
                   Expanded(
                     child: (_isLoading && _posts.isEmpty)
                         ? const Center(child: CircularProgressIndicator())
-                        : GridView.builder(
+                        : _posts.isEmpty
+                        ? const GalleryEmptyState(
+                            icon: Icons.image_outlined,
+                            title: '暂无结果',
+                            subtitle: '试试其他标签或筛选条件',
+                          )
+                        : GalleryGrid(
                             controller: _scrollController,
-                            gridDelegate:
-                                const SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: 3,
-                                  crossAxisSpacing: 4.0,
-                                  mainAxisSpacing: 4.0,
-                                ),
                             itemCount: _posts.length,
                             itemBuilder: (context, index) {
                               final post = _posts[index];
