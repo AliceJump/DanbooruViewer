@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
+import 'completion_service.dart';
 import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
 import 'main.dart';
@@ -20,6 +21,7 @@ class PostDetailPage extends StatefulWidget {
   final int initialIndex;
   final Map<String, String> completionDisplayByValue;
   final Map<String, int> completionCategoryByValue;
+  final CompletionService? completionService;
   final Future<bool> Function(int)? isFavoriteLookup;
   final VideoPlayerController Function(Uri)? videoControllerFactory;
 
@@ -29,6 +31,7 @@ class PostDetailPage extends StatefulWidget {
     required this.initialIndex,
     required this.completionDisplayByValue,
     this.completionCategoryByValue = const {},
+    this.completionService,
     this.isFavoriteLookup,
     this.videoControllerFactory,
   });
@@ -43,6 +46,7 @@ Future<Object?> openPostDetailPage({
   required int initialIndex,
   required Map<String, String> completionDisplayByValue,
   Map<String, int> completionCategoryByValue = const {},
+  CompletionService? completionService,
 }) {
   if (initialIndex >= 0 && initialIndex < posts.length) {
     final post = posts[initialIndex];
@@ -60,6 +64,7 @@ Future<Object?> openPostDetailPage({
         initialIndex: initialIndex,
         completionDisplayByValue: completionDisplayByValue,
         completionCategoryByValue: completionCategoryByValue,
+        completionService: completionService,
       ),
     ),
   );
@@ -74,6 +79,8 @@ class _PostDetailPageState extends State<PostDetailPage> {
   final Map<int, VideoPlayerController> _videoControllers = {};
   final Set<int> _initializingVideoIndices = {};
   bool _didChangeDependenciesRun = false;
+  final Map<String, CompletionTagInfo> _completionMetadata = {};
+  final Set<String> _requestedMetadata = {};
 
   final _favoritesManager = FavoritesManager();
   bool _isFavorite = false;
@@ -91,6 +98,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
     _pageController = PageController(initialPage: _currentIndex);
     _checkFavoriteStatus();
     _recordCurrentPostHistory();
+    _loadTagMetadata(_currentIndex);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       Future<void>.delayed(const Duration(milliseconds: 300), () {
@@ -101,6 +109,60 @@ class _PostDetailPageState extends State<PostDetailPage> {
         }
       });
     });
+  }
+
+  Future<void> _loadTagMetadata(int index) async {
+    final service = widget.completionService;
+    if (service == null || index < 0 || index >= widget.posts.length) return;
+    final post = widget.posts[index];
+    final tags = <String>{
+      for (final text in [
+        post.tagString,
+        post.tagStringGeneral,
+        post.tagStringArtist,
+        post.tagStringCharacter,
+        post.tagStringCopyright,
+        post.tagStringMeta,
+      ])
+        if (text != null)
+          ...text
+              .split(' ')
+              .where((tag) => tag.isNotEmpty)
+              .map((tag) => tag.toLowerCase()),
+    }.where((tag) => !_requestedMetadata.contains(tag)).toList();
+    if (tags.isEmpty) return;
+    _requestedMetadata.addAll(tags);
+    try {
+      final metadata = await service.lookup(tags);
+      if (!mounted) return;
+      setState(() => _completionMetadata.addAll(metadata));
+    } catch (e) {
+      _requestedMetadata.removeAll(tags);
+      debugPrint('Failed to load post tag labels: $e');
+    }
+  }
+
+  int? _categoryForTag(String tag) {
+    final key = tag.toLowerCase();
+    final metadataCategory =
+        _completionMetadata[key]?.category ??
+        widget.completionCategoryByValue[key];
+    if (metadataCategory != null) return metadataCategory;
+    final post = widget.posts[_currentIndex];
+    final groups = <int, String?>{
+      0: post.tagStringGeneral,
+      1: post.tagStringArtist,
+      3: post.tagStringCopyright,
+      4: post.tagStringCharacter,
+      5: post.tagStringMeta,
+    };
+    for (final group in groups.entries) {
+      if (group.value?.split(' ').any((value) => value.toLowerCase() == key) ??
+          false) {
+        return group.key;
+      }
+    }
+    return null;
   }
 
   Future<void> _checkFavoriteStatus() async {
@@ -222,6 +284,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
     _loadMediaForIndex(index, prioritizePreview: true);
     _checkFavoriteStatus();
     _recordCurrentPostHistory();
+    _loadTagMetadata(index);
   }
 
   Future<void> _recordCurrentPostHistory() async {
@@ -250,7 +313,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Future<void> _toggleFavoriteTag(String tag) async {
-    final category = widget.completionCategoryByValue[tag.toLowerCase()];
+    final category = _categoryForTag(tag);
     final newState = await _favoritesManager.toggleFavoriteTag(
       tag,
       category: category,
@@ -478,7 +541,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   String _displayLabelForTag(String tag) {
-    return widget.completionDisplayByValue[tag.toLowerCase()] ?? tag;
+    final key = tag.toLowerCase();
+    return _completionMetadata[key]?.label ??
+        widget.completionDisplayByValue[key] ??
+        tag;
   }
 
   void _showTagMenu(BuildContext context, String tag) {

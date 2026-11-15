@@ -12,6 +12,9 @@
 .swiftpm/
 migrate_working_dir/
 assets/danbooru_completion
+# Derived runtime assets; generate from the versioned source ZIP before build.
+/assets/danbooru_completion.index.zip
+/assets/danbooru_completion.bootstrap.json
 *.tmp
 # IntelliJ related
 *.iml

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'completion_service.dart';
 import 'favorites_manager.dart';
 import 'gallery_grid.dart';
 import 'media_utils.dart';
@@ -24,11 +25,13 @@ const List<int> _favCategoryOrder = [4, 1, 3, 0, 5];
 class FavoritesPage extends StatefulWidget {
   final Map<String, String> completionDisplayByValue;
   final Map<String, int> completionCategoryByValue;
+  final CompletionService? completionService;
 
   const FavoritesPage({
     super.key,
     this.completionDisplayByValue = const {},
     this.completionCategoryByValue = const {},
+    this.completionService,
   });
 
   @override
@@ -45,6 +48,9 @@ class _FavoritesPageState extends State<FavoritesPage>
   List<String> _favoriteTags = [];
   List<Map<String, dynamic>> _browsingHistory = [];
   bool _isLoading = true;
+  int _dataGeneration = 0;
+  final Map<String, CompletionTagInfo> _completionMetadata = {};
+  final Map<String, int> _storedCategoryByTag = {};
 
   // ============ 标签筛选状态 ============
   // 图片收藏页的筛选
@@ -121,7 +127,10 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   // ============ 补全显示标签 ============
   String _displayLabelForTag(String tag) {
-    return widget.completionDisplayByValue[tag.toLowerCase()] ?? tag;
+    final key = tag.toLowerCase();
+    return _completionMetadata[key]?.label ??
+        widget.completionDisplayByValue[key] ??
+        tag;
   }
 
   // ============ 提取 Posts 中所有唯一标签 ============
@@ -204,34 +213,72 @@ class _FavoritesPageState extends State<FavoritesPage>
   }
 
   Future<void> _loadData() async {
+    final generation = ++_dataGeneration;
     setState(() => _isLoading = true);
 
     final posts = await _favoritesManager.getFavoritePostsFull();
     final tagEntries = await _favoritesManager.getFavoriteTagEntries();
     final history = await _favoritesManager.getBrowsingHistory();
+    if (!mounted || generation != _dataGeneration) return;
 
-    // 用补全分类映射补全旧收藏标签的分类，并持久化（一次性迁移）。
     final tags = <String>[];
+    final storedCategories = <String, int>{};
     for (final entry in tagEntries) {
       final tag = entry['tag'] as String? ?? '';
       if (tag.isEmpty) continue;
       tags.add(tag);
-      final storedCat = entry['category'];
-      final mappedCat = widget.completionCategoryByValue[tag.toLowerCase()];
-      if (storedCat == null && mappedCat != null) {
-        await _favoritesManager.updateFavoriteTagCategory(tag, mappedCat);
-      }
+      final category = entry['category'];
+      if (category is int) storedCategories[tag.toLowerCase()] = category;
     }
 
-    if (mounted) {
-      setState(() {
-        _favoritePosts = posts;
-        _favoriteTags = tags;
-        _browsingHistory = history;
-        _isLoading = false;
-      });
+    setState(() {
+      _favoritePosts = posts;
+      _favoriteTags = tags;
+      _browsingHistory = history;
+      _storedCategoryByTag
+        ..clear()
+        ..addAll(storedCategories);
       _extractAllTags();
-      _loadTagPreviews();
+      _isLoading = false;
+    });
+    // Local favorites render immediately; only their own metadata is fetched.
+    _loadCompletionMetadata(generation, tagEntries);
+    _loadTagPreviews();
+  }
+
+  Future<void> _loadCompletionMetadata(
+    int generation,
+    List<Map<String, dynamic>> favoriteEntries,
+  ) async {
+    final tags = <String>{
+      ..._favoriteTags,
+      ..._allFavTags,
+      ..._allHistTags,
+    }.map((tag) => tag.toLowerCase()).toSet().toList();
+    try {
+      final service = widget.completionService;
+      if (service != null) {
+        // Bound individual replies even for a large local favorites/history set.
+        for (var start = 0; start < tags.length; start += 256) {
+          final end = start + 256 < tags.length ? start + 256 : tags.length;
+          final metadata = await service.lookup(tags.sublist(start, end));
+          if (!mounted || generation != _dataGeneration) return;
+          setState(() => _completionMetadata.addAll(metadata));
+        }
+      }
+      // Migrate old favorite categories only after lookup has supplied metadata.
+      for (final entry in favoriteEntries) {
+        if (!mounted || generation != _dataGeneration) return;
+        final tag = entry['tag'] as String? ?? '';
+        if (tag.isEmpty || entry['category'] != null) continue;
+        final category = _categoryForTag(tag);
+        if (category == null) continue;
+        await _favoritesManager.updateFavoriteTagCategory(tag, category);
+        if (!mounted || generation != _dataGeneration) return;
+        _storedCategoryByTag[tag.toLowerCase()] = category;
+      }
+    } catch (e) {
+      debugPrint('Failed to load favorite tag metadata: $e');
     }
   }
 
@@ -315,7 +362,10 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   /// 解析标签的分类：优先用补全映射，其次用收藏条目里持久化的分类。
   int? _categoryForTag(String tag) {
-    return widget.completionCategoryByValue[tag.toLowerCase()];
+    final key = tag.toLowerCase();
+    return _completionMetadata[key]?.category ??
+        widget.completionCategoryByValue[key] ??
+        _storedCategoryByTag[key];
   }
 
   List<String> _getFilteredTags() {
@@ -327,7 +377,9 @@ class _FavoritesPageState extends State<FavoritesPage>
         return false;
       }
       // 文本过滤
-      if (query.isNotEmpty && !tag.toLowerCase().contains(query)) {
+      if (query.isNotEmpty &&
+          !tag.toLowerCase().contains(query) &&
+          !_displayLabelForTag(tag).toLowerCase().contains(query)) {
         return false;
       }
       return true;
@@ -435,6 +487,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       initialIndex: index,
       completionDisplayByValue: widget.completionDisplayByValue,
       completionCategoryByValue: widget.completionCategoryByValue,
+      completionService: widget.completionService,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
@@ -448,6 +501,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       initialIndex: index,
       completionDisplayByValue: widget.completionDisplayByValue,
       completionCategoryByValue: widget.completionCategoryByValue,
+      completionService: widget.completionService,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
@@ -697,7 +751,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
-                                      tag,
+                                      _displayLabelForTag(tag),
                                       style: const TextStyle(
                                         fontSize: 15,
                                         fontWeight: FontWeight.w500,

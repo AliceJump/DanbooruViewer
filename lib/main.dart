@@ -1,10 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:archive/archive.dart';
 import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/post_detail_page.dart';
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
@@ -12,9 +11,12 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import 'app_theme.dart';
+import 'completion_service.dart';
 import 'gallery_grid.dart';
 import 'media_utils.dart';
 import 'ugoira_utils.dart';
+
+export 'completion_models.dart' show SearchCompletionSuggestion;
 
 void main() {
   runApp(const MyApp());
@@ -92,37 +94,6 @@ class Post {
   }
 }
 
-class SearchCompletionSuggestion {
-  final String value;
-  final String insertValue;
-  final String source;
-  final int score;
-  final int? category;
-
-  SearchCompletionSuggestion({
-    required this.value,
-    required this.insertValue,
-    required this.source,
-    required this.score,
-    this.category,
-  });
-
-  factory SearchCompletionSuggestion.fromJson(Map<String, dynamic> json) {
-    return SearchCompletionSuggestion(
-      value: json['value'] as String? ?? json['v'] as String? ?? '',
-      insertValue:
-          json['insert_value'] as String? ??
-          json['i'] as String? ??
-          json['value'] as String? ??
-          json['v'] as String? ??
-          '',
-      source: json['source'] as String? ?? json['s'] as String? ?? '',
-      score: json['score'] as int? ?? json['r'] as int? ?? 0,
-      category: json['category'] as int? ?? json['c'] as int?,
-    );
-  }
-}
-
 /// Danbooru tag category display names (0=general, 1=artist, 3=copyright,
 /// 4=character, 5=meta).
 const Map<int, String> _categoryNames = {
@@ -135,88 +106,6 @@ const Map<int, String> _categoryNames = {
 
 /// Preferred display order for category groups.
 const List<int> _categoryOrder = [4, 1, 3, 0, 5];
-
-/// 构建 insert_value -> 显示名 / 分类 的映射（后台 isolate 使用，纯计算）。
-/// 返回 (显示名映射, 分类映射)。
-(Map<String, String>, Map<String, int>) _buildCompletionMaps(
-  List<(String, String, String, int, int?)> records,
-) {
-  final display = <String, String>{};
-  final category = <String, int>{};
-  for (final r in records) {
-    final key = r.$2.toLowerCase();
-    final label = r.$1.trim();
-    if (key.isEmpty || label.isEmpty) continue;
-    final existing = display[key];
-    if (existing == null ||
-        (!_containsNonEnglish(existing) && _containsNonEnglish(label))) {
-      display[key] = label;
-    }
-    final cat = r.$5;
-    if (cat != null) {
-      category.putIfAbsent(key, () => cat);
-    }
-  }
-  return (display, category);
-}
-
-bool _containsNonEnglish(String value) {
-  return value.runes.any((rune) => rune > 0x7f);
-}
-
-/// 在后台 isolate 中完成 zip 的加载/解码/JSON 解析与映射构建，避免阻塞首帧。
-/// 返回 (候选列表, 显示名映射, 分类映射)。
-(List<SearchCompletionSuggestion>, Map<String, String>, Map<String, int>)
-_loadCompletionData(Uint8List bytes) {
-  final archive = ZipDecoder().decodeBytes(bytes);
-  final jsonFiles =
-      archive.files
-          .where((file) => file.isFile && file.name.endsWith('.json'))
-          .toList()
-        ..sort((a, b) => a.name.compareTo(b.name));
-  final suggestionsByValue = <String, SearchCompletionSuggestion>{};
-
-  for (final file in jsonFiles) {
-    try {
-      final content = utf8.decode(file.content as List<int>);
-      final payload = json.decode(content);
-      final candidateJson = payload is List<dynamic>
-          ? payload
-          : payload is Map<String, dynamic>
-          ? payload['completion_candidates'] as List<dynamic>? ?? []
-          : const <dynamic>[];
-      final candidates = candidateJson
-          .whereType<Map<String, dynamic>>()
-          .map(SearchCompletionSuggestion.fromJson)
-          .where(
-            (item) =>
-                item.value.trim().isNotEmpty &&
-                item.insertValue.trim().isNotEmpty,
-          );
-
-      for (final candidate in candidates) {
-        final key =
-            '${candidate.value.toLowerCase()}\u0000${candidate.insertValue.toLowerCase()}';
-        final existing = suggestionsByValue[key];
-        if (existing == null || candidate.score > existing.score) {
-          suggestionsByValue[key] = candidate;
-        }
-      }
-    } catch (e) {
-      debugPrint('Skipped completion asset ${file.name}: $e');
-    }
-  }
-
-  final candidates = suggestionsByValue.values.toList()
-    ..sort((a, b) => b.score.compareTo(a.score));
-
-  final records = candidates
-      .map((c) => (c.value, c.insertValue, c.source, c.score, c.category))
-      .toList();
-
-  final maps = _buildCompletionMaps(records);
-  return (candidates, maps.$1, maps.$2);
-}
 
 class _SearchToken {
   final String value;
@@ -233,7 +122,9 @@ class SearchChip {
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  const MyApp({super.key, this.completionService});
+
+  final CompletionService? completionService;
 
   @override
   Widget build(BuildContext context) {
@@ -242,16 +133,28 @@ class MyApp extends StatelessWidget {
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
       themeMode: ThemeMode.system,
-      home: const MyHomePage(title: 'Danbooru Viewer'),
+      home: MyHomePage(
+        title: 'Danbooru Viewer',
+        completionService: completionService,
+      ),
     );
   }
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title, this.fetchPosts});
+  const MyHomePage({
+    super.key,
+    required this.title,
+    this.fetchPosts,
+    this.completionService,
+  });
 
   final String title;
   final Future<http.Response> Function(Uri)? fetchPosts;
+
+  /// This page owns and disposes the supplied service, including test services.
+  /// Child routes share it without taking ownership.
+  final CompletionService? completionService;
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
@@ -264,14 +167,21 @@ class _MyHomePageState extends State<MyHomePage> {
   final LayerLink _searchLayerLink = LayerLink();
   List<Post> _posts = [];
   List<SearchCompletionSuggestion> _visibleSuggestions = [];
-  List<SearchCompletionSuggestion> _completionSuggestions = [];
+  late final CompletionService _completionService;
+  List<SearchCompletionSuggestion> _bootstrapSuggestions = [];
+  Timer? _completionDebounce;
+  int _completionGeneration = 0;
+  String? _lastCompletionQuery;
+  bool _isQueryPending = false;
+  bool _updatingSearchText = false;
   final Map<String, String> _completionDisplayByInsertValue = {};
   final Map<String, int> _completionCategoryByInsertValue = {};
   final List<SearchChip> _searchChips = [];
   bool _isLoading = false;
   bool _isCompletionLoading = true;
   bool _showSuggestions = false;
-  String? _completionLoadError;
+  String? _bootstrapLoadError;
+  String? _completionQueryError;
   int _page = 1;
   int _requestGeneration = 0;
   bool _hasMorePosts = true;
@@ -290,6 +200,7 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void initState() {
     super.initState();
+    _completionService = widget.completionService ?? IndexedCompletionService();
     _searchController.addListener(_refreshCompletionSuggestions);
     _searchFocusNode.addListener(_handleSearchFocusChanged);
     _scrollController.addListener(() {
@@ -307,6 +218,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   void dispose() {
+    _cancelCompletionQuery();
+    unawaited(_disposeCompletionService());
     _searchController.removeListener(_refreshCompletionSuggestions);
     _searchFocusNode.removeListener(_handleSearchFocusChanged);
     _searchController.dispose();
@@ -315,121 +228,155 @@ class _MyHomePageState extends State<MyHomePage> {
     super.dispose();
   }
 
+  Future<void> _disposeCompletionService() async {
+    try {
+      await _completionService.dispose();
+    } catch (e) {
+      debugPrint('Failed to dispose completion service: $e');
+    }
+  }
+
   Future<void> _loadCompletionSuggestions() async {
     try {
-      // 补全数据以 zip 打包。整个加载/解码/解析/建映射都在后台 isolate
-      // 完成，避免阻塞 UI 首帧渲染。
-      final bytes = await rootBundle.load('assets/danbooru_completion.zip');
-      final result = await compute(
-        _loadCompletionData,
-        bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
-      );
-      final candidates = result.$1;
-      final maps = (result.$2, result.$3);
+      final candidates = await _completionService.bootstrap();
       if (!mounted) return;
       setState(() {
-        _completionSuggestions = candidates;
-        _completionDisplayByInsertValue
-          ..clear()
-          ..addAll(maps.$1);
-        _completionCategoryByInsertValue
-          ..clear()
-          ..addAll(maps.$2);
+        _bootstrapSuggestions = candidates;
         _isCompletionLoading = false;
-        _completionLoadError = candidates.isEmpty
-            ? '未读取到 danbooru_completion 补全数据'
-            : null;
+        _bootstrapLoadError = candidates.isEmpty ? '没有可用的标签建议' : null;
+        if (_currentSearchToken().value.isEmpty) {
+          _visibleSuggestions = candidates;
+        }
       });
-      _refreshCompletionSuggestions();
     } catch (e) {
-      debugPrint('Failed to load completion suggestions: $e');
+      debugPrint('Failed to load completion bootstrap: $e');
       if (!mounted) return;
       setState(() {
         _isCompletionLoading = false;
-        _visibleSuggestions = [];
-        _showSuggestions = false;
-        _completionLoadError = '补全资源加载失败: $e';
+        _bootstrapLoadError = '标签建议暂不可用，仍可直接搜索';
       });
     }
+  }
+
+  void _cancelCompletionQuery() {
+    _completionDebounce?.cancel();
+    _completionDebounce = null;
+    _completionGeneration++;
+    _lastCompletionQuery = null;
   }
 
   void _handleSearchFocusChanged() {
     if (!mounted) return;
     if (_searchFocusNode.hasFocus) {
       _refreshCompletionSuggestions();
-      return;
+    } else {
+      _cancelCompletionQuery();
+      setState(() {
+        _showSuggestions = false;
+        _isQueryPending = false;
+      });
     }
-
-    setState(() {
-      _showSuggestions = false;
-    });
   }
 
   void _refreshCompletionSuggestions() {
-    if (!mounted || _isCompletionLoading) {
-      if (_searchFocusNode.hasFocus) {
-        setState(() {
-          _showSuggestions = true;
-        });
-      }
-      return;
-    }
-
-    final token = _currentSearchToken();
-    final query = token.value.toLowerCase();
-    final matches = _filterCompletionSuggestions(query);
-
+    if (!mounted || _updatingSearchText || !_searchFocusNode.hasFocus) return;
+    final query = _currentSearchToken().value.toLowerCase();
+    // Selection/composing notifications with the same token need no new query.
+    if (query == _lastCompletionQuery) return;
+    _completionDebounce?.cancel();
+    final generation = ++_completionGeneration;
+    _lastCompletionQuery = query;
     setState(() {
-      _visibleSuggestions = matches;
-      _showSuggestions = _searchFocusNode.hasFocus;
+      _showSuggestions = true;
+      _isQueryPending = query.isNotEmpty;
+      if (query.isEmpty) {
+        _visibleSuggestions = _bootstrapSuggestions;
+      } else {
+        _completionQueryError = null;
+        // Retain only useful previous results while the indexed query runs.
+        _visibleSuggestions = _visibleSuggestions.where((item) {
+          return item.value.toLowerCase().contains(query) ||
+              item.insertValue.toLowerCase().contains(query);
+        }).toList();
+      }
+    });
+    if (query.isEmpty) return;
+    _completionDebounce = Timer(const Duration(milliseconds: 120), () {
+      _completionDebounce = null;
+      unawaited(_runCompletionSearch(query, generation));
     });
   }
 
-  /// 内存候选过滤（zip 补全数据）。空查询取分数最高的前 10 个；
-  /// 否则做字串序列匹配排序：匹配位置越靠前越优先，位置相同按 score 降序。
-  List<SearchCompletionSuggestion> _filterCompletionSuggestions(String query) {
-    if (query.isEmpty) {
-      return _completionSuggestions.take(10).toList();
-    }
-    final best = <(int, SearchCompletionSuggestion)>[];
-    for (final item in _completionSuggestions) {
-      final pos = _matchPosition(item, query);
-      if (pos < 0) continue;
-      final entry = (pos, item);
-      var insertAt = best.length;
-      for (var i = 0; i < best.length; i++) {
-        if (_compareCompletionEntry(entry, best[i]) < 0) {
-          insertAt = i;
-          break;
-        }
+  Future<void> _runCompletionSearch(String query, int generation) async {
+    try {
+      final matches = await _completionService.search(query, limit: 10);
+      if (!mounted ||
+          generation != _completionGeneration ||
+          !_searchFocusNode.hasFocus) {
+        return;
       }
-      if (insertAt < 10) {
-        best.insert(insertAt, entry);
-        if (best.length > 10) {
-          best.removeLast();
-        }
+      setState(() {
+        _visibleSuggestions = matches;
+        _isQueryPending = false;
+      });
+    } catch (e) {
+      if (!mounted ||
+          generation != _completionGeneration ||
+          !_searchFocusNode.hasFocus) {
+        return;
       }
+      debugPrint('Failed to query completion index: $e');
+      setState(() {
+        _isQueryPending = false;
+        _completionQueryError = '标签建议暂不可用，仍可直接搜索';
+      });
     }
-    return best.map((e) => e.$2).toList();
   }
 
-  /// 返回 query 在候选中最早出现的位置（value 与 insertValue 取较前者），
-  /// 两者都未匹配返回 -1。位置 0 表示前缀匹配，优先级最高。
-  int _matchPosition(SearchCompletionSuggestion item, String query) {
-    final valuePos = item.value.toLowerCase().indexOf(query);
-    final insertPos = item.insertValue.toLowerCase().indexOf(query);
-    if (valuePos == -1) return insertPos;
-    if (insertPos == -1) return valuePos;
-    return valuePos < insertPos ? valuePos : insertPos;
+  void _setSearchInput(String text) {
+    _updatingSearchText = true;
+    try {
+      _searchController.value = TextEditingValue(
+        text: text,
+        selection: TextSelection.collapsed(offset: text.length),
+      );
+    } finally {
+      _updatingSearchText = false;
+    }
   }
 
-  /// 比较两个 (位置, 候选)：位置升序，位置相同按 score 降序。
-  int _compareCompletionEntry(
-    (int, SearchCompletionSuggestion) a,
-    (int, SearchCompletionSuggestion) b,
-  ) {
-    final byPos = a.$1.compareTo(b.$1);
-    return byPos != 0 ? byPos : b.$2.score.compareTo(a.$2.score);
+  void _rememberCompletionMetadata(Map<String, CompletionTagInfo> metadata) {
+    for (final entry in metadata.entries) {
+      final key = entry.key.toLowerCase();
+      _completionDisplayByInsertValue[key] = entry.value.label;
+      final category = entry.value.category;
+      if (category != null) _completionCategoryByInsertValue[key] = category;
+    }
+    // Only labels encountered in this session enter the UI isolate.
+    while (_completionDisplayByInsertValue.length > 512) {
+      final key = _completionDisplayByInsertValue.keys.first;
+      _completionDisplayByInsertValue.remove(key);
+      _completionCategoryByInsertValue.remove(key);
+    }
+  }
+
+  Future<void> _resolveChipLabel(SearchChip chip) async {
+    try {
+      final metadata = await _completionService.lookup([chip.queryValue]);
+      if (!mounted) return;
+      _rememberCompletionMetadata(metadata);
+      final index = _searchChips.indexWhere((item) => identical(item, chip));
+      final label = metadata[chip.queryValue.toLowerCase()]?.label;
+      if (index < 0 || label == null || label == chip.label) return;
+      setState(() {
+        _searchChips[index] = SearchChip(
+          label: label,
+          queryValue: chip.queryValue,
+        );
+      });
+    } catch (e) {
+      debugPrint('Failed to resolve search tag label: $e');
+    }
   }
 
   _SearchToken _currentSearchToken() {
@@ -449,15 +396,14 @@ class _MyHomePageState extends State<MyHomePage> {
     final suffix = text.substring(end);
     final remainingText = '$prefix$suffix'.trim();
 
+    _cancelCompletionQuery();
     setState(() {
       _upsertSearchChip(
         SearchChip(label: suggestion.value, queryValue: suggestion.insertValue),
       );
-      _searchController.value = TextEditingValue(
-        text: remainingText,
-        selection: TextSelection.collapsed(offset: remainingText.length),
-      );
+      _setSearchInput(remainingText);
       _showSuggestions = false;
+      _isQueryPending = false;
     });
     _fetchPosts();
   }
@@ -470,12 +416,16 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _addSearchChip(String label, String queryValue) {
+    _cancelCompletionQuery();
+    final chip = SearchChip(label: label, queryValue: queryValue);
     setState(() {
-      _upsertSearchChip(SearchChip(label: label, queryValue: queryValue));
-      _searchController.clear();
+      _upsertSearchChip(chip);
+      _setSearchInput('');
       _showSuggestions = false;
+      _isQueryPending = false;
     });
     _fetchPosts();
+    unawaited(_resolveChipLabel(chip));
   }
 
   /// 回车时把输入框中的文本当作一个整体标签加入搜索。
@@ -483,19 +433,16 @@ class _MyHomePageState extends State<MyHomePage> {
   /// 空格不做特殊处理：整行（去除首尾空白后）作为一个标签 chip，
   /// 不按空格拆分。若命中补全数据则 chip 显示中文名，查询词仍用原文。
   void _submitSearchText(String text) {
+    _cancelCompletionQuery();
     final tag = text.trim();
     if (tag.isEmpty) {
       _fetchPosts();
       return;
     }
-
-    setState(() {
-      final display = _completionDisplayByInsertValue[tag.toLowerCase()] ?? tag;
-      _upsertSearchChip(SearchChip(label: display, queryValue: tag));
-      _searchController.clear();
-      _showSuggestions = false;
-    });
-    _fetchPosts();
+    _addSearchChip(
+      _completionDisplayByInsertValue[tag.toLowerCase()] ?? tag,
+      tag,
+    );
   }
 
   void _upsertSearchChip(SearchChip chip) {
@@ -738,6 +685,7 @@ class _MyHomePageState extends State<MyHomePage> {
       initialIndex: index,
       completionDisplayByValue: _completionDisplayByInsertValue,
       completionCategoryByValue: _completionCategoryByInsertValue,
+      completionService: _completionService,
     );
 
     _handleSearchResult(result);
@@ -756,6 +704,7 @@ class _MyHomePageState extends State<MyHomePage> {
                 builder: (context) => FavoritesPage(
                   completionDisplayByValue: _completionDisplayByInsertValue,
                   completionCategoryByValue: _completionCategoryByInsertValue,
+                  completionService: _completionService,
                 ),
               ),
             );
@@ -809,10 +758,16 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Widget _buildCompletionPanel() {
-    final statusText = _isCompletionLoading
-        ? '正在加载补全数据...'
-        : _completionLoadError ??
-              (_visibleSuggestions.isEmpty ? '没有匹配的补全建议' : null);
+    final isEmptyQuery = _currentSearchToken().value.isEmpty;
+    final isWaiting = _isQueryPending || (_isCompletionLoading && isEmptyQuery);
+    final errorText = isEmptyQuery
+        ? _bootstrapLoadError
+        : _completionQueryError;
+    final statusText = _visibleSuggestions.isNotEmpty
+        ? null
+        : isWaiting
+        ? '正在查找标签建议...'
+        : errorText ?? '没有匹配的补全建议';
 
     return Container(
       constraints: const BoxConstraints(maxHeight: 220),

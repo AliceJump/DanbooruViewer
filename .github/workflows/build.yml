@@ -40,6 +40,13 @@ jobs:
         with:
           lfs: true
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build completion search assets
+        run: python scripts/build_completion_index.py
+
       # 🔍 调试信息
       - name: Debug - Print cache info
         run: |

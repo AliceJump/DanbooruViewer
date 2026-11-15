@@ -23,12 +23,22 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build completion search assets
+        run: python scripts/build_completion_index.py
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
       - run: flutter pub get
+
+      - name: Test completion index generator
+        run: python -m unittest discover -s tests -p 'test_completion_index.py'
 
       - name: Check formatting of changed Dart files
         shell: bash
@@ -66,6 +76,13 @@ jobs:
         with:
           lfs: true
           persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build completion search assets
+        run: python scripts/build_completion_index.py
 
       - uses: subosito/flutter-action@v2
         with:
@@ -169,6 +186,13 @@ jobs:
         with:
           lfs: true
           persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build completion search assets
+        run: python scripts/build_completion_index.py
 
       - uses: subosito/flutter-action@v2
         with:
