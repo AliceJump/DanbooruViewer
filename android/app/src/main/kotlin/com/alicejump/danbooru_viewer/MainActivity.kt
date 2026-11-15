@@ -45,8 +45,6 @@ class MainActivity : FlutterActivity() {
             val view = window.decorView.findViewById<View>(android.R.id.content)
                 ?: window.decorView
             DragHelper.startImageDrag(view, path, type)
-
-            true
         } catch (e: Exception) {
             e.printStackTrace()
             false

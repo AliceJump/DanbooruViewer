@@ -34,8 +34,10 @@ class Post {
   factory Post.fromJson(Map<String, dynamic> json) {
     return Post(
       id: json['id'],
-      rating: json['rating'],
-      tagString: json['tag_string'],
+      // Older local records can contain only an ID. Keep them accessible
+      // without inventing a rating or discarding the user's collection.
+      rating: json['rating'] as String? ?? '',
+      tagString: json['tag_string'] as String? ?? '',
       fileUrl: json['file_url'],
       largeFileUrl: json['large_file_url'],
       previewFileUrl: json['preview_file_url'],
@@ -48,5 +50,24 @@ class Post {
       imageWidth: json['image_width'],
       imageHeight: json['image_height'],
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'rating': rating,
+      'tag_string': tagString,
+      'file_url': fileUrl,
+      'large_file_url': largeFileUrl,
+      'preview_file_url': previewFileUrl,
+      'tag_string_general': tagStringGeneral,
+      'tag_string_artist': tagStringArtist,
+      'tag_string_character': tagStringCharacter,
+      'tag_string_copyright': tagStringCopyright,
+      'tag_string_meta': tagStringMeta,
+      'source': source,
+      'image_width': imageWidth,
+      'image_height': imageHeight,
+    };
   }
 }

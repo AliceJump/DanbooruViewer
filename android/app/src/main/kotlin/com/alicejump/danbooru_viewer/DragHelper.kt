@@ -18,13 +18,13 @@ import kotlin.math.roundToInt
 
 object DragHelper {
 
-    fun startImageDrag(view: View, path: String, type: String) {
+    fun startImageDrag(view: View, path: String, type: String): Boolean {
         val context = view.context
         val imageFile = File(path)
 
         if (!imageFile.exists()) {
             Toast.makeText(context, "图片文件不存在，无法拖拽", Toast.LENGTH_SHORT).show()
-            return
+            return false
         }
 
         val uri = FileProvider.getUriForFile(
@@ -43,7 +43,7 @@ object DragHelper {
 
         val shadowBuilder = createDragShadowBuilder(view, path, type)
 
-        ViewCompat.startDragAndDrop(
+        return ViewCompat.startDragAndDrop(
             view,
             clipData,
             shadowBuilder,
@@ -83,12 +83,14 @@ object DragHelper {
                     return View.DragShadowBuilder(view)
                 }
 
-                val targetEdge = minOf(maxShadowWidth, maxShadowHeight).toFloat()
-                val smallestSourceEdge = minOf(srcWidth, srcHeight).toFloat()
-                val sampleSize = if (smallestSourceEdge <= targetEdge) {
-                    1
-                } else {
-                    (smallestSourceEdge / targetEdge).roundToInt().coerceAtLeast(1)
+                // Bound both dimensions before decoding, including tall strips.
+                val ratio = maxOf(
+                    srcWidth / maxShadowWidth.toFloat(),
+                    srcHeight / maxShadowHeight.toFloat(),
+                )
+                var sampleSize = 1
+                while (sampleSize < ratio && sampleSize <= Int.MAX_VALUE / 2) {
+                    sampleSize *= 2
                 }
 
                 val newOptions = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
@@ -108,6 +110,7 @@ object DragHelper {
                 val scaledHeight = (height * scale).roundToInt().coerceAtLeast(1)
 
                 val scaledBitmap = Bitmap.createScaledBitmap(bitmap, scaledWidth, scaledHeight, true)
+                if (scaledBitmap !== bitmap) bitmap.recycle()
                 val drawable = BitmapDrawable(context.resources, scaledBitmap)
 
                 return object : View.DragShadowBuilder(view) {

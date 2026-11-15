@@ -10,12 +10,15 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:image/image.dart' as img;
-import 'package:path_provider/path_provider.dart';
+
+import 'network/app_cache_manager.dart';
 
 /// frame_data.json 缺失时使用的默认帧时长（毫秒）。
 const int _defaultFrameDelayMs = 60;
+const int maxUgoiraZipBytes = 64 * 1024 * 1024;
+const int _maxUncompressedBytes = 256 * 1024 * 1024;
+const int _maxAnimationPixels = 64 * 1024 * 1024;
 final Map<String, Future<File>> _pendingGifConversions = {};
 
 /// 判断 URL 是否是 ugoira 动画压缩包（.zip）。
@@ -25,55 +28,55 @@ bool isUgoiraUrl(String? url) {
   return lower.endsWith('.zip');
 }
 
-Future<Directory> _cacheDir() async {
-  final temp = await getTemporaryDirectory();
-  final dir = Directory(
-    '${temp.path}${Platform.pathSeparator}ugoira_gif_cache',
-  );
-  if (!await dir.exists()) {
-    await dir.create(recursive: true);
-  }
-  return dir;
-}
-
 @visibleForTesting
 String ugoiraGifCacheFileName(String url) {
   final hash = sha256.convert(utf8.encode(url));
   return 'ugoira_$hash.gif';
 }
 
-Future<File> _cachedGifFile(String url) async {
-  final dir = await _cacheDir();
-  return File(
-    '${dir.path}${Platform.pathSeparator}${ugoiraGifCacheFileName(url)}',
-  );
-}
-
 /// 仅返回已缓存的 ugoira GIF 文件；未处理过时返回 null（不会触发处理）。
 Future<File?> getCachedUgoiraGifFile(String zipUrl) async {
-  final cached = await _cachedGifFile(zipUrl);
-  if (await cached.exists() && await cached.length() > 0) return cached;
+  final cached = await AppCacheManager.instance.getFileFromCache(
+    ugoiraGifCacheFileName(zipUrl),
+  );
+  if (cached != null && await cached.file.length() > 0) return cached.file;
   return null;
 }
 
 /// 下载 ugoira zip 并合并为 GIF，结果缓存到临时目录。
 /// 已缓存时直接返回，避免重复处理。
 Future<File> getUgoiraGifFile(String zipUrl, {int retries = 2}) async {
-  final cached = await _cachedGifFile(zipUrl);
-  return cacheUgoiraGifFile(cached, () async {
-    var attempt = 0;
-    late File zipFile;
-    while (true) {
-      try {
-        zipFile = await DefaultCacheManager().getSingleFile(zipUrl);
-        break;
-      } catch (_) {
-        if (attempt++ >= retries) rethrow;
-        await Future<void>.delayed(Duration(milliseconds: 300 * attempt));
-      }
-    }
-    return compute(mergeUgoiraToGifSync, zipFile.path);
-  });
+  final key = ugoiraGifCacheFileName(zipUrl);
+  final existing = _pendingGifConversions[key];
+  if (existing != null) return existing;
+  late Future<File> conversion;
+  conversion =
+      (() async {
+        final cached = await getCachedUgoiraGifFile(zipUrl);
+        if (cached != null) return cached;
+        final zip = await AppCacheManager.instance.getSingleFile(zipUrl);
+        if (await zip.length() > maxUgoiraZipBytes) {
+          throw const FormatException('动图压缩包过大，请打开原链接查看。');
+        }
+        final bytes = await compute(
+          mergeUgoiraBytesToGifSync,
+          await zip.readAsBytes(),
+        );
+        // The shared cache bounds and expires converted GIFs on native and Web.
+        return AppCacheManager.instance.putFile(
+          zipUrl,
+          bytes,
+          key: key,
+          fileExtension: 'gif',
+          maxAge: const Duration(days: 30),
+        );
+      })().whenComplete(() {
+        if (identical(_pendingGifConversions[key], conversion)) {
+          _pendingGifConversions.remove(key);
+        }
+      });
+  _pendingGifConversions[key] = conversion;
+  return conversion;
 }
 
 @visibleForTesting
@@ -132,18 +135,28 @@ Future<void> ensureUgoiraGifCached(String zipUrl) async {
 
 /// 后台 isolate 顶层函数：读取 zip 文件，按帧顺序/时长合并成 GIF 字节。
 Uint8List mergeUgoiraToGifSync(String zipPath) {
-  final bytes = File(zipPath).readAsBytesSync();
+  return mergeUgoiraBytesToGifSync(File(zipPath).readAsBytesSync());
+}
+
+/// Byte input works with the native file cache and the browser memory cache.
+Uint8List mergeUgoiraBytesToGifSync(Uint8List bytes) {
+  if (bytes.length > maxUgoiraZipBytes) {
+    throw const FormatException('动图压缩包过大，请打开原链接查看。');
+  }
   final archive = ZipDecoder().decodeBytes(bytes);
   final files = archive.files.where((f) => f.isFile).toList();
+  if (files.length > 502 ||
+      files.fold<int>(0, (total, file) => total + file.size) >
+          _maxUncompressedBytes) {
+    throw const FormatException('动图帧数或解压大小超出限制，请打开原链接查看。');
+  }
 
   final frameDelays = <String, int>{};
   final orderedNames = <String>[];
 
   for (final metaName in ['frame_data.json', 'motion.json']) {
     final metaFile = files
-        .where(
-          (f) => f.name.toLowerCase() == metaName,
-        )
+        .where((f) => f.name.toLowerCase() == metaName)
         .firstOrNull;
     if (metaFile == null) continue;
     try {
@@ -167,16 +180,14 @@ Uint8List mergeUgoiraToGifSync(String zipPath) {
     }
   }
 
-  final imageFiles = files
-      .where((f) {
-        final n = f.name.toLowerCase();
-        return n.endsWith('.png') ||
-            n.endsWith('.jpg') ||
-            n.endsWith('.jpeg') ||
-            n.endsWith('.webp') ||
-            n.endsWith('.bmp');
-      })
-      .toList();
+  final imageFiles = files.where((f) {
+    final n = f.name.toLowerCase();
+    return n.endsWith('.png') ||
+        n.endsWith('.jpg') ||
+        n.endsWith('.jpeg') ||
+        n.endsWith('.webp') ||
+        n.endsWith('.bmp');
+  }).toList();
 
   if (imageFiles.isEmpty) {
     throw Exception('ugoira zip 中未找到帧图片');
@@ -192,8 +203,18 @@ Uint8List mergeUgoiraToGifSync(String zipPath) {
   });
 
   final encoder = img.GifEncoder(repeat: 0);
+  var totalPixels = 0;
   for (final file in imageFiles) {
-    final frame = img.decodeImage(file.content);
+    final data = file.content;
+    final decoder = img.findDecoderForData(data);
+    final info = decoder?.startDecode(data);
+    if (info == null) continue;
+    final pixels = info.width * info.height;
+    totalPixels += pixels;
+    if (pixels > 16 * 1024 * 1024 || totalPixels > _maxAnimationPixels) {
+      throw const FormatException('动图解码尺寸过大，请打开原链接查看。');
+    }
+    final frame = decoder!.decodeFrame(0);
     if (frame == null) continue;
     final delayMs = frameDelays[file.name] ?? _defaultFrameDelayMs;
     // GifEncoder 的 duration 单位为 1/100 秒。
@@ -213,9 +234,7 @@ int _naturalCompare(String a, String b) {
   final re = RegExp(r'(\d+)|(\D+)');
   final partsA = re.allMatches(a).map((m) => m.group(0)!).toList();
   final partsB = re.allMatches(b).map((m) => m.group(0)!).toList();
-  final len = partsA.length < partsB.length
-      ? partsA.length
-      : partsB.length;
+  final len = partsA.length < partsB.length ? partsA.length : partsB.length;
   for (var i = 0; i < len; i++) {
     final sa = partsA[i];
     final sb = partsB[i];

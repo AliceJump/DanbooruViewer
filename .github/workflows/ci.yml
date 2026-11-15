@@ -75,6 +75,9 @@ jobs:
       - run: flutter analyze --no-fatal-infos
       - run: flutter test
 
+      - name: Verify browser media cache and animation rendering
+        run: flutter test --platform chrome test/media_web_test.dart
+
   build-android-release:
     name: Build signed Android release
     if: >-
