@@ -5,12 +5,15 @@ from pathlib import Path
 import sys
 import unittest
 from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from prepare_release import (  # noqa: E402
     GitHubReader,
+    MAX_RELEASE_PAGES,
+    RELEASE_PAGE_SIZE,
     ReleaseError,
     parse_version,
     resolve_tag,
@@ -43,7 +46,7 @@ class FakeGitHub:
             }
         ]
         self.ref = None
-        self.release = None
+        self.release_pages = {1: []}
         self.tag_objects = {}
         self.calls = []
 
@@ -57,8 +60,11 @@ class FakeGitHub:
             return deepcopy(self.ref)
         if path.startswith("/git/tags/"):
             return deepcopy(self.tag_objects[path.rsplit("/", 1)[-1]])
-        if path == f"/releases/tags/{TAG}":
-            return deepcopy(self.release)
+        if path.startswith("/releases?"):
+            query = parse_qs(urlsplit(path).query)
+            if query.get("per_page") != ["100"]:
+                raise AssertionError(f"Unexpected release page size: {path}")
+            return deepcopy(self.release_pages.get(int(query["page"][0]), []))
         raise AssertionError(f"Unexpected API request: {path}")
 
 
@@ -182,9 +188,56 @@ class PrepareReleaseTests(unittest.TestCase):
         api = FakeGitHub()
         api.ref = {"object": {"type": "commit", "sha": COMMIT}}
         for draft in (False, True):
-            api.release = {"id": 42, "draft": draft}
+            api.release_pages = {1: [{"id": 42, "tag_name": TAG, "draft": draft}]}
             with self.subTest(draft=draft), self.assertRaisesRegex(ReleaseError, "not overwritten"):
                 validate(api)
+
+    def test_published_and_draft_releases_on_later_pages_are_rejected(self):
+        for draft in (False, True):
+            api = FakeGitHub()
+            api.release_pages = {
+                1: [{"tag_name": f"v0.0.{index}", "draft": False} for index in range(RELEASE_PAGE_SIZE)],
+                2: [{"id": 42, "tag_name": TAG, "draft": draft}],
+            }
+            with self.subTest(draft=draft), self.assertRaisesRegex(ReleaseError, "not overwritten"):
+                validate(api)
+            self.assertIn("/releases?per_page=100&page=2", api.calls)
+
+    def test_no_exact_tag_match_is_accepted_after_all_release_pages(self):
+        api = FakeGitHub()
+        api.release_pages = {
+            1: [{"tag_name": f"v0.0.{index}", "draft": False} for index in range(RELEASE_PAGE_SIZE)],
+            2: [
+                {"tag_name": "v1.0.670", "draft": True},
+                {"tag_name": "v1.0.67-rc.1", "draft": False},
+                {"tag_name": "release/v1.0.67", "draft": True},
+            ],
+        }
+        self.assertEqual(validate(api).tag, TAG)
+        self.assertIn("/releases?per_page=100&page=2", api.calls)
+        self.assertNotIn("/releases?per_page=100&page=3", api.calls)
+
+    def test_invalid_release_list_fails_closed_on_any_page(self):
+        for response in (None, {}, "not a list", [None], [{}], [{"tag_name": None}]):
+            for page in (1, 2):
+                api = FakeGitHub()
+                api.release_pages = {
+                    1: [{"tag_name": "v0.0.1"} for _ in range(RELEASE_PAGE_SIZE)],
+                    page: response,
+                }
+                with self.subTest(response=response, page=page), self.assertRaisesRegex(ReleaseError, "invalid release list"):
+                    validate(api)
+
+    def test_release_listing_pagination_limit_fails_closed(self):
+        api = FakeGitHub()
+        api.release_pages = {
+            page: [{"tag_name": "v0.0.1"} for _ in range(RELEASE_PAGE_SIZE)]
+            for page in range(1, MAX_RELEASE_PAGES + 1)
+        }
+        with self.assertRaisesRegex(ReleaseError, "pagination limit"):
+            validate(api)
+        self.assertIn(f"/releases?per_page=100&page={MAX_RELEASE_PAGES}", api.calls)
+        self.assertNotIn(f"/releases?per_page=100&page={MAX_RELEASE_PAGES + 1}", api.calls)
 
     def test_final_check_detects_a_tag_or_release_created_during_build(self):
         api = FakeGitHub()
@@ -193,17 +246,17 @@ class PrepareReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseError, "different commit"):
             validate(api, require_tag=True)
         api.ref["object"]["sha"] = COMMIT
-        api.release = {"id": 42}
+        api.release_pages = {1: [{"id": 42, "tag_name": TAG, "draft": True}]}
         with self.assertRaisesRegex(ReleaseError, "not overwritten"):
             validate(api, require_tag=True)
 
     def test_api_missing_resource_does_not_suppress_permission_errors(self):
         api = GitHubReader("example/viewer", "test-token")
         with patch("prepare_release.urlopen", side_effect=HTTPError("url", 404, "Not Found", {}, None)):
-            self.assertIsNone(api.get("/releases/tags/v1.0.67", missing_ok=True))
+            self.assertIsNone(api.get("/git/ref/tags/v1.0.67", missing_ok=True))
         with patch("prepare_release.urlopen", side_effect=HTTPError("url", 403, "Forbidden", {}, None)):
             with self.assertRaisesRegex(ReleaseError, "HTTP 403"):
-                api.get("/releases/tags/v1.0.67", missing_ok=True)
+                api.get("/git/ref/tags/v1.0.67", missing_ok=True)
 
 
 if __name__ == "__main__":

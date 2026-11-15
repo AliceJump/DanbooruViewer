@@ -25,6 +25,8 @@ class ReleaseError(RuntimeError):
 
 VERSION = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 SHA = re.compile(r"[0-9a-f]{40}")
+RELEASE_PAGE_SIZE = 100
+MAX_RELEASE_PAGES = 20
 
 
 def resolve_tag(ref: str) -> str:
@@ -107,6 +109,33 @@ def verify_tag_target(
     raise ReleaseError("The release tag has too many nested annotated tags.")
 
 
+def verify_no_existing_release(api: GitHubReader, tag: str) -> None:
+    # The tag-specific endpoint omits drafts. Listing returns every release
+    # visible to this token; the final check uses the publishing job's writer
+    # token so it can also detect drafts before gh release create is called.
+    for page in range(1, MAX_RELEASE_PAGES + 1):
+        releases = api.get(f"/releases?per_page={RELEASE_PAGE_SIZE}&page={page}")
+        if (
+            not isinstance(releases, list)
+            or len(releases) > RELEASE_PAGE_SIZE
+            or any(
+                not isinstance(release, dict)
+                or not isinstance(release.get("tag_name"), str)
+                for release in releases
+            )
+        ):
+            raise ReleaseError("GitHub returned an invalid release list; publication is blocked.")
+        if any(release["tag_name"] == tag for release in releases):
+            raise ReleaseError(
+                "A release already exists for this tag; existing releases are not overwritten."
+            )
+        if len(releases) < RELEASE_PAGE_SIZE:
+            return
+    raise ReleaseError(
+        "Release listing exceeded the pagination limit; cannot safely verify that the tag is unused."
+    )
+
+
 @dataclass(frozen=True)
 class ReleaseMetadata:
     tag: str
@@ -161,8 +190,7 @@ def validate_release(
         raise ReleaseError("The latest CI push run is not successful; wait for or repair CI first.")
 
     tag_exists = verify_tag_target(api, tag, sha, required=require_tag)
-    if api.get(f"/releases/tags/{quote(tag, safe='')}", missing_ok=True) is not None:
-        raise ReleaseError("A release already exists for this tag; existing releases are not overwritten.")
+    verify_no_existing_release(api, tag)
 
     return ReleaseMetadata(tag, sha, version, build, latest.get("html_url", ""), tag_exists)
 
