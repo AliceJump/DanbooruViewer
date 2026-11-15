@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 
 import 'completion_models.dart';
+import 'completion_normalization.dart';
 
 /// Immutable, build-time index. Opening it creates views over bytes, not one
 /// Dart object per tag. Only selected results are decoded into strings.
@@ -168,7 +169,7 @@ class CompletionIndex {
   }) async {
     if (limit <= 0 || count == 0) return [];
     if (limit > 100) limit = 100;
-    final normalized = query.toLowerCase();
+    final normalized = normalizeCompletionKey(query);
     if (normalized.contains('\u0000')) return [];
     if (normalized.isEmpty) {
       return [for (var i = 0; i < count && i < limit; i++) suggestion(i)];
@@ -281,7 +282,7 @@ class CompletionIndex {
   Map<String, CompletionTagInfo> lookup(Iterable<String> tags) {
     final result = <String, CompletionTagInfo>{};
     for (final tag in tags) {
-      final key = tag.toLowerCase();
+      final key = normalizeCompletionKey(tag);
       if (key.isEmpty || key.contains('\u0000') || result.containsKey(key)) {
         continue;
       }

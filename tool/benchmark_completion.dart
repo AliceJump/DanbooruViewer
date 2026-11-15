@@ -1,6 +1,7 @@
 // Run from the repository root with the real Git LFS assets available:
 //   dart run tool/benchmark_completion.dart --output /tmp/completion-benchmark.json
-// Each implementation runs in a fresh process. These desktop measurements do
+// Each sample runs in a fresh process. Compare defaults to four alternating
+// rounds. These desktop measurements do
 // not measure Android storage, keyboard rendering, or device frame latency.
 import 'dart:convert';
 import 'dart:io';
@@ -44,6 +45,7 @@ Future<void> main(List<String> arguments) async {
       File(options.output!).writeAsStringSync('$output\n');
     }
     stdout.writeln(output);
+    if (result['allRunsSucceeded'] == false) exitCode = 1;
   } catch (error, stack) {
     stderr.writeln(error);
     stderr.writeln(stack);
@@ -59,6 +61,7 @@ class _Options {
   final String? cache;
   final String? output;
   final int repetitions;
+  final int rounds;
 
   const _Options({
     this.mode = 'compare',
@@ -68,6 +71,7 @@ class _Options {
     this.cache,
     this.output,
     this.repetitions = 2,
+    this.rounds = 4,
   });
 
   factory _Options.parse(List<String> arguments) {
@@ -80,6 +84,7 @@ class _Options {
       '--cache',
       '--output',
       '--repetitions',
+      '--rounds',
     };
     for (var i = 0; i < arguments.length; i += 2) {
       if (!names.contains(arguments[i]) || i + 1 >= arguments.length) {
@@ -95,6 +100,10 @@ class _Options {
     if (repetitions < 0 || repetitions > 20) {
       throw ArgumentError('repetitions must be between 0 and 20');
     }
+    final rounds = int.parse(values['--rounds'] ?? '4');
+    if (rounds < 1 || rounds > 20) {
+      throw ArgumentError('rounds must be between 1 and 20');
+    }
     return _Options(
       mode: mode,
       source: values['--source'] ?? 'assets/danbooru_completion.zip',
@@ -104,6 +113,7 @@ class _Options {
       cache: values['--cache'],
       output: values['--output'],
       repetitions: repetitions,
+      rounds: rounds,
     );
   }
 }
@@ -113,41 +123,88 @@ Future<Map<String, Object?>> _compare(_Options options) async {
       ? Directory.systemTemp.createTempSync('completion-benchmark-')
       : null;
   final cache = options.cache ?? '${temporary!.path}/completion_index.bin';
-  final results = <String, dynamic>{};
+  final rounds = <Map<String, dynamic>>[];
   try {
-    for (final mode in ['legacy', 'index-cold', 'index-warm']) {
-      final script = Platform.script.toFilePath();
-      final child = await Process.run(Platform.resolvedExecutable, [
-        if (script.endsWith('.dart')) script,
-        '--mode',
-        mode,
-        '--source',
-        options.source,
-        '--index',
-        options.index,
-        '--bootstrap',
-        options.bootstrap,
-        '--cache',
-        cache,
-        '--repetitions',
-        '${options.repetitions}',
-      ]);
-      if (child.exitCode != 0) {
-        // Retain failures and still attempt the other independent mode. An OOM
-        // or failed asset check must never be reported as a performance win.
-        results[mode] = {
-          'failed': true,
-          'exitCode': child.exitCode,
-          'stderr': child.stderr.toString(),
-        };
-      } else {
-        results[mode] = jsonDecode(child.stdout as String);
+    for (var round = 0; round < options.rounds; round++) {
+      // Alternate the legacy and index groups; each warm process must still
+      // follow the cold process that writes its cache in the same round.
+      final order = round.isEven
+          ? ['legacy', 'index-cold', 'index-warm']
+          : ['index-cold', 'index-warm', 'legacy'];
+      final results = <String, dynamic>{};
+      final executionOrder = <String>[];
+      for (final mode in order) {
+        if (mode == 'index-warm' && results['index-cold']['failed'] == true) {
+          results[mode] = {
+            'failed': true,
+            'reason': 'The cold process did not produce a cache this round.',
+          };
+          continue;
+        }
+        executionOrder.add(mode);
+        final script = Platform.script.toFilePath();
+        final child = await Process.run(Platform.resolvedExecutable, [
+          if (script.endsWith('.dart')) script,
+          '--mode',
+          mode,
+          '--source',
+          options.source,
+          '--index',
+          options.index,
+          '--bootstrap',
+          options.bootstrap,
+          '--cache',
+          cache,
+          '--repetitions',
+          '${options.repetitions}',
+        ]);
+        if (child.exitCode != 0) {
+          // Retain failures and still attempt the other independent mode. An
+          // OOM or failed asset check is never a successful performance sample.
+          results[mode] = {
+            'failed': true,
+            'exitCode': child.exitCode,
+            'stderr': child.stderr.toString(),
+          };
+        } else {
+          results[mode] = jsonDecode(child.stdout as String);
+        }
       }
+      rounds.add({
+        'round': round + 1,
+        'order': executionOrder,
+        'runs': results,
+        'equivalence': _equivalence(results),
+      });
     }
   } finally {
     temporary?.deleteSync(recursive: true);
   }
 
+  return {
+    'schemaVersion': 2,
+    'generatedAtUtc': DateTime.now().toUtc().toIso8601String(),
+    'description':
+        'Independent desktop processes; initialization includes file reads. '
+        'Cold index includes archive SHA-256, CRC-checked inflation, index '
+        'SHA-256, opening and cache writing. Warm index reads and verifies the '
+        'uncompressed cache. OS page cache is not flushed. Each round alternates '
+        'the legacy and index groups, keeping cold before warm within the index '
+        'group. Repeated queries measure the engine, not the service result '
+        'cache or Android UI.',
+    'tiePolicy':
+        'Match position in UTF-16, then score. Equal primary ranks may select '
+        'different aliases because the new index has deterministic tie order.',
+    'allRunsSucceeded': rounds.every(
+      (round) =>
+          (round['runs'] as Map).values.every((run) => run['failed'] != true),
+    ),
+    'rounds': rounds,
+    'summary': _summarize(rounds),
+  };
+}
+
+Map<String, dynamic> _equivalence(Map<String, dynamic> results) {
   final legacy = results['legacy'] as Map<String, dynamic>;
   final equivalence = <String, dynamic>{};
   for (final mode in ['index-cold', 'index-warm']) {
@@ -169,20 +226,57 @@ Future<Map<String, Object?>> _compare(_Options options) async {
           jsonEncode(current['lookupResults']),
     };
   }
+  return equivalence;
+}
+
+Map<String, Object?> _summarize(List<Map<String, dynamic>> rounds) {
+  final summary = <String, Object?>{};
+  for (final mode in ['legacy', 'index-cold', 'index-warm']) {
+    final runs = rounds
+        .map((round) => (round['runs'] as Map)[mode] as Map<String, dynamic>)
+        .where((run) => run['failed'] != true)
+        .toList();
+    summary[mode] = {
+      'successfulSamples': runs.length,
+      'failedSamples': rounds.length - runs.length,
+      if (runs.isNotEmpty) ...{
+        'initializationMilliseconds': _statistics(
+          runs.map((run) => run['initializationMilliseconds'] as num),
+        ),
+        'rssAfterInitializationBytes': _statistics(
+          runs.map((run) => run['rssAfterInitializationBytes'] as num),
+        ),
+        'initializationStages': {
+          for (final name in (runs.first['initializationStages'] as Map).keys)
+            name: _statistics(
+              runs.map((run) => run['initializationStages'][name] as num),
+            ),
+        },
+        'queries': {
+          for (final name in _queries.keys)
+            name: {
+              'firstMilliseconds': _statistics(
+                runs.map(
+                  (run) => run['queries'][name]['firstMilliseconds'] as num,
+                ),
+              ),
+            },
+        },
+      },
+    };
+  }
+  return summary;
+}
+
+Map<String, num> _statistics(Iterable<num> values) {
+  final sorted = values.toList()..sort();
+  final middle = sorted.length ~/ 2;
   return {
-    'schemaVersion': 1,
-    'generatedAtUtc': DateTime.now().toUtc().toIso8601String(),
-    'description':
-        'Independent desktop processes; initialization includes file reads. '
-        'Cold index includes archive SHA-256, CRC-checked inflation, index '
-        'SHA-256, opening and cache writing. Warm index reads and verifies the '
-        'uncompressed cache. OS page cache is not flushed. Repeated queries '
-        'measure the engine, not the service result cache or Android UI.',
-    'tiePolicy':
-        'Match position in UTF-16, then score. Equal primary ranks may select '
-        'different aliases because the new index has deterministic tie order.',
-    'runs': results,
-    'equivalence': equivalence,
+    'minimum': sorted.first,
+    'median': sorted.length.isOdd
+        ? sorted[middle]
+        : (sorted[middle - 1] + sorted[middle]) / 2,
+    'maximum': sorted.last,
   };
 }
 

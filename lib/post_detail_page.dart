@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
+import 'completion_normalization.dart';
 import 'completion_service.dart';
 import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
@@ -128,7 +129,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
           ...text
               .split(' ')
               .where((tag) => tag.isNotEmpty)
-              .map((tag) => tag.toLowerCase()),
+              .map(normalizeCompletionKey),
     }.where((tag) => !_requestedMetadata.contains(tag)).toList();
     if (tags.isEmpty) return;
     _requestedMetadata.addAll(tags);
@@ -143,7 +144,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   int? _categoryForTag(String tag) {
-    final key = tag.toLowerCase();
+    final key = normalizeCompletionKey(tag);
     final metadataCategory =
         _completionMetadata[key]?.category ??
         widget.completionCategoryByValue[key];
@@ -157,7 +158,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
       5: post.tagStringMeta,
     };
     for (final group in groups.entries) {
-      if (group.value?.split(' ').any((value) => value.toLowerCase() == key) ??
+      if (group.value
+              ?.split(' ')
+              .any((value) => normalizeCompletionKey(value) == key) ??
           false) {
         return group.key;
       }
@@ -541,7 +544,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   String _displayLabelForTag(String tag) {
-    final key = tag.toLowerCase();
+    final key = normalizeCompletionKey(tag);
     return _completionMetadata[key]?.label ??
         widget.completionDisplayByValue[key] ??
         tag;

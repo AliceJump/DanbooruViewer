@@ -12,6 +12,7 @@ from zipfile import ZipFile
 
 from scripts import build_completion_index as indexer
 from scripts import build_completion_zip as exporter
+from scripts import completion_normalization as normalization
 
 
 def decode_index(binary):
@@ -71,6 +72,13 @@ def decode_index(binary):
 
 
 class CompletionIndexFormatTest(unittest.TestCase):
+    def test_generated_dart_mapping_matches_the_canonical_unicode_table(self):
+        self.assertEqual(normalization.UNICODE_VERSION, "15.0.0")
+        self.assertEqual(
+            normalization.DART_OUTPUT.read_text(encoding="utf-8"),
+            normalization.render_dart(),
+        )
+
     def test_original_spelling_aliases_sources_and_category_zero_round_trip(self):
         candidates = indexer.normalize_candidates([
             ("Hatsune_Miku", "Hatsune_Miku", "tag", 100, 4),
@@ -130,19 +138,29 @@ class CompletionIndexFormatTest(unittest.TestCase):
         self.assertEqual(sorted(decoded["value_ids"]), list(range(len(rows))))
         self.assertEqual(sorted(decoded["insert_ids"]), list(range(len(rows))))
 
-    def test_lowercase_matches_dart_simple_unicode_mapping(self):
+    def test_lowercase_uses_the_fixed_unicode_mapping(self):
         cases = {
             "ASCII_TAG": "ascii_tag",
             "中文": "中文",
             "İ": "i",
+            "İSTAN": "istan",
+            "i\u0307stan": "i\u0307stan",
             "ΟΣ": "οσ",
+            "ος": "ος",
             "Σ": "σ",
             "ẞ": "ß",
             "𐐀": "𐐨",
+            "𐐀NAME": "𐐨name",
+            "\u037f": "\u03f3",
+            "\u13a0": "\uab70",
+            "\u1c90": "\u10d0",
+            "\U000104b0": "\U000104d8",
+            "\u1c89": "\u1c89",  # Added after the pinned Unicode version.
         }
         for original, expected in cases.items():
             with self.subTest(original=original):
                 self.assertEqual(indexer.dart_lower(original), expected)
+                self.assertEqual(indexer.dart_lower(expected), expected)
                 decoded = decode_index(indexer.pack_index([
                     indexer.Candidate(original, original, "tag", 100, None),
                 ]))

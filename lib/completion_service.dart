@@ -33,7 +33,12 @@ class IndexedCompletionService implements CompletionService {
 
   Future<Map<String, dynamic>> _readManifest() async {
     final json = jsonDecode(
-      await _assets.loadString('assets/danbooru_completion.bootstrap.json'),
+      // This service owns the successful manifest cache. Do not let the asset
+      // bundle keep a failed load and prevent a later retry.
+      await _assets.loadString(
+        'assets/danbooru_completion.bootstrap.json',
+        cache: false,
+      ),
     );
     if (json is! Map<String, dynamic> ||
         json['version'] != 1 ||
@@ -51,9 +56,20 @@ class IndexedCompletionService implements CompletionService {
     return json;
   }
 
+  Future<Map<String, dynamic>> _getManifest() {
+    if (_manifest != null) return _manifest!;
+    late final Future<Map<String, dynamic>> attempt;
+    attempt = _readManifest().catchError((Object error, StackTrace stack) {
+      if (identical(_manifest, attempt)) _manifest = null;
+      Error.throwWithStackTrace(error, stack);
+    });
+    _manifest = attempt;
+    return attempt;
+  }
+
   Future<CompletionBackend> _open() async {
     if (_disposed) throw StateError('Completion service disposed');
-    final manifest = await (_manifest ??= _readManifest());
+    final manifest = await _getManifest();
     if (_disposed) throw StateError('Completion service disposed');
     final backend = platform.createCompletionBackend(
       loadArchive: () async {
@@ -70,17 +86,34 @@ class IndexedCompletionService implements CompletionService {
       expectedCount: manifest['count'] as int,
     );
     _backend = backend;
-    await backend.initialize();
-    if (_disposed) throw StateError('Completion service disposed');
-    return backend;
+    try {
+      await backend.initialize();
+      if (_disposed) throw StateError('Completion service disposed');
+      return backend;
+    } catch (_) {
+      if (identical(_backend, backend)) _backend = null;
+      await backend.dispose();
+      rethrow;
+    }
   }
 
-  Future<CompletionBackend> _getBackend() => _opening ??= _open();
+  Future<CompletionBackend> _getBackend() {
+    if (_opening != null) return _opening!;
+    late final Future<CompletionBackend> attempt;
+    attempt = _open().catchError((Object error, StackTrace stack) {
+      // _open disposes its failed backend before making another attempt
+      // available. A stale failure must never clear a newer initialization.
+      if (identical(_opening, attempt)) _opening = null;
+      Error.throwWithStackTrace(error, stack);
+    });
+    _opening = attempt;
+    return attempt;
+  }
 
   @override
   Future<List<SearchCompletionSuggestion>> bootstrap() async {
     if (_disposed) throw StateError('Completion service disposed');
-    final manifest = await (_manifest ??= _readManifest());
+    final manifest = await _getManifest();
     if (_disposed) throw StateError('Completion service disposed');
     final suggestions = (manifest['suggestions'] as List)
         .cast<Map<String, dynamic>>()

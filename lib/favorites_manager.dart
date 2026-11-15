@@ -171,13 +171,13 @@ class FavoritesManager {
     });
   }
 
-  /// 更新已收藏标签的分类（用于补全旧收藏标签的分类信息）。
+  /// 只补全尚无分类的收藏标签；保留请求等待期间新保存的分类。
   Future<void> updateFavoriteTagCategory(String tag, int category) {
     return _mutate(() async {
       final entries = await _readFavoriteTagEntries();
       var changed = false;
       for (final entry in entries) {
-        if (entry['tag'] == tag && entry['category'] != category) {
+        if (entry['tag'] == tag && entry['category'] == null) {
           entry['category'] = category;
           changed = true;
         }

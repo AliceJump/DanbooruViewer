@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'completion_normalization.dart';
 import 'completion_service.dart';
 import 'favorites_manager.dart';
 import 'gallery_grid.dart';
@@ -127,7 +128,7 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   // ============ 补全显示标签 ============
   String _displayLabelForTag(String tag) {
-    final key = tag.toLowerCase();
+    final key = normalizeCompletionKey(tag);
     return _completionMetadata[key]?.label ??
         widget.completionDisplayByValue[key] ??
         tag;
@@ -164,10 +165,10 @@ class _FavoritesPageState extends State<FavoritesPage>
       });
       return;
     }
-    final query = text.toLowerCase();
+    final query = normalizeCompletionKey(text);
     setState(() {
       _favSuggestions = _allFavTags
-          .where((tag) => tag.toLowerCase().contains(query))
+          .where((tag) => normalizeCompletionKey(tag).contains(query))
           .take(20)
           .toList();
       _showFavSuggestions =
@@ -193,10 +194,10 @@ class _FavoritesPageState extends State<FavoritesPage>
       });
       return;
     }
-    final query = text.toLowerCase();
+    final query = normalizeCompletionKey(text);
     setState(() {
       _histSuggestions = _allHistTags
-          .where((tag) => tag.toLowerCase().contains(query))
+          .where((tag) => normalizeCompletionKey(tag).contains(query))
           .take(20)
           .toList();
       _showHistSuggestions =
@@ -228,7 +229,9 @@ class _FavoritesPageState extends State<FavoritesPage>
       if (tag.isEmpty) continue;
       tags.add(tag);
       final category = entry['category'];
-      if (category is int) storedCategories[tag.toLowerCase()] = category;
+      if (category is int) {
+        storedCategories[normalizeCompletionKey(tag)] = category;
+      }
     }
 
     setState(() {
@@ -254,19 +257,25 @@ class _FavoritesPageState extends State<FavoritesPage>
       ..._favoriteTags,
       ..._allFavTags,
       ..._allHistTags,
-    }.map((tag) => tag.toLowerCase()).toSet().toList();
-    try {
-      final service = widget.completionService;
-      if (service != null) {
-        // Bound individual replies even for a large local favorites/history set.
-        for (var start = 0; start < tags.length; start += 256) {
-          final end = start + 256 < tags.length ? start + 256 : tags.length;
+    }.map(normalizeCompletionKey).toSet().toList();
+    final service = widget.completionService;
+    if (service != null) {
+      // Bound individual replies even for a large local favorites/history set.
+      for (var start = 0; start < tags.length; start += 256) {
+        if (!mounted || generation != _dataGeneration) return;
+        final end = start + 256 < tags.length ? start + 256 : tags.length;
+        try {
           final metadata = await service.lookup(tags.sublist(start, end));
           if (!mounted || generation != _dataGeneration) return;
           setState(() => _completionMetadata.addAll(metadata));
+        } catch (e) {
+          debugPrint('Failed to load favorite tag metadata: $e');
         }
       }
-      // Migrate old favorite categories only after lookup has supplied metadata.
+    }
+    try {
+      // Preserve successful batches and caller-provided categories even when
+      // another metadata lookup fails.
       for (final entry in favoriteEntries) {
         if (!mounted || generation != _dataGeneration) return;
         final tag = entry['tag'] as String? ?? '';
@@ -275,10 +284,10 @@ class _FavoritesPageState extends State<FavoritesPage>
         if (category == null) continue;
         await _favoritesManager.updateFavoriteTagCategory(tag, category);
         if (!mounted || generation != _dataGeneration) return;
-        _storedCategoryByTag[tag.toLowerCase()] = category;
+        _storedCategoryByTag[normalizeCompletionKey(tag)] = category;
       }
     } catch (e) {
-      debugPrint('Failed to load favorite tag metadata: $e');
+      debugPrint('Failed to migrate favorite tag categories: $e');
     }
   }
 
@@ -352,9 +361,11 @@ class _FavoritesPageState extends State<FavoritesPage>
   ) {
     if (filterChips.isEmpty) return posts;
     return posts.where((post) {
-      final tagString = (post['tag_string'] as String? ?? '').toLowerCase();
+      final tagString = normalizeCompletionKey(
+        post['tag_string'] as String? ?? '',
+      );
       return filterChips.every((chip) {
-        final query = chip.toLowerCase();
+        final query = normalizeCompletionKey(chip);
         return tagString.contains(query);
       });
     }).toList();
@@ -362,14 +373,14 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   /// 解析标签的分类：优先用补全映射，其次用收藏条目里持久化的分类。
   int? _categoryForTag(String tag) {
-    final key = tag.toLowerCase();
+    final key = normalizeCompletionKey(tag);
     return _completionMetadata[key]?.category ??
         widget.completionCategoryByValue[key] ??
         _storedCategoryByTag[key];
   }
 
   List<String> _getFilteredTags() {
-    final query = _tagFilterText.toLowerCase();
+    final query = normalizeCompletionKey(_tagFilterText);
     return _favoriteTags.where((tag) {
       // 分类过滤
       if (_selectedTagCategory != null &&
@@ -378,8 +389,8 @@ class _FavoritesPageState extends State<FavoritesPage>
       }
       // 文本过滤
       if (query.isNotEmpty &&
-          !tag.toLowerCase().contains(query) &&
-          !_displayLabelForTag(tag).toLowerCase().contains(query)) {
+          !normalizeCompletionKey(tag).contains(query) &&
+          !normalizeCompletionKey(_displayLabelForTag(tag)).contains(query)) {
         return false;
       }
       return true;

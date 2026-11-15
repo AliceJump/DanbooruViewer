@@ -40,6 +40,17 @@ jobs:
       - name: Test completion index generator
         run: python -m unittest discover -s tests -p 'test_completion_index.py'
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Verify Dart web completion parity (Node)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dart compile js test/support/completion_web_check.dart -o "$RUNNER_TEMP/completion_web_check.js"
+          node -e 'globalThis.self = globalThis; globalThis.completionFixtureBase64 = require("fs").readFileSync("test/fixtures/completion_index.bin").toString("base64"); require(process.argv[1]);' "$RUNNER_TEMP/completion_web_check.js"
+
       - name: Check formatting of changed Dart files
         shell: bash
         run: |

@@ -26,6 +26,11 @@ from typing import Iterable, NamedTuple, Sequence
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile, ZipInfo
 import zlib
 
+if __package__:
+    from .completion_normalization import normalize_completion_key as dart_lower
+else:
+    from completion_normalization import normalize_completion_key as dart_lower
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT / "assets" / "danbooru_completion.zip"
@@ -47,18 +52,6 @@ class Candidate(NamedTuple):
     source: str
     score: int
     category: int | None
-
-
-def dart_lower(text: str) -> str:
-    """Match Dart's simple per-codepoint lowercase, including dotted I/sigma.
-
-    Python's whole-string lower() applies contextual final sigma and expands
-    U+0130 into two codepoints; Dart 3.10 uses neither behavior. Taking the first
-    codepoint of each character's lowercase implements the simple mapping.
-    """
-    if text.isascii():
-        return text.lower()
-    return "".join(character.lower()[0] for character in text)
 
 
 def _is_int(value: object) -> bool:

@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'completion_backend.dart';
 import 'completion_index.dart';
 import 'completion_models.dart';
+import 'completion_normalization.dart';
 
 CompletionBackend createCompletionBackend({
   required CompletionArchiveLoader loadArchive,
@@ -255,10 +256,12 @@ Future<void> _completionWorker(List<Object?> args) async {
             await temporary.rename(cache.path);
             // Remove old generations and abandoned writes. Recent temporary
             // files may belong to another live service and are left alone.
+            // Compare names in this directory because listed paths can use
+            // different separators from cache.path, especially on Windows.
             await for (final entry in cache.parent.list()) {
               final name = entry.uri.pathSegments.last;
               if (entry is File &&
-                  entry.path != cache.path &&
+                  name != '$digest.bin' &&
                   RegExp(
                     r'^[a-f0-9]{64}\.bin(?:\.[0-9]+\.tmp)?$',
                   ).hasMatch(name)) {
@@ -293,7 +296,7 @@ Future<void> _completionWorker(List<Object?> args) async {
         case 'search':
           final generation = ++searchGeneration;
           final (query, limit) = parts[2] as (String, int);
-          final key = (query.toLowerCase(), limit);
+          final key = (normalizeCompletionKey(query), limit);
           var result = searchCache.remove(key);
           if (result == null) {
             result = await index!.search(

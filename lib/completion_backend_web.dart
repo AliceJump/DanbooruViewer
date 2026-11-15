@@ -3,6 +3,7 @@ import 'package:crypto/crypto.dart';
 import 'completion_backend.dart';
 import 'completion_index.dart';
 import 'completion_models.dart';
+import 'completion_normalization.dart';
 
 CompletionBackend createCompletionBackend({
   required CompletionArchiveLoader loadArchive,
@@ -53,7 +54,7 @@ class _WebCompletionBackend implements CompletionBackend {
     final generation = ++_generation;
     final index = await (_index ??= _open());
     if (_disposed) throw StateError('Completion service disposed');
-    final key = (query.toLowerCase(), limit);
+    final key = (normalizeCompletionKey(query), limit);
     final cached = _cache.remove(key);
     if (cached != null) {
       _cache[key] = cached;

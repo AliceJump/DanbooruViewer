@@ -60,60 +60,64 @@ void main() {
     Future<Uint8List> Function()? load,
     String? expectedIndexDigest,
     String? expectedArchiveDigest,
+    String? cachePath,
   }) {
     final backend = NativeCompletionBackend(
       loadArchive: load ?? () async => archive,
       indexDigest: expectedIndexDigest ?? indexDigest,
       archiveDigest: expectedArchiveDigest ?? archiveDigest,
       expectedCount: count,
-      cacheDirectory: () async => directory.path,
+      cacheDirectory: () async => cachePath ?? directory.path,
     );
     addTearDown(backend.dispose);
     return backend;
   }
 
-  test(
-    'cold worker loads the archive once and warm worker uses cached bytes',
-    () async {
-      var loads = 0;
-      final cold = createBackend(
-        load: () async {
-          loads++;
-          return archive;
-        },
-      );
-      await Future.wait([
-        cold.initialize(),
-        cold.initialize(),
-      ]).timeout(_deadline);
-      final suggestions = await cold.search('blue').timeout(_deadline);
-      expect(suggestions.first.insertValue, 'blue_hair');
-      final metadata = await cold.lookup(['blue_hair']).timeout(_deadline);
-      expect(metadata['blue_hair']?.label, '蓝发');
-      expect(metadata['blue_hair']?.category, 0);
-      expect(loads, 1);
+  for (final suffix in ['', Platform.pathSeparator]) {
+    test(
+      'cold and warm workers reuse cache with ${suffix.isEmpty ? 'normal path' : 'trailing separator'}',
+      () async {
+        var loads = 0;
+        final cold = createBackend(
+          cachePath: '${directory.path}$suffix',
+          load: () async {
+            loads++;
+            return archive;
+          },
+        );
+        await Future.wait([
+          cold.initialize(),
+          cold.initialize(),
+        ]).timeout(_deadline);
+        final suggestions = await cold.search('blue').timeout(_deadline);
+        expect(suggestions.first.insertValue, 'blue_hair');
+        final metadata = await cold.lookup(['blue_hair']).timeout(_deadline);
+        expect(metadata['blue_hair']?.label, '蓝发');
+        expect(metadata['blue_hair']?.category, 0);
+        expect(loads, 1);
 
-      final cache = File('${directory.path}/$indexDigest.bin');
-      await _waitForCache(cache, indexDigest);
-      await cold.dispose();
+        final cache = File('${directory.path}/$indexDigest.bin');
+        await _waitForCache(cache, indexDigest);
+        await cold.dispose();
 
-      final warm = createBackend(
-        load: () async {
-          loads++;
-          throw StateError(
-            'A valid cache must not request the compressed asset',
-          );
-        },
-      );
-      await warm.initialize().timeout(_deadline);
-      final warmSuggestions = await warm.search('blue').timeout(_deadline);
-      expect(
-        warmSuggestions.map((suggestion) => suggestion.value),
-        suggestions.map((suggestion) => suggestion.value),
-      );
-      expect(loads, 1);
-    },
-  );
+        final warm = createBackend(
+          load: () async {
+            loads++;
+            throw StateError(
+              'A valid cache must not request the compressed asset',
+            );
+          },
+        );
+        await warm.initialize().timeout(_deadline);
+        final warmSuggestions = await warm.search('blue').timeout(_deadline);
+        expect(
+          warmSuggestions.map((suggestion) => suggestion.value),
+          suggestions.map((suggestion) => suggestion.value),
+        );
+        expect(loads, 1);
+      },
+    );
+  }
 
   test(
     'same-length cache corruption is rejected and repaired from the archive',

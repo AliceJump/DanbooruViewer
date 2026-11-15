@@ -11,6 +11,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 import 'app_theme.dart';
+import 'completion_normalization.dart';
 import 'completion_service.dart';
 import 'gallery_grid.dart';
 import 'media_utils.dart';
@@ -280,7 +281,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _refreshCompletionSuggestions() {
     if (!mounted || _updatingSearchText || !_searchFocusNode.hasFocus) return;
-    final query = _currentSearchToken().value.toLowerCase();
+    final query = normalizeCompletionKey(_currentSearchToken().value);
     // Selection/composing notifications with the same token need no new query.
     if (query == _lastCompletionQuery) return;
     _completionDebounce?.cancel();
@@ -295,8 +296,8 @@ class _MyHomePageState extends State<MyHomePage> {
         _completionQueryError = null;
         // Retain only useful previous results while the indexed query runs.
         _visibleSuggestions = _visibleSuggestions.where((item) {
-          return item.value.toLowerCase().contains(query) ||
-              item.insertValue.toLowerCase().contains(query);
+          return normalizeCompletionKey(item.value).contains(query) ||
+              normalizeCompletionKey(item.insertValue).contains(query);
         }).toList();
       }
     });
@@ -347,7 +348,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _rememberCompletionMetadata(Map<String, CompletionTagInfo> metadata) {
     for (final entry in metadata.entries) {
-      final key = entry.key.toLowerCase();
+      final key = normalizeCompletionKey(entry.key);
       _completionDisplayByInsertValue[key] = entry.value.label;
       final category = entry.value.category;
       if (category != null) _completionCategoryByInsertValue[key] = category;
@@ -366,7 +367,7 @@ class _MyHomePageState extends State<MyHomePage> {
       if (!mounted) return;
       _rememberCompletionMetadata(metadata);
       final index = _searchChips.indexWhere((item) => identical(item, chip));
-      final label = metadata[chip.queryValue.toLowerCase()]?.label;
+      final label = metadata[normalizeCompletionKey(chip.queryValue)]?.label;
       if (index < 0 || label == null || label == chip.label) return;
       setState(() {
         _searchChips[index] = SearchChip(
@@ -440,17 +441,18 @@ class _MyHomePageState extends State<MyHomePage> {
       return;
     }
     _addSearchChip(
-      _completionDisplayByInsertValue[tag.toLowerCase()] ?? tag,
+      _completionDisplayByInsertValue[normalizeCompletionKey(tag)] ?? tag,
       tag,
     );
   }
 
   void _upsertSearchChip(SearchChip chip) {
-    final normalizedQuery = chip.queryValue.trim().toLowerCase();
+    final normalizedQuery = normalizeCompletionKey(chip.queryValue.trim());
     if (normalizedQuery.isEmpty) return;
 
     _searchChips.removeWhere(
-      (item) => item.queryValue.trim().toLowerCase() == normalizedQuery,
+      (item) =>
+          normalizeCompletionKey(item.queryValue.trim()) == normalizedQuery,
     );
     _searchChips.add(chip);
   }

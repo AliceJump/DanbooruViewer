@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:danbooru_viewer/completion_index.dart';
 import 'package:danbooru_viewer/completion_models.dart';
+import 'package:danbooru_viewer/completion_normalization.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 // The binary fixture is generated from completion_candidates.json by
@@ -25,6 +26,60 @@ void main() {
           )
           as List<dynamic>,
     );
+  });
+
+  test('normalization follows the binary contract and is idempotent', () {
+    const cases = {
+      '': '',
+      'ASCII_TAG': 'ascii_tag',
+      '中文': '中文',
+      'İSTAN': 'istan',
+      'i\u0307stan': 'i\u0307stan',
+      'ΟΣ': 'οσ',
+      'ος': 'ος',
+      'Σ': 'σ',
+      'ẞ': 'ß',
+      '𐐀NAME': '𐐨name',
+      '\u037f': '\u03f3',
+      '\u13a0': '\uab70',
+      '\u1c90': '\u10d0',
+      '\u{104b0}': '\u{104d8}',
+      '\u1c89': '\u1c89',
+    };
+    for (final entry in cases.entries) {
+      final key = normalizeCompletionKey(entry.key);
+      expect(key, entry.value, reason: jsonEncode(entry.key));
+      expect(normalizeCompletionKey(key), key);
+    }
+  });
+
+  test('normalization agrees with the canonical ranges including gaps', () {
+    final data =
+        jsonDecode(File('scripts/completion_lowercase.json').readAsStringSync())
+            as Map<String, dynamic>;
+    final expected = <int, int>{};
+    for (final row in (data['ranges'] as List).cast<List<dynamic>>()) {
+      final start = row[0] as int;
+      final end = row[1] as int;
+      final step = row[2] as int;
+      final delta = row[3] as int;
+      for (var scalar = start; scalar <= end; scalar += step) {
+        expected[scalar] = scalar + delta;
+      }
+    }
+    expect(expected, hasLength(1433));
+    final probes = <int>{
+      0,
+      0x10ffff,
+      for (final scalar in expected.keys) ...[scalar - 1, scalar, scalar + 1],
+    };
+    for (final scalar in probes) {
+      expect(
+        normalizeCompletionKey(String.fromCharCode(scalar)),
+        String.fromCharCode(expected[scalar] ?? scalar),
+        reason: 'U+${scalar.toRadixString(16)}',
+      );
+    }
   });
 
   test(
@@ -129,15 +184,19 @@ void main() {
   );
 
   test(
-    'uses Dart simple lowercase while preserving original spellings',
+    'uses shared simple lowercase while preserving original spellings',
     () async {
       for (final pair in [
         ('İSTAN', 'İstanbul'),
+        ('ΟΣ', 'ΟΣ'),
         ('οσ', 'ΟΣ'),
+        ('𐐀NAME', '𐐀Name'),
         ('𐐨name', '𐐀Name'),
       ]) {
         final results = await index.search(pair.$1);
         expect(results.map((candidate) => candidate.value), contains(pair.$2));
+        final normalized = await index.search(normalizeCompletionKey(pair.$1));
+        expect(normalized.map(_record).toList(), results.map(_record).toList());
       }
       expect((await index.search('i\u0307stan')), isEmpty);
       expect((await index.search('ος')), isEmpty);
