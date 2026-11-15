@@ -10,6 +10,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/browser_worker_assets.dart';
+
 Future<void> _renderDecodedImage(
   WidgetTester tester,
   ImageProvider provider,
@@ -66,6 +68,7 @@ Future<void> _clearImages(WidgetTester tester) async {
 }
 
 void main() {
+  useGeneratedBrowserWorkerAsset();
   const browserOnly = !kIsWeb;
   final png = base64Decode(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgmNbxHwAD1gIeATp91AAAAABJRU5ErkJggg==',

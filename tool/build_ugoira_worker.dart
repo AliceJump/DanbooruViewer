@@ -29,7 +29,13 @@ Future<void> main() async {
     final destination = File('${root.path}/assets/ugoira_worker.js');
     await destination.parent.create(recursive: true);
     await compiled.copy(destination.path);
-    stdout.writeln('Built assets/ugoira_worker.js');
+    // Flutter 3.38's Chrome test server serves test/, not the app asset bundle.
+    // Give its real Worker tests the identical compiled bytes through that
+    // server; the test adapter supplies only the ignored flutter/assets reply.
+    final testAsset = File('${root.path}/test/generated/ugoira_worker.js');
+    await testAsset.parent.create(recursive: true);
+    await compiled.copy(testAsset.path);
+    stdout.writeln('Built Ugoira worker and identical browser-test asset');
   } finally {
     await temporary.delete(recursive: true);
   }

@@ -16,6 +16,7 @@ assets/danbooru_completion
 /assets/danbooru_completion.index.zip
 /assets/danbooru_completion.bootstrap.json
 /assets/ugoira_worker.js
+/test/generated/ugoira_worker.js
 *.tmp
 # IntelliJ related
 *.iml

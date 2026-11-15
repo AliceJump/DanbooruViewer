@@ -14,6 +14,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 
+import 'support/browser_worker_assets.dart';
+
 class _ControlledAssetBundle extends CachingAssetBundle {
   _ControlledAssetBundle(this.first, this.script);
 
@@ -56,6 +58,7 @@ Uint8List _animationZip({int frames = 2, int size = 4}) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  useGeneratedBrowserWorkerAsset();
 
   test('worker returns the shared codec GIF without detaching input', () async {
     final bytes = _animationZip();
