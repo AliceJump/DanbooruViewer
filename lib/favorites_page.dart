@@ -2,7 +2,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'completion_normalization.dart';
+import 'completion_service.dart';
 import 'favorites_manager.dart';
+import 'gallery_grid.dart';
 import 'media_utils.dart';
 import 'post_detail_page.dart';
 import 'main.dart';
@@ -23,11 +26,13 @@ const List<int> _favCategoryOrder = [4, 1, 3, 0, 5];
 class FavoritesPage extends StatefulWidget {
   final Map<String, String> completionDisplayByValue;
   final Map<String, int> completionCategoryByValue;
+  final CompletionService? completionService;
 
   const FavoritesPage({
     super.key,
     this.completionDisplayByValue = const {},
     this.completionCategoryByValue = const {},
+    this.completionService,
   });
 
   @override
@@ -44,6 +49,9 @@ class _FavoritesPageState extends State<FavoritesPage>
   List<String> _favoriteTags = [];
   List<Map<String, dynamic>> _browsingHistory = [];
   bool _isLoading = true;
+  int _dataGeneration = 0;
+  final Map<String, CompletionTagInfo> _completionMetadata = {};
+  final Map<String, int> _storedCategoryByTag = {};
 
   // ============ 标签筛选状态 ============
   // 图片收藏页的筛选
@@ -120,7 +128,10 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   // ============ 补全显示标签 ============
   String _displayLabelForTag(String tag) {
-    return widget.completionDisplayByValue[tag.toLowerCase()] ?? tag;
+    final key = normalizeCompletionKey(tag);
+    return _completionMetadata[key]?.label ??
+        widget.completionDisplayByValue[key] ??
+        tag;
   }
 
   // ============ 提取 Posts 中所有唯一标签 ============
@@ -154,10 +165,10 @@ class _FavoritesPageState extends State<FavoritesPage>
       });
       return;
     }
-    final query = text.toLowerCase();
+    final query = normalizeCompletionKey(text);
     setState(() {
       _favSuggestions = _allFavTags
-          .where((tag) => tag.toLowerCase().contains(query))
+          .where((tag) => normalizeCompletionKey(tag).contains(query))
           .take(20)
           .toList();
       _showFavSuggestions =
@@ -183,10 +194,10 @@ class _FavoritesPageState extends State<FavoritesPage>
       });
       return;
     }
-    final query = text.toLowerCase();
+    final query = normalizeCompletionKey(text);
     setState(() {
       _histSuggestions = _allHistTags
-          .where((tag) => tag.toLowerCase().contains(query))
+          .where((tag) => normalizeCompletionKey(tag).contains(query))
           .take(20)
           .toList();
       _showHistSuggestions =
@@ -203,34 +214,80 @@ class _FavoritesPageState extends State<FavoritesPage>
   }
 
   Future<void> _loadData() async {
+    final generation = ++_dataGeneration;
     setState(() => _isLoading = true);
 
     final posts = await _favoritesManager.getFavoritePostsFull();
     final tagEntries = await _favoritesManager.getFavoriteTagEntries();
     final history = await _favoritesManager.getBrowsingHistory();
+    if (!mounted || generation != _dataGeneration) return;
 
-    // 用补全分类映射补全旧收藏标签的分类，并持久化（一次性迁移）。
     final tags = <String>[];
+    final storedCategories = <String, int>{};
     for (final entry in tagEntries) {
       final tag = entry['tag'] as String? ?? '';
       if (tag.isEmpty) continue;
       tags.add(tag);
-      final storedCat = entry['category'];
-      final mappedCat = widget.completionCategoryByValue[tag.toLowerCase()];
-      if (storedCat == null && mappedCat != null) {
-        await _favoritesManager.updateFavoriteTagCategory(tag, mappedCat);
+      final category = entry['category'];
+      if (category is int) {
+        storedCategories[normalizeCompletionKey(tag)] = category;
       }
     }
 
-    if (mounted) {
-      setState(() {
-        _favoritePosts = posts;
-        _favoriteTags = tags;
-        _browsingHistory = history;
-        _isLoading = false;
-      });
+    setState(() {
+      _favoritePosts = posts;
+      _favoriteTags = tags;
+      _browsingHistory = history;
+      _storedCategoryByTag
+        ..clear()
+        ..addAll(storedCategories);
       _extractAllTags();
-      _loadTagPreviews();
+      _isLoading = false;
+    });
+    // Local favorites render immediately; only their own metadata is fetched.
+    _loadCompletionMetadata(generation, tagEntries);
+    _loadTagPreviews();
+  }
+
+  Future<void> _loadCompletionMetadata(
+    int generation,
+    List<Map<String, dynamic>> favoriteEntries,
+  ) async {
+    final tags = <String>{
+      ..._favoriteTags,
+      ..._allFavTags,
+      ..._allHistTags,
+    }.map(normalizeCompletionKey).toSet().toList();
+    final service = widget.completionService;
+    if (service != null) {
+      // Bound individual replies even for a large local favorites/history set.
+      for (var start = 0; start < tags.length; start += 256) {
+        if (!mounted || generation != _dataGeneration) return;
+        final end = start + 256 < tags.length ? start + 256 : tags.length;
+        try {
+          final metadata = await service.lookup(tags.sublist(start, end));
+          if (!mounted || generation != _dataGeneration) return;
+          setState(() => _completionMetadata.addAll(metadata));
+        } catch (e) {
+          debugPrint('Failed to load favorite tag metadata: $e');
+        }
+      }
+    }
+    try {
+      // Preserve successful batches and caller-provided categories even when
+      // another metadata lookup fails.
+      for (final entry in favoriteEntries) {
+        if (!mounted || generation != _dataGeneration) return;
+        final tag = entry['tag'] as String? ?? '';
+        if (tag.isEmpty || entry['category'] != null) continue;
+        final category = _categoryForTag(tag);
+        if (category == null) continue;
+        await _favoritesManager.updateFavoriteTagCategory(tag, category);
+        if (!mounted || generation != _dataGeneration) return;
+        _storedCategoryByTag[normalizeCompletionKey(tag)] = category;
+      }
+    } catch (e) {
+      debugPrint('Failed to migrate favorite tag categories: $e');
     }
   }
 
@@ -304,9 +361,11 @@ class _FavoritesPageState extends State<FavoritesPage>
   ) {
     if (filterChips.isEmpty) return posts;
     return posts.where((post) {
-      final tagString = (post['tag_string'] as String? ?? '').toLowerCase();
+      final tagString = normalizeCompletionKey(
+        post['tag_string'] as String? ?? '',
+      );
       return filterChips.every((chip) {
-        final query = chip.toLowerCase();
+        final query = normalizeCompletionKey(chip);
         return tagString.contains(query);
       });
     }).toList();
@@ -314,11 +373,14 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   /// 解析标签的分类：优先用补全映射，其次用收藏条目里持久化的分类。
   int? _categoryForTag(String tag) {
-    return widget.completionCategoryByValue[tag.toLowerCase()];
+    final key = normalizeCompletionKey(tag);
+    return _completionMetadata[key]?.category ??
+        widget.completionCategoryByValue[key] ??
+        _storedCategoryByTag[key];
   }
 
   List<String> _getFilteredTags() {
-    final query = _tagFilterText.toLowerCase();
+    final query = normalizeCompletionKey(_tagFilterText);
     return _favoriteTags.where((tag) {
       // 分类过滤
       if (_selectedTagCategory != null &&
@@ -326,7 +388,9 @@ class _FavoritesPageState extends State<FavoritesPage>
         return false;
       }
       // 文本过滤
-      if (query.isNotEmpty && !tag.toLowerCase().contains(query)) {
+      if (query.isNotEmpty &&
+          !normalizeCompletionKey(tag).contains(query) &&
+          !normalizeCompletionKey(_displayLabelForTag(tag)).contains(query)) {
         return false;
       }
       return true;
@@ -434,6 +498,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       initialIndex: index,
       completionDisplayByValue: widget.completionDisplayByValue,
       completionCategoryByValue: widget.completionCategoryByValue,
+      completionService: widget.completionService,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
@@ -447,6 +512,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       initialIndex: index,
       completionDisplayByValue: widget.completionDisplayByValue,
       completionCategoryByValue: widget.completionCategoryByValue,
+      completionService: widget.completionService,
     );
     if (result != null && mounted) {
       Navigator.pop(context, result);
@@ -550,13 +616,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                   title: '还没有收藏的图片',
                   subtitle: '在图片详情页点击收藏按钮来添加收藏',
                 )
-              : GridView.builder(
-                  padding: const EdgeInsets.all(4),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 4.0,
-                    mainAxisSpacing: 4.0,
-                  ),
+              : GalleryGrid(
                   itemCount: filteredPosts.length,
                   itemBuilder: (context, index) {
                     final post = filteredPosts[index];
@@ -666,9 +726,10 @@ class _FavoritesPageState extends State<FavoritesPage>
                         padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
                         child: Text(
                           row,
-                          style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          style: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(
                                 color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.w700,
+                                fontWeight: FontWeight.w500,
                               ),
                         ),
                       );
@@ -691,18 +752,20 @@ class _FavoritesPageState extends State<FavoritesPage>
                               // 标签名 + 操作按钮
                               Row(
                                 children: [
-                                  const Icon(
+                                  Icon(
                                     Icons.label,
                                     size: 18,
-                                    color: Colors.amber,
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
-                                      tag,
+                                      _displayLabelForTag(tag),
                                       style: const TextStyle(
                                         fontSize: 15,
-                                        fontWeight: FontWeight.w600,
+                                        fontWeight: FontWeight.w500,
                                       ),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
@@ -719,10 +782,12 @@ class _FavoritesPageState extends State<FavoritesPage>
                                     tooltip: '搜索此标签',
                                   ),
                                   IconButton(
-                                    icon: const Icon(
+                                    icon: Icon(
                                       Icons.delete,
                                       size: 20,
-                                      color: Colors.red,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.error,
                                     ),
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints(
@@ -828,13 +893,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                   title: '还没有浏览历史',
                   subtitle: '浏览图片后会自动记录',
                 )
-              : GridView.builder(
-                  padding: const EdgeInsets.all(4),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 4.0,
-                    mainAxisSpacing: 4.0,
-                  ),
+              : GalleryGrid(
                   itemCount: filteredHistory.length,
                   itemBuilder: (context, index) {
                     final post = filteredHistory[index];
@@ -980,21 +1039,7 @@ class _FavoritesPageState extends State<FavoritesPage>
     required String title,
     required String subtitle,
   }) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 64, color: Colors.grey),
-          const SizedBox(height: 16),
-          Text(title, style: const TextStyle(fontSize: 16, color: Colors.grey)),
-          const SizedBox(height: 8),
-          Text(
-            subtitle,
-            style: const TextStyle(fontSize: 14, color: Colors.grey),
-          ),
-        ],
-      ),
-    );
+    return GalleryEmptyState(icon: icon, title: title, subtitle: subtitle);
   }
 
   Future<void> _showTagOptions(String tag) async {
@@ -1007,7 +1052,7 @@ class _FavoritesPageState extends State<FavoritesPage>
           children: [
             Text(
               tag,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
             ),
             const SizedBox(height: 16),
             ListTile(
@@ -1025,8 +1070,14 @@ class _FavoritesPageState extends State<FavoritesPage>
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title: const Text('取消收藏', style: TextStyle(color: Colors.red)),
+              leading: Icon(
+                Icons.delete,
+                color: Theme.of(context).colorScheme.error,
+              ),
+              title: Text(
+                '取消收藏',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
               onTap: () {
                 Navigator.pop(context, 'remove');
               },

@@ -52,6 +52,40 @@ void main() {
   });
 
   test(
+    'category migration fills missing categories and preserves saved values',
+    () async {
+      await manager.addFavoriteTag('missing');
+      await manager.addFavoriteTag('saved_zero', category: 0);
+      await manager.addFavoriteTag('saved_character', category: 4);
+
+      await Future.wait([
+        manager.updateFavoriteTagCategory('missing', 0),
+        manager.updateFavoriteTagCategory('saved_zero', 1),
+        manager.updateFavoriteTagCategory('saved_character', 1),
+      ]);
+
+      final entries = await manager.getFavoriteTagEntries();
+      expect(
+        {for (final entry in entries) entry['tag']: entry['category']},
+        {'missing': 0, 'saved_zero': 0, 'saved_character': 4},
+      );
+    },
+  );
+
+  test('a stale migration does not overwrite a newly saved category', () async {
+    await manager.addFavoriteTag('blue_hair');
+    final oldEntry = (await manager.getFavoriteTagEntries()).single;
+    expect(oldEntry['category'], isNull);
+
+    await manager.removeFavoriteTag('blue_hair');
+    await manager.addFavoriteTag('blue_hair', category: 0);
+    await manager.updateFavoriteTagCategory(oldEntry['tag'] as String, 4);
+
+    final currentEntry = (await manager.getFavoriteTagEntries()).single;
+    expect(currentEntry['category'], 0);
+  });
+
+  test(
     'history additions are preserved and clear wins when called last',
     () async {
       await Future.wait([

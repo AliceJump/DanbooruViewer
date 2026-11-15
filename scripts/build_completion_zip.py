@@ -19,6 +19,17 @@ import os
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
 
+if __package__:
+    from .build_completion_index import (
+        FORMAT_VERSION as INDEX_FORMAT_VERSION,
+        build_index,
+    )
+else:
+    from build_completion_index import (
+        FORMAT_VERSION as INDEX_FORMAT_VERSION,
+        build_index,
+    )
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
@@ -58,6 +69,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_FILE = ROOT / "assets" / "danbooru_completion.zip"
 TEMP_OUTPUT_FILE = OUTPUT_FILE.with_suffix(".zip.tmp")
 MANIFEST_FILE = OUTPUT_FILE.with_suffix(".manifest.json")
+INDEX_FILE = ROOT / "assets" / "danbooru_completion.index.zip"
+BOOTSTRAP_FILE = ROOT / "assets" / "danbooru_completion.bootstrap.json"
 COMPACT_FILE = "completion_candidates.json"
 
 # Crawler-side SQLite database (kept; the source of tag + category data).
@@ -293,6 +306,7 @@ def write_manifest(signature: dict, item_count: int, output_size: int):
                 "items": item_count,
                 "output_size": output_size,
                 "updated_at": int(time.time()),
+                "index_version": INDEX_FORMAT_VERSION,
             },
             ensure_ascii=False,
             indent=2,
@@ -402,6 +416,12 @@ def main():
             f"✅ unchanged: {OUTPUT_FILE} "
             f"({manifest.get('items', 0):,} items, {manifest.get('output_size', 0):,} bytes)"
         )
+        # A legacy JSON ZIP can be unchanged while its new index is absent,
+        # stale, or from an older format. The index builder checks its version,
+        # source hash, and generated-file identity before skipping work.
+        build_index(OUTPUT_FILE, INDEX_FILE, BOOTSTRAP_FILE)
+        if manifest.get("index_version") != INDEX_FORMAT_VERSION:
+            write_manifest(signature, manifest.get("items", 0), OUTPUT_FILE.stat().st_size)
         if args.clean_legacy:
             _clean_legacy()
         return
@@ -438,6 +458,10 @@ def main():
 
     size = OUTPUT_FILE.stat().st_size
     write_manifest(signature, len(compact), size)
+    build_index(
+        OUTPUT_FILE, INDEX_FILE, BOOTSTRAP_FILE,
+        candidates=sorted_list, force=True,
+    )
 
     print(f"✅ done: {len(compact)} items with categories, {size:,} bytes -> {OUTPUT_FILE}")
 

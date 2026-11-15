@@ -8,9 +8,11 @@ import 'package:http/http.dart' as http;
 
 import 'package:danbooru_viewer/main.dart';
 
+import 'support/fake_completion_service.dart';
+
 void main() {
   testWidgets('shows search UI', (WidgetTester tester) async {
-    await tester.pumpWidget(const MyApp());
+    await tester.pumpWidget(MyApp(completionService: FakeCompletionService()));
 
     expect(find.text('Danbooru Viewer'), findsOneWidget);
     expect(find.bySemanticsLabel('搜索...'), findsOneWidget);
@@ -25,6 +27,7 @@ void main() {
       MaterialApp(
         home: MyHomePage(
           title: 'test',
+          completionService: FakeCompletionService(),
           fetchPosts: (uri) {
             requests.add(uri);
             final response = Completer<http.Response>();
@@ -76,6 +79,7 @@ void main() {
       MaterialApp(
         home: MyHomePage(
           title: 'test',
+          completionService: FakeCompletionService(),
           fetchPosts: (uri) async {
             requests.add(uri);
             return http.Response('[]', 200);
@@ -98,6 +102,7 @@ void main() {
       MaterialApp(
         home: MyHomePage(
           title: 'test',
+          completionService: FakeCompletionService(),
           fetchPosts: (uri) async {
             requests.add(uri);
             if (uri.queryParameters['page'] == '1') {
@@ -133,7 +138,11 @@ void main() {
     final pending = Completer<http.Response>();
     await tester.pumpWidget(
       MaterialApp(
-        home: MyHomePage(title: 'test', fetchPosts: (_) => pending.future),
+        home: MyHomePage(
+          title: 'test',
+          fetchPosts: (_) => pending.future,
+          completionService: FakeCompletionService(),
+        ),
       ),
     );
 

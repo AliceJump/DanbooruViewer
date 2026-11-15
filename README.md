@@ -52,6 +52,31 @@
   - 通用标签
 - **快速搜索**：点击任何标签可直接搜索相关内容
 
+## 大规模标签补全
+
+应用使用预生成的二进制索引查询完整标签库，启动时先读取约 1.4 KB 的默认候选。
+Android 等原生平台将完整索引保存在后台 worker，首次解压后写入缓存；输入查询
+使用前缀索引、保留子串匹配的后台查询、120 ms 防抖及最近查询缓存。
+详情页与收藏页只查实际出现的标签，保留中文别名和标签分类。
+
+首次开发时，先通过 Git LFS 下载原始 JSON ZIP，再生成应用资源；这一步应在
+`flutter pub get`、`flutter test` 或 `flutter run` 之前完成：
+
+```bash
+git lfs pull --include='assets/danbooru_completion.zip'
+python scripts/build_completion_index.py
+```
+
+`danbooru_completion.index.zip` 和 `danbooru_completion.bootstrap.json` 是构建时
+生成的派生文件，已加入 `.gitignore`。Git LFS 只需拉取原始 ZIP；应用打包时仍会
+包含生成的索引 ZIP 和 bootstrap。源数据更新后，重新执行生成命令即可。
+
+CI、Release 与 Web 部署会在 Flutter 步骤之前自动生成这两个资源。每周同步提交
+更新后的源数据，下一次构建会据此重建索引，无需另行提交派生文件。
+
+基于 2,132,126 条候选的完整测量、缓存空间与平台限制见
+[标签搜索性能说明](docs/tag-search-performance.md)。
+
 ## 技术栈
 
 ### 框架与语言
@@ -142,23 +167,33 @@ https://danbooru.donmai.us/posts.json?tags=&limit=100&page=1
 #### 前置需求
 - Flutter SDK (3.10.7+)
 - Dart SDK
+- Python 3（生成标签补全索引，脚本仅使用标准库）
+- Git LFS（下载原始标签补全 ZIP）
 - Android Studio / Xcode（用于模拟器/设备）
 - 网络连接（访问 Danbooru API）
 
 #### 步骤
+
 1. 克隆项目
-2. 运行依赖安装：
+2. 在仓库根目录下载源数据并生成标签补全资源：
+   ```bash
+   git lfs pull --include='assets/danbooru_completion.zip'
+   python scripts/build_completion_index.py
+   ```
+3. 运行依赖安装：
    ```bash
    flutter pub get
    ```
-3. 选择目标设备/模拟器：
+4. 选择目标设备/模拟器：
    ```bash
    flutter devices
    ```
-4. 运行应用：
+5. 运行应用：
    ```bash
    flutter run
    ```
+
+直接运行 `flutter test` 或其他 Flutter 构建命令前，也需先完成第 2 步。
 
 ### 基本操作
 
