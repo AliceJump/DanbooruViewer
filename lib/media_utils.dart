@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
 import 'DragHelper.dart';
+import 'media_image_frame.dart';
 import 'media_save_service.dart';
 import 'media_types.dart';
 import 'network/app_cache_manager.dart';
@@ -82,14 +83,28 @@ Future<ImageProvider> cachedMediaImageProvider(String url) async {
 
 int _videoCacheSequence = 0;
 
+@visibleForTesting
+VideoPlayerController createMediaVideoController(Uri source) {
+  // Detail/full-screen pages own lifecycle pauses and never auto-resume. This
+  // does not enable background playback in the UI: it disables the plugin's
+  // extra lifecycle observer, which a failed platform create cannot release.
+  final options = VideoPlayerOptions(allowBackgroundPlayback: true);
+  return source.scheme == 'file'
+      ? VideoPlayerController.file(
+          File.fromUri(source),
+          videoPlayerOptions: options,
+        )
+      : VideoPlayerController.networkUrl(source, videoPlayerOptions: options);
+}
+
 Future<VideoPlayerController> cachedVideoController(
   String url, {
   required NetworkCancelToken cancelToken,
 }) async {
   cancelToken.throwIfCancelled();
-  if (kIsWeb) return VideoPlayerController.networkUrl(Uri.parse(url));
-  return VideoPlayerController.file(
-    await cacheVideoFile(url, cancelToken: cancelToken),
+  if (kIsWeb) return createMediaVideoController(Uri.parse(url));
+  return createMediaVideoController(
+    (await cacheVideoFile(url, cancelToken: cancelToken)).uri,
   );
 }
 
@@ -179,15 +194,51 @@ Future<File> cacheVideoFile(
   }
 }
 
-Future<void> openMediaExternally(BuildContext context, String url) async {
+Future<void> openMediaExternally(
+  BuildContext context,
+  String url, {
+  CacheManager? cacheManager,
+}) async {
   try {
     final remote = remoteMediaUri(url);
     if (remote == null) throw const FormatException('媒体地址无效。');
-    final uri = kIsWeb
-        ? remote
-        : Uri.file((await AppCacheManager.instance.getSingleFile(url)).path);
-    if (!context.mounted) return;
-    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+    bool opened;
+    if (kIsWeb) {
+      if (!context.mounted) return;
+      opened = await launchUrl(remote, mode: LaunchMode.externalApplication);
+    } else {
+      final file = await (cacheManager ?? AppCacheManager.instance)
+          .getSingleFile(url);
+      if (!context.mounted) return;
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final extension = remote.path.split('.').last.toLowerCase();
+        final mimeType = switch (extension) {
+          'mp4' || 'm4v' => 'video/mp4',
+          'webm' => 'video/webm',
+          'mov' => 'video/quicktime',
+          'jpg' || 'jpeg' => 'image/jpeg',
+          'png' => 'image/png',
+          'gif' => 'image/gif',
+          'webp' => 'image/webp',
+          'avif' => 'image/avif',
+          _ => 'application/octet-stream',
+        };
+        opened =
+            await const MethodChannel(
+              'com.alicejump.danbooru_viewer/external_media',
+            ).invokeMethod<bool>('openFile', {
+              'path': file.path,
+              'mimeType': mimeType,
+            }) ??
+            false;
+      } else {
+        opened = await launchUrl(
+          Uri.file(file.path),
+          mode: LaunchMode.externalApplication,
+        );
+      }
+    }
+    if (!opened) {
       throw const MediaSaveException('没有找到能够打开此文件的外部播放器。');
     }
   } catch (error) {
@@ -229,6 +280,7 @@ class CachedMediaImage extends StatefulWidget {
   final ImageErrorWidgetBuilder? errorBuilder;
   final int maxDecodeDimension;
   final String? previewUrl;
+  final MediaImageProviderLoader? imageProviderLoader;
 
   const CachedMediaImage({
     super.key,
@@ -239,6 +291,7 @@ class CachedMediaImage extends StatefulWidget {
     this.errorBuilder,
     this.maxDecodeDimension = 4096,
     this.previewUrl,
+    this.imageProviderLoader,
   });
 
   @override
@@ -247,21 +300,71 @@ class CachedMediaImage extends StatefulWidget {
 
 class _CachedMediaImageState extends State<CachedMediaImage> {
   late Future<ImageProvider> _imageFuture;
+  MediaImageFrame? _frame;
+  int _generation = 0;
 
   @override
   void initState() {
     super.initState();
-    _imageFuture = cachedMediaImageProvider(widget.imageUrl);
+    _beginLoad();
     AppNetworkService.instance.addListener(_reload);
   }
 
   void _reload() {
     if (!mounted) return;
-    setState(() => _imageFuture = cachedMediaImageProvider(widget.imageUrl));
+    setState(_beginLoad);
+  }
+
+  void _retry() {
+    if (!mounted) return;
+    setState(() => _beginLoad(clearCache: true));
+  }
+
+  void _beginLoad({bool clearCache = false}) {
+    final generation = ++_generation;
+    _frame?.dispose();
+    _frame = null;
+    _imageFuture = _loadFirstFrame(
+      widget.imageUrl,
+      widget.maxDecodeDimension,
+      widget.imageProviderLoader,
+      generation,
+      clearCache: clearCache,
+    );
+  }
+
+  Future<ImageProvider> _loadFirstFrame(
+    String url,
+    int maxDimension,
+    MediaImageProviderLoader? loader,
+    int generation, {
+    required bool clearCache,
+  }) async {
+    if (clearCache && loader == null) {
+      await AppCacheManager.instance.removeFile(url);
+    }
+    final provider = ResizeImage(
+      await (loader ?? cachedMediaImageProvider)(url),
+      width: maxDimension,
+      height: maxDimension,
+      policy: ResizeImagePolicy.fit,
+    );
+    if (!mounted || generation != _generation) {
+      throw StateError('图片加载已取消。');
+    }
+    final frame = MediaImageFrame(provider);
+    _frame = frame;
+    if (!await frame.ready) {
+      frame.dispose();
+      throw frame.error ?? StateError('图片加载已取消。');
+    }
+    return provider;
   }
 
   @override
   void dispose() {
+    _generation++;
+    _frame?.dispose();
     AppNetworkService.instance.removeListener(_reload);
     super.dispose();
   }
@@ -269,8 +372,10 @@ class _CachedMediaImageState extends State<CachedMediaImage> {
   @override
   void didUpdateWidget(CachedMediaImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.imageUrl != widget.imageUrl) {
-      _imageFuture = cachedMediaImageProvider(widget.imageUrl);
+    if (oldWidget.imageUrl != widget.imageUrl ||
+        oldWidget.maxDecodeDimension != widget.maxDecodeDimension ||
+        oldWidget.imageProviderLoader != widget.imageProviderLoader) {
+      _beginLoad();
     }
   }
 
@@ -283,12 +388,7 @@ class _CachedMediaImageState extends State<CachedMediaImage> {
         final provider = snapshot.data;
         if (provider != null) {
           return Image(
-            image: ResizeImage(
-              provider,
-              width: widget.maxDecodeDimension,
-              height: widget.maxDecodeDimension,
-              policy: ResizeImagePolicy.fit,
-            ),
+            image: provider,
             width: widget.width,
             height: widget.height,
             fit: widget.fit,
@@ -307,6 +407,7 @@ class _CachedMediaImageState extends State<CachedMediaImage> {
                 width: widget.width,
                 height: widget.height,
                 maxDecodeDimension: 1024,
+                imageProviderLoader: widget.imageProviderLoader,
               ),
               if (snapshot.hasError)
                 Positioned(
@@ -315,7 +416,7 @@ class _CachedMediaImageState extends State<CachedMediaImage> {
                   right: 0,
                   child: Center(
                     child: FilledButton.tonal(
-                      onPressed: _reload,
+                      onPressed: _retry,
                       child: const Text('原图加载失败，重试'),
                     ),
                   ),

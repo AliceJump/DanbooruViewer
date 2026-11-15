@@ -4,8 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
 
+import 'media_image_frame.dart';
 import 'media_utils.dart';
 import 'media_video_session.dart';
+import 'network/app_cache_manager.dart';
 import 'network/app_network_service.dart';
 import 'post.dart';
 import 'video_controls.dart';
@@ -16,6 +18,7 @@ class FullScreenImagePage extends StatefulWidget {
   final String heroTag;
   final List<Post>? posts;
   final int initialIndex;
+  final MediaImageProviderLoader? imageProviderLoader;
 
   const FullScreenImagePage({
     super.key,
@@ -24,6 +27,7 @@ class FullScreenImagePage extends StatefulWidget {
     required this.heroTag,
     this.posts,
     this.initialIndex = 0,
+    this.imageProviderLoader,
   });
 
   @override
@@ -35,6 +39,11 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
   late int _index;
   final _video = MediaVideoSession();
   ImageProvider? _imageProvider;
+  ImageProvider? _previewProvider;
+  MediaImageFrame? _originalFrame;
+  MediaImageFrame? _previewFrame;
+  String? _loadedSource;
+  String? _loadedPreview;
   Object? _imageError;
   bool _loading = true;
   int _generation = 0;
@@ -80,6 +89,8 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
   @override
   void dispose() {
     _generation++;
+    _originalFrame?.dispose();
+    _previewFrame?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     AppNetworkService.instance.removeListener(_reload);
     _video.removeListener(_mediaChanged);
@@ -92,11 +103,40 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     _load();
   }
 
+  Future<void> _retryImage() async {
+    final generation = _generation;
+    final source = _source;
+    if (source == null) return;
+    try {
+      if (widget.imageProviderLoader == null) {
+        await AppCacheManager.instance.removeFile(source);
+      }
+      if (mounted && generation == _generation) _load();
+    } catch (error) {
+      if (mounted && generation == _generation) {
+        setState(() => _imageError = error);
+      }
+    }
+  }
+
   void _load() {
     final generation = ++_generation;
     final source = _source;
+    final preview = _preview;
+    final sameSource = source == _loadedSource && preview == _loadedPreview;
+    _loadedSource = source;
+    _loadedPreview = preview;
+    _originalFrame?.dispose();
+    _originalFrame = null;
+    if (!sameSource) {
+      _previewFrame?.dispose();
+      _previewFrame = null;
+    }
     setState(() {
-      _imageProvider = null;
+      if (!sameSource) {
+        _imageProvider = null;
+        _previewProvider = null;
+      }
       _imageError = null;
       _loading = source != null;
     });
@@ -111,8 +151,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
       return;
     }
     // Both requests use the same cache. A slow preview never blocks the original.
-    final preview = _preview;
-    if (preview != null && preview != source) {
+    if (preview != null && preview != source && _previewProvider == null) {
       unawaited(_loadImage(preview, generation, isOriginal: false));
     }
     if (!_isVideo) {
@@ -125,10 +164,26 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     int generation, {
     required bool isOriginal,
   }) async {
+    MediaImageFrame? frame;
     try {
-      final provider = await cachedMediaImageProvider(url);
+      final provider =
+          await (widget.imageProviderLoader ?? cachedMediaImageProvider)(url);
+      if (!mounted || generation != _generation) return;
+      frame = MediaImageFrame(provider);
+      if (isOriginal) {
+        _originalFrame?.dispose();
+        _originalFrame = frame;
+      } else {
+        _previewFrame?.dispose();
+        _previewFrame = frame;
+      }
+      if (!await frame.ready) {
+        if (frame.error != null) throw frame.error!;
+        return;
+      }
       if (!mounted || generation != _generation) return;
       setState(() {
+        if (!isOriginal) _previewProvider = provider;
         if (isOriginal || _imageProvider == null) _imageProvider = provider;
         if (isOriginal) {
           _loading = false;
@@ -136,6 +191,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
         }
       });
     } catch (error) {
+      frame?.dispose();
       if (!mounted || generation != _generation || !isOriginal) return;
       setState(() {
         _loading = false;
@@ -212,7 +268,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     if (_imageProvider == null) {
       return _imageError == null
           ? const Center(child: CircularProgressIndicator())
-          : _error(formatMediaLoadError(_imageError!), retry: _reload);
+          : _error(formatMediaLoadError(_imageError!), retry: _retryImage);
     }
     return Stack(
       fit: StackFit.expand,
@@ -226,7 +282,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
           loadingBuilder: (context, event) =>
               const Center(child: CircularProgressIndicator()),
           errorBuilder: (context, error, stack) =>
-              _error(formatMediaLoadError(error), retry: _reload),
+              _error(formatMediaLoadError(error), retry: _retryImage),
         ),
         if (_loading)
           const Positioned(
@@ -254,7 +310,10 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
                       '原图加载失败，正在显示预览。',
                       style: TextStyle(color: Colors.white),
                     ),
-                    TextButton(onPressed: _reload, child: const Text('重试原图')),
+                    TextButton(
+                      onPressed: _retryImage,
+                      child: const Text('重试原图'),
+                    ),
                   ],
                 ),
               ),

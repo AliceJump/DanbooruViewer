@@ -61,10 +61,15 @@ class MediaVideoSession extends ChangeNotifier {
       !_disposed && _requestedUrl == url && _requestedRevision == revision;
 
   Future<void> _disposeController(VideoPlayerController? controller) async {
+    if (controller == null) return;
     try {
-      await controller?.dispose();
+      // A platform create failure can leave the plugin waiting forever for its
+      // creation completer. Keep cleanup running, but do not let that wait (or
+      // a stalled platform dispose) prevent retrying or opening another video.
+      await controller.dispose().timeout(const Duration(seconds: 2));
     } on Object {
-      // Disposal is terminal; never retry or resurrect the same controller.
+      // The original dispose Future still owns any late platform cleanup.
+      // Never retry disposal or resurrect this controller.
     }
   }
 

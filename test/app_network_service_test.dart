@@ -12,6 +12,33 @@ import 'support/failing_preferences_store.dart';
 
 void main() {
   group('bounded request policy', () {
+    test(
+      'closing a client during request finalization prevents sending',
+      () async {
+        var sends = 0;
+        final service = AppNetworkService.forTesting(
+          clientFactory: (_) => MockClient((_) async {
+            sends++;
+            return http.Response('unexpected', 200);
+          }),
+        );
+        addTearDown(service.dispose);
+        final client = service.createClient();
+        final request = http.StreamedRequest(
+          'GET',
+          Uri.parse('https://example.test/'),
+        );
+        final failed = expectLater(
+          client.send(request),
+          throwsA(isA<NetworkCancelledException>()),
+        );
+        client.close();
+        await request.sink.close();
+        await failed;
+        expect(sends, 0);
+      },
+    );
+
     test('connection probe completes after a bounded response body', () async {
       final service = AppNetworkService.forTesting(
         clientFactory: (_) =>

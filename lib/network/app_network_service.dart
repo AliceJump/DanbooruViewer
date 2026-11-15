@@ -144,9 +144,9 @@ class AppNetworkService extends ChangeNotifier {
       for (final request in _active.toList()) {
         request.abort(const NetworkCancelledException('网络设置已更改，请重新加载。'));
       }
-      // Let terminated response streams and cache download subjects settle
-      // before listeners create replacements for the same URL.
-      await Future<void>.delayed(Duration.zero);
+      // Cache downloads isolate their in-flight subjects by this revision.
+      // A paused disk sink may delay its old error indefinitely; notification
+      // must not depend on an arbitrary event-loop delay or that sink resuming.
       if (_disposed) throw const NetworkCancelledException();
       _revision++;
       notifyListeners();
@@ -510,7 +510,9 @@ class _PolicyClient extends http.BaseClient {
         '媒体客户端只支持读取请求。',
       );
     }
-    if ((await request.finalize().toBytes()).isNotEmpty) {
+    final body = await request.finalize().toBytes();
+    if (_closed) throw const NetworkCancelledException();
+    if (body.isNotEmpty) {
       throw const NetworkException(
         NetworkErrorKind.invalidResponse,
         '读取请求不能包含正文。',
@@ -543,13 +545,38 @@ class _PolicyClient extends http.BaseClient {
   Stream<List<int>> _releaseOnDone(
     Stream<List<int>> source,
     NetworkCancelToken token,
-  ) async* {
-    try {
-      yield* source;
-    } finally {
+  ) {
+    StreamSubscription<List<int>>? subscription;
+    late StreamController<List<int>> controller;
+    void release() {
       _tokens.remove(token);
       token.cancel();
     }
+
+    // Unlike async*, onCancel runs even when a subscriber cancels immediately
+    // after listen(), before an asynchronous generator body could enter try.
+    controller = StreamController<List<int>>(
+      onListen: () {
+        subscription = source.listen(
+          controller.add,
+          onError: controller.addError,
+          onDone: () {
+            subscription = null;
+            release();
+            unawaited(controller.close());
+          },
+        );
+      },
+      onPause: () => subscription?.pause(),
+      onResume: () => subscription?.resume(),
+      onCancel: () async {
+        final current = subscription;
+        subscription = null;
+        release();
+        await current?.cancel();
+      },
+    );
+    return controller.stream;
   }
 
   @override

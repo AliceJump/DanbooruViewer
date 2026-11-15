@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
@@ -66,9 +64,24 @@ Future<MediaSaveResult> saveMediaResource(
     throw const MediaSaveException('媒体地址无效，仅支持 HTTP、HTTPS 或已有的本地文件。');
   }
 
+  Future<MediaSaveInput> convertUgoira(MediaSaveInput input) async {
+    final bytes = await readBoundedUgoiraZipBytes(
+      input.stream,
+      cancelToken: cancelToken,
+      total: input.length,
+      onProgress: onProgress,
+    );
+    final gif = await compute(mergeUgoiraBytesToGifSync, bytes);
+    cancelToken?.throwIfCancelled();
+    return MediaSaveInput(Stream.value(gif), length: gif.length);
+  }
+
   Future<MediaSaveInput> openSource() async {
     cancelToken?.throwIfCancelled();
-    if (uri == null) return platform.openLocalMedia(source);
+    if (uri == null) {
+      final input = await platform.openLocalMedia(source);
+      return isUgoiraUrl(source) ? convertUgoira(input) : input;
+    }
     final cached = isUgoiraUrl(source)
         ? await getCachedUgoiraGifFile(source)
         : (await AppCacheManager.instance.getFileFromCache(source))?.file;
@@ -92,19 +105,7 @@ Future<MediaSaveResult> saveMediaResource(
     if (!isUgoiraUrl(source)) {
       return mediaSaveInputFromHttp(response);
     }
-    final zip = BytesBuilder(copy: false);
-    await for (final chunk in response.stream) {
-      cancelToken?.throwIfCancelled();
-      if (zip.length + chunk.length > maxUgoiraZipBytes) {
-        throw const MediaSaveException('动图压缩包过大，请打开原链接保存原文件。');
-      }
-      zip.add(chunk);
-      onProgress?.call(zip.length, response.contentLength);
-    }
-    cancelToken?.throwIfCancelled();
-    final gif = await compute(mergeUgoiraBytesToGifSync, zip.takeBytes());
-    cancelToken?.throwIfCancelled();
-    return MediaSaveInput(Stream.value(gif), length: gif.length);
+    return convertUgoira(mediaSaveInputFromHttp(response));
   }
 
   return platform.saveMediaToPlatform(

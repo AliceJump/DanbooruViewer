@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:danbooru_viewer/media_save_platform_io.dart';
 import 'package:danbooru_viewer/media_save_service.dart';
 import 'package:danbooru_viewer/media_save_types.dart';
@@ -7,6 +8,7 @@ import 'package:danbooru_viewer/media_types.dart';
 import 'package:danbooru_viewer/network/app_network_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:image/image.dart' as img;
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 
 class _TemporaryPaths extends PathProviderPlatform {
@@ -83,6 +85,30 @@ void main() {
       PathProviderPlatform.instance = previous;
       await temporary.delete(recursive: true);
     });
+
+    test(
+      'a local Ugoira ZIP is converted before publishing a GIF name',
+      () async {
+        final frame = img.Image(width: 8, height: 6);
+        img.fill(frame, color: img.ColorRgb8(90, 20, 50));
+        final archive = Archive()
+          ..add(ArchiveFile.bytes('000000.png', img.encodePng(frame)));
+        final source = File('${temporary.path}/animation.zip');
+        final zipped = ZipEncoder().encode(archive);
+        await source.writeAsBytes(zipped);
+        final result = await saveMediaResource(source.path, postId: 123);
+        expect(result.destination, contains('danbooru_123_animation_'));
+        expect(result.destination, endsWith('.gif'));
+        expect(result.isVideo, isFalse);
+        final saved = await File(result.destination).readAsBytes();
+        expect(String.fromCharCodes(saved.take(3)), 'GIF');
+        final decoded = img.decodeGif(saved)!;
+        expect(decoded.width, 8);
+        expect(decoded.height, 6);
+        expect(await source.readAsBytes(), zipped);
+      },
+      skip: !(Platform.isWindows || Platform.isLinux),
+    );
 
     test(
       'CORS-hidden encoding does not reject a complete decoded browser download',
