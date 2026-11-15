@@ -1,304 +1,133 @@
-# 发布快速指南
+# 发布指南
 
-快速参考：如何发布新版本。
+本仓库从已审查、已合并且 CI 成功的 `master` 提交发布稳定版本。
+发布版本使用 `vX.Y.Z`，并与 `pubspec.yaml` 中的 `X.Y.Z+正整数构建号` 对应。
 
-## 5 分钟快速发布
+## 1. 准备版本并合并 PR
 
-### 第 1 步：更新文件
-```bash
-# 1. 更新版本号
-nano pubspec.yaml
-# 修改: version: X.Y.Z+N
-
-# 2. 更新 CHANGELOG
-nano CHANGELOG.md
-# 在 ## [Unreleased] 下添加变更
-# 然后创建新的版本号标题
-```
-
-### 第 2 步：提交并创建 Tag
-```bash
-# 1. 添加所有改动
-git add pubspec.yaml CHANGELOG.md
-
-# 2. 提交
-git commit -m "chore: release v1.0.0"
-
-# 3. 创建 Tag（触发自动构建）
-git tag v1.0.0
-
-# 4. 推送到 GitHub
-git push origin main
-git push origin v1.0.0
-```
-
-### 第 3 步：等待和验证
-- ⏳ 构建需要 **30-45 分钟**
-- 📊 在 GitHub Actions 页面监控进度
-- ✅ 完成后在 GitHub Releases 页面查看
-
----
-
-## 详细步骤
-
-### Step 1: 准备发布
-
-#### 更新版本号
-编辑 `pubspec.yaml`:
-```yaml
-# 当前
-version: 1.0.0+1
-
-# 修改为新版本
-version: 1.1.0+1
-```
-
-#### 更新 CHANGELOG
-编辑 `CHANGELOG.md`:
-```markdown
-## [Unreleased]
-
-### Added
-- 新功能 A
-- 新功能 B
-
-### Fixed
-- 修复问题 1
-- 修复问题 2
-```
-
-↓ 改为 ↓
-
-```markdown
-## [1.1.0] - 2026-02-15
-
-### Added
-- 新功能 A
-- 新功能 B
-
-### Fixed
-- 修复问题 1
-- 修复问题 2
-
-## [Unreleased]
-```
-
-### Step 2: 本地测试（可选但推荐）
+在工作分支更新 `pubspec.yaml` 和 `CHANGELOG.md`。应用版本与构建号都应高于
+已发布版本；例如本次为 `1.0.67+67`。执行相关回归测试，并提交 PR。
+全新检出需先生成补全资源：
 
 ```bash
-# 测试应用是否能正常构建
-flutter build apk --release
-
-# 或
-flutter build web --release
-
-# 验证完后清理
-flutter clean
+python scripts/build_completion_index.py
+flutter pub get
+flutter analyze --no-fatal-infos
+flutter test
+python -m unittest discover -s tests
 ```
 
-### Step 3: 提交代码
+完成审查和 PR 的 CI 后，使用 **squash** 合并到 `master`。随后等待合并产生的
+**完整提交 SHA** 的 `CI` push 运行成功；PR 分支的成功记录不能代替这次检查。
+合并后的 master CI 运行 Flutter/Python/JavaScript 回归与 Web release 构建。
+由仓库所有者发起的同仓库 PR 阶段另构建并校验签名 Android APK。
+
+## 2. 从已验证的 SHA 触发发布
+
+以下两种入口选择一种。示例中的 SHA 必须替换为上一步已通过 CI 的完整提交值。
+
+### 方式 A：发布分支
 
 ```bash
-# 1. 检查变更
-git status
-
-# 2. 添加文件
-git add pubspec.yaml CHANGELOG.md
-
-# 3. 提交
-git commit -m "chore: release v1.1.0"
-
-# 4. 推送主分支
-git push origin main
+release_tag="v1.0.67"
+release_sha="<已通过 CI 的 master 完整提交 SHA>"
+git fetch origin master
+git branch "release/$release_tag" "$release_sha"
+git push origin "refs/heads/release/$release_tag"
 ```
 
-### Step 4: 创建 Release Tag
+在 GitHub 网页或通过 Git refs API 从该 SHA 创建 `release/v1.0.67` 也会触发
+`Build Release`。分支创建使用 `create` 事件；后续分支更新使用 `push` 事件。
+
+### 方式 B：直接创建版本 tag
 
 ```bash
-# 方法 A: 命令行
-git tag v1.1.0
-git push origin v1.1.0
-
-# 方法 B: GitHub Web UI
-# 1. 浏览器打开 https://github.com/YOUR_USERNAME/danbooru-viewer/releases
-# 2. 点击 "Create a new release"
-# 3. 输入 "v1.1.0"
-# 4. 点击 "Create release"
+release_tag="v1.0.67"
+release_sha="<已通过 CI 的 master 完整提交 SHA>"
+git fetch origin master
+git tag "$release_tag" "$release_sha"
+git push origin "refs/tags/$release_tag"
 ```
 
-### Step 5: 监控构建
+这里只推送新 tag。代码变更通过 PR 合入 `master`，不在发布步骤直接推送主分支。
+已有 tag 必须指向同一提交；工作流不会移动或覆盖它。
 
-在 GitHub Actions 页面：
-```
-https://github.com/YOUR_USERNAME/danbooru-viewer/actions
-```
+手动运行 `Build Release` 时，也应选择相应的 `vX.Y.Z` tag 或
+`release/vX.Y.Z` 分支。选择普通分支（包括 `master`）会被发布校验拒绝。
+当前入口只支持稳定版本；`-alpha`、`-beta` 和 `-rc` 不在支持范围内。
 
-查看 "Build Release" 工作流：
-- 🟡 黄色 = 正在运行
-- ✅ 绿色 = 成功
-- ❌ 红色 = 失败
+## 3. 工作流校验与构建
 
-### Step 6: 发布完成
+`prepare` 会检查版本与正整数构建号、固定 checkout SHA、提交已进入 `master`、
+该 SHA 最新的 `CI` push 运行成功，以及已有 tag 指向同一提交。随后 Android、
+Linux、Web、iOS 和 Windows 并行构建。
 
-完成后访问 Releases 页面：
-```
-https://github.com/YOUR_USERNAME/danbooru-viewer/releases
-```
+五个平台全部成功且七个发布文件均非空后，发布作业才创建缺失的 tag，再次检查
+CI、tag 和已有 Release，然后发布。每个构建和发布步骤都使用同一完整 SHA。
 
-下载产物：
-- 📱 danbooru-viewer-android-release.apk
-- 🍎 danbooru-viewer-ios-release.ipa
-- 🐧 danbooru-viewer-linux-release.tar.gz
-- 🪟 danbooru-viewer-windows-release.zip
-- 🌐 danbooru-viewer-web-release.tar.gz
+已有 Release 的检查分页读取 `/releases` 列表，并按 `tag_name` 精确匹配。
+GitHub 只向有 push 权限的调用方显示草稿；准备作业保留 `contents: read`，
+发布作业使用其原有的 `contents: write` 令牌在发布前检查包括草稿在内的列表。
+任何同 tag 的可见 Release 都会阻止发布；列表异常或超过分页上限也会停止。
+工作流没有更新、替换或自动删除已有 Release 的路径。
 
----
+在 [GitHub Actions](https://github.com/AliceJump/DanbooruViewer/actions) 查看
+`Build Release` 的各平台任务及最终发布任务。构建时长取决于平台和依赖缓存。
 
-## 版本号选择指南
+## 4. 下载文件与发布验收
 
-| 情景 | 版本号 | 示例 |
-|------|--------|------|
-| 首次发布 | 1.0.0 | v1.0.0 |
-| 新功能 | X.(Y+1).0 | v1.1.0 |
-| Bug 修复 | X.Y.(Z+1) | v1.0.1 |
-| 测试版本 | X.Y.Z-alpha | v1.1.0-alpha.1 |
-| Beta 版本 | X.Y.Z-beta | v1.1.0-beta.1 |
+在 [Releases](https://github.com/AliceJump/DanbooruViewer/releases) 确认新版本已公开，
+tag 解析到上述发布 SHA，且以下七个文件均已上传且大小非零。
 
----
+| 平台 | 文件 | 说明 |
+| --- | --- | --- |
+| Android ARM64 | `danbooru-viewer-android-arm64-v8a.apk` | 大多数现代 Android 手机和平板 |
+| Android ARMv7 | `danbooru-viewer-android-armeabi-v7a.apk` | 较旧的 32 位设备 |
+| Android x86_64 | `danbooru-viewer-android-x86_64.apk` | 模拟器或 x86_64 设备 |
+| Windows | `danbooru-viewer-windows-release.zip` | 解压后运行 `danbooru_viewer.exe` |
+| Linux | `danbooru-viewer-linux-release.tar.gz` | 解压后运行应用程序 |
+| iOS | `app.ipa` | 未签名，需要自行签名或侧载 |
+| Web | `danbooru-viewer-web-release.tar.gz` | 静态网页构建产物 |
 
-## 常见问题
+Android CI 会核对签名证书与已发布 APK 的一致性，并检查内部 `versionCode`
+递增。Web 压缩包上传不等于 GitHub Pages 部署；Pages 应另行查看对应部署工作流。
 
-### Q: 构建失败了怎么办？
-```bash
-# 1. 检查 Actions 日志找到错误原因
-# 2. 修复代码或配置
-# 3. 提交修改
-git add .
-git commit -m "fix: resolve build issue"
-git push origin main
+## 5. 失败后恢复
 
-# 4. 删除旧 Tag 并创建新的
-git tag -d v1.1.0
-git push origin :refs/tags/v1.1.0
-git tag v1.1.0
-git push origin v1.1.0
-```
+### 构建失败，或发布尚未创建 Release
 
-### Q: 忘记更新版本号怎么办？
-```bash
-# 1. 更新文件
-git add pubspec.yaml
-git commit --amend --no-edit
-git push origin main -f
+先查看失败任务的日志。若只是临时网络或构建环境故障，排除原因后在 Actions
+选择 **Re-run failed jobs**，保留原发布 SHA 和 tag。需要修改代码或配置时，
+先通过新的 PR 和 CI；如果原版本 tag 已创建，使用新的版本号，保持旧 tag 不动。
 
-# 2. 重新创建 Tag（需要删除旧的）
-git tag -d v1.1.0
-git push origin :refs/tags/v1.1.0
-git tag v1.1.0
-git push origin v1.1.0
-```
+### 上传失败，留下未发布草稿
 
-### Q: 如何删除已发布的版本？
-```bash
-# 1. 删除本地 Tag
-git tag -d v1.1.0
+带附件的 `gh release create` 会分步创建草稿、上传文件、再发布；上传中断可能
+留下草稿。草稿会阻止后续发布校验，不能只反复重跑。
 
-# 2. 删除远程 Tag
-git push origin :refs/tags/v1.1.0
+1. 以有仓库写权限的账户打开 Releases，找到这次失败留下的草稿。核对 tag、
+   创建时间、发布说明里的 SHA、失败运行的 SHA，以及实际 tag 指向。若归属或
+   SHA 不一致，先查清原因，保留现状。
+2. 核对草稿中的文件名、大小和已上传内容，与该次运行的 Actions 制品对应；
+   保存仍需保留的说明或文件。确认这是本次失败留下的未发布草稿后，删除
+   **该草稿 Release**，保留已有 tag、发布分支和对应 SHA，不删除 tag。
+3. 在原失败运行选择 **Re-run failed jobs**。发布作业会重新下载同次运行的
+   构建制品、验证七个文件及原 tag/SHA，再重新创建 Release。
 
-# 3. 在 GitHub Releases 页面删除 Release（可选）
-```
+以上恢复只处理确认归属的未发布草稿。若 Release 已公开，先按上一节核对
+七个文件和 tag；已完成的发布不需要重新创建。已公开版本有问题时，通过新的
+PR、版本号和构建发布修正版，保留原版本与制品记录。
 
-### Q: 可以创建只针对特定平台的版本吗？
-编辑 `.github/workflows/build.yml` 的 `matrix` 部分，移除不需要的平台。
+### 忘记更新版本或选错提交
 
-### Q: 如何测试工作流而不创建正式发布？
-```bash
-# 使用 -rc（Release Candidate）标签
-git tag v1.1.0-rc.1
-git push origin v1.1.0-rc.1
-```
+准备阶段会因版本、SHA 或 CI 不匹配而失败。通过 PR 修正版本和变更日志，
+等待新的 master 提交 CI 成功，再以正确的新版本和 SHA 发布。不要强推主分支
+或通过删除、重建旧 tag 改写已记录的版本。
 
----
+## 相关资料
 
-## 发布清单
-
-发布前确保完成以下项目：
-
-- [ ] 代码已审查
-- [ ] 所有测试通过
-- [ ] pubspec.yaml 版本已更新
-- [ ] CHANGELOG.md 已更新
-- [ ] 提交已推送到 main 分支
-- [ ] 未有其他进行中的 CI/CD
-
-发布中：
-
-- [ ] Tag 已创建并推送
-- [ ] GitHub Actions 运行正常
-- [ ] 所有平台构建成功
-
-发布后：
-
-- [ ] Release 页面已创建
-- [ ] 产物可以下载
-- [ ] Web 版本已部署到 GitHub Pages
-- [ ] 版本记录已更新
-
----
-
-## 命令速查表
-
-```bash
-# 查看当前 Tag
-git tag -l
-
-# 查看 Tag 详情
-git show v1.1.0
-
-# 删除本地 Tag
-git tag -d v1.1.0
-
-# 删除远程 Tag
-git push origin --delete v1.1.0
-
-# 推送所有 Tag
-git push --tags
-
-# 基于特定 Tag 创建分支
-git checkout -b hotfix/v1.1.0 v1.1.0
-```
-
----
-
-## 进阶用法
-
-### 自动化版本号更新
-```bash
-#!/bin/bash
-VERSION=$(grep version pubspec.yaml | head -1 | awk '{print $2}')
-git tag $VERSION
-git push origin $VERSION
-```
-
-### 批量发布
-```bash
-# 一次性发布多个版本
-git tag v1.1.0 v1.2.0 v1.3.0
-git push origin v1.1.0 v1.2.0 v1.3.0
-```
-
-### 签名 Tag（推荐用于生产环境）
-```bash
-# 使用 GPG 签名 Tag
-git tag -s v1.1.0 -m "Release v1.1.0"
-git push origin v1.1.0
-```
-
----
-
-## 相关文档
-
-- 详细工作流说明: [.github/WORKFLOWS.md](.github/WORKFLOWS.md)
-- 版本历史记录: [.github/VERSION_HISTORY.md](.github/VERSION_HISTORY.md)
-- 完整 Changelog: [CHANGELOG.md](CHANGELOG.md)
+- [发布工作流](.github/workflows/build.yml)
+- [发布校验脚本](scripts/prepare_release.py)
+- [版本变更记录](CHANGELOG.md)
+- [GitHub Release 列表及草稿可见性](https://docs.github.com/en/rest/releases/releases#list-releases)
+- [GitHub CLI 创建 Release 与附件上传](https://cli.github.com/manual/gh_release_create)

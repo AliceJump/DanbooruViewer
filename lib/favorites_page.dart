@@ -441,7 +441,6 @@ class _FavoritesPageState extends State<FavoritesPage>
             _selectedTagCategory = category;
           });
         },
-        visualDensity: VisualDensity.compact,
       ),
     );
   }
@@ -550,21 +549,27 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   @override
   Widget build(BuildContext context) {
+    final tabHeight = 56 + MediaQuery.textScalerOf(context).scale(14);
     return Scaffold(
       appBar: AppBar(
         title: const Text('我的收藏'),
         bottom: TabBar(
           controller: _tabController,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
           tabs: [
             Tab(
+              height: tabHeight,
               icon: const Icon(Icons.image),
               text: '图片 (${_favoritePosts.length})',
             ),
             Tab(
+              height: tabHeight,
               icon: const Icon(Icons.label),
               text: '标签 (${_favoriteTags.length})',
             ),
             Tab(
+              height: tabHeight,
               icon: const Icon(Icons.history),
               text: '历史 (${_browsingHistory.length})',
             ),
@@ -578,12 +583,19 @@ class _FavoritesPageState extends State<FavoritesPage>
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : TabBarView(
-              controller: _tabController,
-              children: [_buildPostsTab(), _buildTagsTab(), _buildHistoryTab()],
-            ),
+      body: SafeArea(
+        top: false,
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : TabBarView(
+                controller: _tabController,
+                children: [
+                  _buildPostsTab(),
+                  _buildTagsTab(),
+                  _buildHistoryTab(),
+                ],
+              ),
+      ),
     );
   }
 
@@ -592,69 +604,73 @@ class _FavoritesPageState extends State<FavoritesPage>
   // =====================================================
   Widget _buildPostsTab() {
     final filteredPosts = _filterPosts(_favoritePosts, _favFilterChips);
+    final hasSavedPosts = _favoritePosts.isNotEmpty;
 
-    return Column(
-      children: [
-        // 补全式筛选输入
-        _buildSmartFilterInput(
-          controller: _favFilterController,
-          focusNode: _favFilterFocusNode,
-          chips: _favFilterChips,
-          hintText: '输入标签筛选收藏...',
-          onAdd: _addFavFilterChip,
-          onRemove: _removeFavFilterChip,
-          suggestions: _favSuggestions,
-          showSuggestions: _showFavSuggestions,
-          onDismissSuggestions: () =>
-              setState(() => _showFavSuggestions = false),
-        ),
-        // 网格
-        Expanded(
-          child: filteredPosts.isEmpty
-              ? _buildEmptyState(
-                  icon: Icons.favorite_border,
-                  title: '还没有收藏的图片',
-                  subtitle: '在图片详情页点击收藏按钮来添加收藏',
-                )
-              : GalleryGrid(
-                  itemCount: filteredPosts.length,
-                  itemBuilder: (context, index) {
-                    final post = filteredPosts[index];
-                    final previewUrl = post['preview_file_url'] as String?;
-                    final highResUrl =
-                        (post['file_url'] ?? post['large_file_url']) as String?;
-                    final postId = post['id'] as int;
+    return _buildCollectionLayout(
+      header: _buildSmartFilterInput(
+        controller: _favFilterController,
+        focusNode: _favFilterFocusNode,
+        chips: _favFilterChips,
+        labelText: '筛选收藏图片',
+        hintText: '输入标签筛选收藏...',
+        clearTooltip: '清空收藏筛选',
+        onClear: () {
+          setState(() => _favFilterChips.clear());
+          _favFilterController.clear();
+          _favFilterFocusNode.unfocus();
+        },
+        onAdd: _addFavFilterChip,
+        onRemove: _removeFavFilterChip,
+        suggestions: _favSuggestions,
+        showSuggestions: _showFavSuggestions,
+        onDismissSuggestions: () => setState(() => _showFavSuggestions = false),
+      ),
+      content: filteredPosts.isEmpty
+          ? _buildEmptyState(
+              icon: hasSavedPosts
+                  ? Icons.filter_alt_off_outlined
+                  : Icons.favorite_border,
+              title: hasSavedPosts ? '没有匹配的收藏' : '还没有收藏的图片',
+              subtitle: hasSavedPosts
+                  ? '尝试其他标签，或清空筛选以查看全部收藏'
+                  : '在图片详情页点击收藏按钮来添加收藏',
+            )
+          : GalleryGrid(
+              itemCount: filteredPosts.length,
+              itemBuilder: (context, index) {
+                final post = filteredPosts[index];
+                final previewUrl = post['preview_file_url'] as String?;
+                final highResUrl =
+                    (post['file_url'] ?? post['large_file_url']) as String?;
+                final postId = post['id'] as int;
+                final colors = Theme.of(context).colorScheme;
 
-                    return PostThumbnailTile(
-                      previewUrl: previewUrl,
-                      highResUrl: highResUrl,
-                      heroTag: 'fav_post_$postId',
-                      onTap: () => _navigateToDetail(filteredPosts, index),
-                      onLongPress: () => _removePost(postId),
-                      overlay: Positioned(
-                        top: 4,
-                        right: 4,
-                        child: GestureDetector(
-                          onTap: () => _removePost(postId),
-                          child: Container(
-                            padding: const EdgeInsets.all(2),
-                            decoration: BoxDecoration(
-                              color: Colors.black54,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: const Icon(
-                              Icons.close,
-                              size: 16,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
+                return PostThumbnailTile(
+                  previewUrl: previewUrl,
+                  highResUrl: highResUrl,
+                  heroTag: 'fav_post_$postId',
+                  semanticLabel: '收藏作品 #$postId',
+                  onTap: () => _navigateToDetail(filteredPosts, index),
+                  onLongPress: () => _removePost(postId),
+                  overlay: Positioned(
+                    top: 4,
+                    right: 4,
+                    child: IconButton(
+                      tooltip: '取消收藏作品 #$postId',
+                      onPressed: () => _removePost(postId),
+                      style: IconButton.styleFrom(
+                        minimumSize: const Size.square(48),
+                        visualDensity: VisualDensity.standard,
+                        tapTargetSize: MaterialTapTargetSize.padded,
+                        backgroundColor: colors.surfaceContainerHighest,
+                        foregroundColor: colors.onSurface,
                       ),
-                    );
-                  },
-                ),
-        ),
-      ],
+                      icon: const Icon(Icons.favorite, size: 20),
+                    ),
+                  ),
+                );
+              },
+            ),
     );
   }
 
@@ -663,199 +679,202 @@ class _FavoritesPageState extends State<FavoritesPage>
   // =====================================================
   Widget _buildTagsTab() {
     final rows = _groupedFavoriteTags();
+    final hasTags = _favoriteTags.isNotEmpty;
 
-    return Column(
-      children: [
-        // 分类 tab 栏（全部 / 角色 / 作者 / 作品 / 通用 / 元数据）
-        SizedBox(
-          height: 44,
-          child: ListView(
+    return _buildCollectionLayout(
+      header: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SingleChildScrollView(
             scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            children: [
-              _buildTagCategoryChip(null, '全部'),
-              for (final category in _favCategoryOrder)
-                _buildTagCategoryChip(
-                  category,
-                  _favCategoryNames[category] ?? '分类 $category',
-                ),
-            ],
-          ),
-        ),
-        // 文本筛选输入
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-          child: TextField(
-            controller: _tagFilterController,
-            decoration: InputDecoration(
-              hintText: '筛选标签...',
-              prefixIcon: const Icon(Icons.filter_list),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 10,
-              ),
-              suffixIcon: _tagFilterText.isNotEmpty
-                  ? IconButton(
-                      icon: const Icon(Icons.clear, size: 18),
-                      onPressed: () => _tagFilterController.clear(),
-                    )
-                  : null,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                _buildTagCategoryChip(null, '全部'),
+                for (final category in _favCategoryOrder)
+                  _buildTagCategoryChip(
+                    category,
+                    _favCategoryNames[category] ?? '分类 $category',
+                  ),
+              ],
             ),
           ),
-        ),
-        // 标签列表（按分类分组）
-        Expanded(
-          child: rows.isEmpty
-              ? _buildEmptyState(
-                  icon: Icons.label_off,
-                  title: '还没有收藏的标签',
-                  subtitle: '在标签列表中长按标签来收藏',
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                  itemCount: rows.length,
-                  itemBuilder: (context, index) {
-                    final row = rows[index];
-                    // 分组头
-                    if (row is String && !_favoriteTags.contains(row)) {
-                      return Padding(
-                        padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
-                        child: Text(
-                          row,
-                          style: Theme.of(context).textTheme.labelLarge
-                              ?.copyWith(
-                                color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.w500,
-                              ),
-                        ),
-                      );
-                    }
-                    final tag = row as String;
-                    final previewPosts = _tagPreviewPosts[tag] ?? [];
-                    final isLoadingPreview = _tagPreviewLoading.contains(tag);
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: TextField(
+              controller: _tagFilterController,
+              decoration: InputDecoration(
+                labelText: '筛选收藏标签',
+                hintText: '筛选标签...',
+                prefixIcon: const Icon(Icons.filter_list),
+                suffixIcon:
+                    _tagFilterText.isNotEmpty || _selectedTagCategory != null
+                    ? IconButton(
+                        tooltip: '清空标签筛选',
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          setState(() => _selectedTagCategory = null);
+                          _tagFilterController.clear();
+                          FocusScope.of(context).unfocus();
+                        },
+                      )
+                    : null,
+              ),
+            ),
+          ),
+        ],
+      ),
+      content: rows.isEmpty
+          ? _buildEmptyState(
+              icon: hasTags ? Icons.filter_alt_off_outlined : Icons.label_off,
+              title: hasTags ? '没有匹配的收藏标签' : '还没有收藏的标签',
+              subtitle: hasTags ? '尝试其他标签或分类，或清空筛选查看全部标签' : '在标签列表中长按标签来收藏',
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              itemCount: rows.length,
+              itemBuilder: (context, index) {
+                final row = rows[index];
+                // 分组头
+                if (row is String && !_favoriteTags.contains(row)) {
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
+                    child: Text(
+                      row,
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: Theme.of(context).colorScheme.primary,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  );
+                }
+                final tag = row as String;
+                final previewPosts = _tagPreviewPosts[tag] ?? [];
+                final isLoadingPreview = _tagPreviewLoading.contains(tag);
 
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      clipBehavior: Clip.antiAlias,
-                      child: InkWell(
-                        onTap: () => _searchTag(tag),
-                        onLongPress: () => _showTagOptions(tag),
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: () => _searchTag(tag),
+                    onLongPress: () => _showTagOptions(tag),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // 标签名 + 操作按钮
+                          Row(
                             children: [
-                              // 标签名 + 操作按钮
-                              Row(
-                                children: [
-                                  Icon(
-                                    Icons.label,
-                                    size: 18,
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      _displayLabelForTag(tag),
-                                      style: const TextStyle(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.search, size: 20),
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(
-                                      minWidth: 32,
-                                      minHeight: 32,
-                                    ),
-                                    onPressed: () => _searchTag(tag),
-                                    tooltip: '搜索此标签',
-                                  ),
-                                  IconButton(
-                                    icon: Icon(
-                                      Icons.delete,
-                                      size: 20,
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.error,
-                                    ),
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(
-                                      minWidth: 32,
-                                      minHeight: 32,
-                                    ),
-                                    onPressed: () => _removeTag(tag),
-                                    tooltip: '取消收藏',
-                                  ),
-                                ],
+                              Icon(
+                                Icons.label,
+                                size: 18,
+                                color: Theme.of(context).colorScheme.primary,
                               ),
-                              const SizedBox(height: 8),
-                              // 预览图片行
-                              SizedBox(
-                                height: 120,
-                                child: isLoadingPreview
-                                    ? const Center(
-                                        child: Text(
-                                          '正在加载预览...',
-                                          style: TextStyle(color: Colors.grey),
-                                        ),
-                                      )
-                                    : previewPosts.isEmpty
-                                    ? const Center(
-                                        child: Text(
-                                          '暂无预览',
-                                          style: TextStyle(color: Colors.grey),
-                                        ),
-                                      )
-                                    : ListView.separated(
-                                        scrollDirection: Axis.horizontal,
-                                        itemCount: previewPosts.length,
-                                        separatorBuilder: (context, index) =>
-                                            const SizedBox(width: 8),
-                                        itemBuilder: (context, idx) {
-                                          final post = previewPosts[idx];
-                                          final previewUrl =
-                                              post.previewFileUrl;
-                                          final highResUrl =
-                                              post.fileUrl ?? post.largeFileUrl;
-                                          return PostThumbnailTile(
-                                            previewUrl: previewUrl,
-                                            highResUrl: highResUrl,
-                                            heroTag: 'tag_${tag}_${post.id}',
-                                            width: 120,
-                                            height: 120,
-                                            borderRadius: BorderRadius.circular(
-                                              8,
-                                            ),
-                                            onTap: () =>
-                                                _navigateToDetailFromPosts(
-                                                  previewPosts,
-                                                  idx,
-                                                ),
-                                            errorIconSize: 40,
-                                          );
-                                        },
-                                      ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _displayLabelForTag(tag),
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.search, size: 20),
+                                visualDensity: VisualDensity.standard,
+                                constraints: const BoxConstraints(
+                                  minWidth: 48,
+                                  minHeight: 48,
+                                ),
+                                onPressed: () => _searchTag(tag),
+                                tooltip: '搜索此标签',
+                              ),
+                              IconButton(
+                                icon: Icon(
+                                  Icons.delete,
+                                  size: 20,
+                                  color: Theme.of(context).colorScheme.error,
+                                ),
+                                visualDensity: VisualDensity.standard,
+                                constraints: const BoxConstraints(
+                                  minWidth: 48,
+                                  minHeight: 48,
+                                ),
+                                onPressed: () => _removeTag(tag),
+                                tooltip: '取消收藏标签',
                               ),
                             ],
                           ),
-                        ),
+                          const SizedBox(height: 8),
+                          // 预览图片行
+                          SizedBox(
+                            height: 120,
+                            child: isLoadingPreview
+                                ? Center(
+                                    child: Text(
+                                      '正在加载预览...',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium
+                                          ?.copyWith(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.onSurfaceVariant,
+                                          ),
+                                    ),
+                                  )
+                                : previewPosts.isEmpty
+                                ? Center(
+                                    child: Text(
+                                      '暂无预览',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium
+                                          ?.copyWith(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.onSurfaceVariant,
+                                          ),
+                                    ),
+                                  )
+                                : ListView.separated(
+                                    scrollDirection: Axis.horizontal,
+                                    itemCount: previewPosts.length,
+                                    separatorBuilder: (context, index) =>
+                                        const SizedBox(width: 8),
+                                    itemBuilder: (context, idx) {
+                                      final post = previewPosts[idx];
+                                      final previewUrl = post.previewFileUrl;
+                                      final highResUrl =
+                                          post.fileUrl ?? post.largeFileUrl;
+                                      return PostThumbnailTile(
+                                        previewUrl: previewUrl,
+                                        highResUrl: highResUrl,
+                                        heroTag: 'tag_${tag}_${post.id}',
+                                        semanticLabel: '作品 #${post.id}',
+                                        width: 120,
+                                        height: 120,
+                                        borderRadius: BorderRadius.circular(8),
+                                        onTap: () => _navigateToDetailFromPosts(
+                                          previewPosts,
+                                          idx,
+                                        ),
+                                        errorIconSize: 40,
+                                      );
+                                    },
+                                  ),
+                          ),
+                        ],
                       ),
-                    );
-                  },
-                ),
-        ),
-      ],
+                    ),
+                  ),
+                );
+              },
+            ),
     );
   }
 
@@ -864,54 +883,58 @@ class _FavoritesPageState extends State<FavoritesPage>
   // =====================================================
   Widget _buildHistoryTab() {
     final filteredHistory = _filterPosts(_browsingHistory, _histFilterChips);
+    final hasHistory = _browsingHistory.isNotEmpty;
 
-    return Column(
-      children: [
-        // 清空按钮 + 补全式筛选输入
-        _buildSmartFilterInput(
-          controller: _histFilterController,
-          focusNode: _histFilterFocusNode,
-          chips: _histFilterChips,
-          hintText: '输入标签筛选历史...',
-          onAdd: _addHistFilterChip,
-          onRemove: _removeHistFilterChip,
-          suggestions: _histSuggestions,
-          showSuggestions: _showHistSuggestions,
-          onDismissSuggestions: () =>
-              setState(() => _showHistSuggestions = false),
-          trailing: TextButton.icon(
-            onPressed: _clearHistory,
-            icon: const Icon(Icons.delete_outline, size: 18),
-            label: const Text('清空'),
-          ),
+    return _buildCollectionLayout(
+      header: _buildSmartFilterInput(
+        controller: _histFilterController,
+        focusNode: _histFilterFocusNode,
+        chips: _histFilterChips,
+        labelText: '筛选浏览历史',
+        hintText: '输入标签筛选历史...',
+        clearTooltip: '清空历史筛选',
+        onClear: () {
+          setState(() => _histFilterChips.clear());
+          _histFilterController.clear();
+          _histFilterFocusNode.unfocus();
+        },
+        onAdd: _addHistFilterChip,
+        onRemove: _removeHistFilterChip,
+        suggestions: _histSuggestions,
+        showSuggestions: _showHistSuggestions,
+        onDismissSuggestions: () =>
+            setState(() => _showHistSuggestions = false),
+        trailing: TextButton.icon(
+          onPressed: hasHistory ? _clearHistory : null,
+          icon: const Icon(Icons.delete_outline, size: 20),
+          label: const Text('清空浏览历史'),
+          style: TextButton.styleFrom(minimumSize: const Size(48, 48)),
         ),
-        // 网格
-        Expanded(
-          child: filteredHistory.isEmpty
-              ? _buildEmptyState(
-                  icon: Icons.history,
-                  title: '还没有浏览历史',
-                  subtitle: '浏览图片后会自动记录',
-                )
-              : GalleryGrid(
-                  itemCount: filteredHistory.length,
-                  itemBuilder: (context, index) {
-                    final post = filteredHistory[index];
-                    final previewUrl = post['preview_file_url'] as String?;
-                    final highResUrl =
-                        (post['file_url'] ?? post['large_file_url']) as String?;
-                    final postId = post['id'] as int;
+      ),
+      content: filteredHistory.isEmpty
+          ? _buildEmptyState(
+              icon: hasHistory ? Icons.filter_alt_off_outlined : Icons.history,
+              title: hasHistory ? '没有匹配的浏览记录' : '还没有浏览历史',
+              subtitle: hasHistory ? '尝试其他标签，或清空筛选以查看全部记录' : '浏览图片后会自动记录',
+            )
+          : GalleryGrid(
+              itemCount: filteredHistory.length,
+              itemBuilder: (context, index) {
+                final post = filteredHistory[index];
+                final previewUrl = post['preview_file_url'] as String?;
+                final highResUrl =
+                    (post['file_url'] ?? post['large_file_url']) as String?;
+                final postId = post['id'] as int;
 
-                    return PostThumbnailTile(
-                      previewUrl: previewUrl,
-                      highResUrl: highResUrl,
-                      heroTag: 'hist_post_$postId',
-                      onTap: () => _navigateToDetail(filteredHistory, index),
-                    );
-                  },
-                ),
-        ),
-      ],
+                return PostThumbnailTile(
+                  previewUrl: previewUrl,
+                  highResUrl: highResUrl,
+                  heroTag: 'hist_post_$postId',
+                  semanticLabel: '浏览记录作品 #$postId',
+                  onTap: () => _navigateToDetail(filteredHistory, index),
+                );
+              },
+            ),
     );
   }
 
@@ -919,116 +942,160 @@ class _FavoritesPageState extends State<FavoritesPage>
   // 通用组件
   // =====================================================
 
-  /// 补全式筛选输入框 + 标签芯片 + 建议下拉
+  // Keep the controls scrollable when large text or the keyboard leaves little
+  // vertical space, while retaining an independently scrollable lazy gallery.
+  Widget _buildCollectionLayout({
+    required Widget header,
+    required Widget content,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) => Column(
+        children: [
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: constraints.maxHeight * 0.55,
+            ),
+            child: SingleChildScrollView(child: header),
+          ),
+          Expanded(child: content),
+        ],
+      ),
+    );
+  }
+
+  /// 补全式筛选输入框 + 标签芯片 + 建议下拉。
   Widget _buildSmartFilterInput({
     required TextEditingController controller,
     required FocusNode focusNode,
     required List<String> chips,
+    required String labelText,
     required String hintText,
-    required Function(String) onAdd,
-    required Function(int) onRemove,
+    required String clearTooltip,
+    required VoidCallback onClear,
+    required ValueChanged<String> onAdd,
+    required ValueChanged<int> onRemove,
     required List<String> suggestions,
     required bool showSuggestions,
     required VoidCallback onDismissSuggestions,
     Widget? trailing,
   }) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 输入行
-          Row(
-            children: [
-              Expanded(
-                child: SizedBox(
-                  height: 40,
-                  child: TextField(
-                    controller: controller,
-                    focusNode: focusNode,
-                    decoration: InputDecoration(
-                      hintText: hintText,
-                      prefixIcon: const Icon(Icons.filter_list, size: 20),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      isDense: true,
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 8,
-                      ),
-                    ),
-                    onSubmitted: (value) {
-                      if (value.trim().isNotEmpty) {
-                        onAdd(value.trim());
-                        onDismissSuggestions();
-                        focusNode.unfocus();
-                      }
-                    },
+    return TextFieldTapRegion(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: controller,
+              focusNode: focusNode,
+              textInputAction: TextInputAction.search,
+              decoration: InputDecoration(
+                labelText: labelText,
+                hintText: hintText,
+                prefixIcon: const Icon(Icons.filter_list, size: 20),
+                suffixIcon: controller.text.isNotEmpty || chips.isNotEmpty
+                    ? IconButton(
+                        tooltip: clearTooltip,
+                        onPressed: onClear,
+                        icon: const Icon(Icons.clear),
+                      )
+                    : null,
+              ),
+              onSubmitted: (value) {
+                if (value.trim().isNotEmpty) {
+                  onAdd(value.trim());
+                  onDismissSuggestions();
+                  focusNode.unfocus();
+                }
+              },
+            ),
+            if (chips.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: LayoutBuilder(
+                  builder: (context, constraints) => Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: List.generate(chips.length, (index) {
+                      final tag = chips[index];
+                      final label = _displayLabelForTag(tag);
+                      return InputChip(
+                        label: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            maxWidth: (constraints.maxWidth - 104).clamp(
+                              0.0,
+                              double.infinity,
+                            ),
+                          ),
+                          child: Text(
+                            label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        tooltip: label,
+                        onPressed: () => _showFilterTag(tag),
+                        onDeleted: () => onRemove(index),
+                        deleteButtonTooltipMessage: '移除此筛选标签',
+                      );
+                    }),
                   ),
                 ),
               ),
-              if (trailing != null) trailing,
-            ],
-          ),
-          // 标签 chips
-          if (chips.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: SizedBox(
-                width: double.infinity,
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
-                  children: List.generate(chips.length, (index) {
-                    return InputChip(
-                      label: Text(
-                        chips[index],
-                        style: const TextStyle(fontSize: 13),
+            if (showSuggestions && suggestions.isNotEmpty)
+              Container(
+                constraints: const BoxConstraints(maxHeight: 200),
+                margin: const EdgeInsets.only(top: 8),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.outlineVariant,
+                  ),
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  itemCount: suggestions.length,
+                  itemBuilder: (context, index) {
+                    final tag = suggestions[index];
+                    return ListTile(
+                      title: Text(
+                        _displayLabelForTag(tag),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      onDeleted: () => onRemove(index),
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      onTap: () {
+                        onAdd(tag);
+                        onDismissSuggestions();
+                        controller.clear();
+                        focusNode.unfocus();
+                      },
                     );
-                  }),
+                  },
                 ),
               ),
-            ),
-          // 补全建议下拉
-          if (showSuggestions && suggestions.isNotEmpty)
-            Container(
-              constraints: const BoxConstraints(maxHeight: 200),
-              margin: const EdgeInsets.only(top: 4),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surface,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: Theme.of(context).colorScheme.outlineVariant,
-                ),
-              ),
-              child: ListView.builder(
-                shrinkWrap: true,
-                padding: EdgeInsets.zero,
-                itemCount: suggestions.length,
-                itemBuilder: (context, index) {
-                  final tag = suggestions[index];
-                  return ListTile(
-                    dense: true,
-                    title: Text(
-                      _displayLabelForTag(tag),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    onTap: () {
-                      onAdd(tag);
-                      onDismissSuggestions();
-                      controller.clear();
-                      focusNode.unfocus();
-                    },
-                  );
-                },
-              ),
-            ),
+            if (trailing != null)
+              Align(alignment: Alignment.centerRight, child: trailing),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showFilterTag(String tag) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('筛选标签'),
+        scrollable: true,
+        content: SelectableText(_displayLabelForTag(tag)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
         ],
       ),
     );
@@ -1045,44 +1112,50 @@ class _FavoritesPageState extends State<FavoritesPage>
   Future<void> _showTagOptions(String tag) async {
     final action = await showModalBottomSheet<String>(
       context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              tag,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
-            ),
-            const SizedBox(height: 16),
-            ListTile(
-              leading: const Icon(Icons.search),
-              title: const Text('搜索此标签'),
-              onTap: () {
-                Navigator.pop(context, 'search');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.copy),
-              title: const Text('复制标签'),
-              onTap: () {
-                Navigator.pop(context, 'copy');
-              },
-            ),
-            ListTile(
-              leading: Icon(
-                Icons.delete,
-                color: Theme.of(context).colorScheme.error,
+      isScrollControlled: true,
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.8,
+      ),
+      builder: (context) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SelectableText(
+                _displayLabelForTag(tag),
+                style: Theme.of(context).textTheme.titleMedium,
               ),
-              title: Text(
-                '取消收藏',
-                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: const Icon(Icons.search),
+                title: const Text('搜索此标签'),
+                onTap: () {
+                  Navigator.pop(context, 'search');
+                },
               ),
-              onTap: () {
-                Navigator.pop(context, 'remove');
-              },
-            ),
-          ],
+              ListTile(
+                leading: const Icon(Icons.copy),
+                title: const Text('复制标签'),
+                onTap: () {
+                  Navigator.pop(context, 'copy');
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  Icons.delete,
+                  color: Theme.of(context).colorScheme.error,
+                ),
+                title: Text(
+                  '取消收藏',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+                onTap: () {
+                  Navigator.pop(context, 'remove');
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
