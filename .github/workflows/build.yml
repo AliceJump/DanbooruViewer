@@ -47,6 +47,12 @@ jobs:
       - name: Build completion search assets
         run: python scripts/build_completion_index.py
 
+      - uses: actions/setup-java@v6
+        if: matrix.target == 'android'
+        with:
+          distribution: temurin
+          java-version: "17"
+
       # 🔍 调试信息
       - name: Debug - Print cache info
         run: |
@@ -72,6 +78,10 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Select Android JDK
+        if: matrix.target == 'android'
+        run: flutter config --jdk-dir "$JAVA_HOME"
 
       # ---------------- ANDROID ----------------
       - name: Cache Gradle

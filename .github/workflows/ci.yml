@@ -84,12 +84,20 @@ jobs:
       - name: Build completion search assets
         run: python scripts/build_completion_index.py
 
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
       - run: flutter pub get
+
+      - name: Select Android JDK
+        run: flutter config --jdk-dir "$JAVA_HOME"
 
       - name: Decode existing release signing keystore
         shell: bash
