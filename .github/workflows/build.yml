@@ -100,6 +100,7 @@ jobs:
 
       # 🔍 调试信息
       - name: Debug - Print cache info
+        shell: bash
         run: |
           echo "Runner OS: ${{ runner.os }}"
           echo "Flutter Version: ${{ env.FLUTTER_VERSION }}"
