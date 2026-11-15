@@ -13,6 +13,16 @@ const ugoiraWorkerAsset = 'assets/ugoira_worker.js';
 const _workerUnavailable = '动图后台转换组件无法加载，请刷新页面或检查站点资源与浏览器权限。';
 final _converter = WebUgoiraConverter();
 
+Future<Uint8List> convertUgoiraToGif(
+  Future<Uint8List> Function() loadBytes, {
+  NetworkCancelToken? cancelToken,
+}) async {
+  cancelToken?.throwIfCancelled();
+  final bytes = await loadBytes();
+  cancelToken?.throwIfCancelled();
+  return _converter.convert(bytes, cancelToken: cancelToken);
+}
+
 Future<Uint8List> convertUgoiraBytesToGif(
   Uint8List bytes, {
   NetworkCancelToken? cancelToken,

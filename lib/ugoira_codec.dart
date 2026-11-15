@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 
 import 'ugoira_archive.dart';
+import 'ugoira_png.dart';
 
 const int _defaultFrameDelayMs = 60;
 const int maxUgoiraZipBytes = 64 * 1024 * 1024;
@@ -77,14 +78,36 @@ Uint8List mergeUgoiraBytesToGifSync(Uint8List bytes) {
 
   final encoder = img.GifEncoder(repeat: 0);
   var totalPixels = 0;
+  var pngOutputBytes = 0;
   for (final file in imageFiles) {
-    final data = file.content;
+    var data = file.content;
     final decoder = img.findDecoderForData(data);
+    // Select by the actual format, not a trusted extension. Other decoders
+    // (for example TIFF/EXR) have different nested compression paths.
+    if (decoder != null &&
+        decoder is! img.PngDecoder &&
+        decoder is! img.JpegDecoder &&
+        decoder is! img.WebPDecoder &&
+        decoder is! img.BmpDecoder) {
+      throw const FormatException('动图帧只支持 PNG、JPEG、WebP 和 BMP。');
+    }
+    if (decoder is img.PngDecoder) {
+      final prepared = prepareUgoiraPng(
+        data,
+        maxPixels: 16 * 1024 * 1024,
+        maxOutputBytes: _maxUncompressedBytes - pngOutputBytes,
+      );
+      pngOutputBytes += prepared.outputBytes;
+      data = prepared.bytes;
+    }
     final info = decoder?.startDecode(data);
     if (info == null) continue;
     final pixels = info.width * info.height;
     totalPixels += pixels;
-    if (pixels > 16 * 1024 * 1024 || totalPixels > _maxAnimationPixels) {
+    if (info.width <= 0 ||
+        info.height <= 0 ||
+        pixels > 16 * 1024 * 1024 ||
+        totalPixels > _maxAnimationPixels) {
       throw const FormatException('动图解码尺寸过大，请打开原链接查看。');
     }
     final frame = decoder!.decodeFrame(0);
@@ -92,7 +115,12 @@ Uint8List mergeUgoiraBytesToGifSync(Uint8List bytes) {
     final delayMs = frameDelays[file.name] ?? _defaultFrameDelayMs;
     // GifEncoder 的 duration 单位为 1/100 秒。
     final centi = delayMs ~/ 10;
-    encoder.addFrame(frame, duration: centi < 1 ? 1 : centi);
+    // GIF palette quantization expects 8-bit channels. PNG may legitimately
+    // carry 16-bit samples even when its scanline and pixel budgets are small.
+    final gifFrame = frame.format == img.Format.uint16
+        ? frame.convert(format: img.Format.uint8)
+        : frame;
+    encoder.addFrame(gifFrame, duration: centi < 1 ? 1 : centi);
   }
 
   final gif = encoder.finish();

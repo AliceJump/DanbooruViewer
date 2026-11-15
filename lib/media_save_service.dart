@@ -49,17 +49,19 @@ String mediaSaveFileName(String source, {int? postId}) {
 
 @visibleForTesting
 Future<MediaSaveInput> convertUgoiraForSave(
-  MediaSaveInput input, {
+  Future<MediaSaveInput> Function() openInput, {
   NetworkCancelToken? cancelToken,
   void Function(int received, int? total)? onProgress,
 }) async {
-  final bytes = await readBoundedUgoiraZipBytes(
-    input.stream,
-    cancelToken: cancelToken,
-    total: input.length,
-    onProgress: onProgress,
-  );
-  final gif = await convertUgoiraBytesToGif(bytes, cancelToken: cancelToken);
+  final gif = await convertUgoiraToGif(() async {
+    final input = await openInput();
+    return readBoundedUgoiraZipBytes(
+      input.stream,
+      cancelToken: cancelToken,
+      total: input.length,
+      onProgress: onProgress,
+    );
+  }, cancelToken: cancelToken);
   cancelToken?.throwIfCancelled();
   return MediaSaveInput(Stream.value(gif), length: gif.length);
 }
@@ -82,9 +84,11 @@ Future<MediaSaveResult> saveMediaResource(
     throw const MediaSaveException('媒体地址无效，仅支持 HTTP、HTTPS 或已有的本地文件。');
   }
 
-  Future<MediaSaveInput> convertUgoira(MediaSaveInput input) async {
+  Future<MediaSaveInput> convertUgoira(
+    Future<MediaSaveInput> Function() openInput,
+  ) async {
     return convertUgoiraForSave(
-      input,
+      openInput,
       cancelToken: cancelToken,
       onProgress: onProgress,
     );
@@ -93,8 +97,9 @@ Future<MediaSaveResult> saveMediaResource(
   Future<MediaSaveInput> openSource() async {
     cancelToken?.throwIfCancelled();
     if (uri == null) {
-      final input = await platform.openLocalMedia(source);
-      return isUgoiraUrl(source) ? convertUgoira(input) : input;
+      return isUgoiraUrl(source)
+          ? convertUgoira(() => platform.openLocalMedia(source))
+          : platform.openLocalMedia(source);
     }
     final cached = isUgoiraUrl(source)
         ? await getCachedUgoiraGifFile(source)
@@ -103,23 +108,24 @@ Future<MediaSaveResult> saveMediaResource(
     if (cached != null && await cached.exists() && await cached.length() > 0) {
       return MediaSaveInput(cached.openRead(), length: await cached.length());
     }
-    final response = await AppNetworkService.instance.stream(
-      uri,
-      cancelToken: cancelToken,
-      timeout: const Duration(minutes: 10),
-    );
-    if (response.statusCode != 200) {
-      await response.stream.listen(null).cancel();
-      throw NetworkException(
-        NetworkErrorKind.http,
-        '媒体服务器返回 HTTP ${response.statusCode}，请稍后重试。',
-        statusCode: response.statusCode,
+    Future<MediaSaveInput> openRemote() async {
+      final response = await AppNetworkService.instance.stream(
+        uri,
+        cancelToken: cancelToken,
+        timeout: const Duration(minutes: 10),
       );
-    }
-    if (!isUgoiraUrl(source)) {
+      if (response.statusCode != 200) {
+        await response.stream.listen(null).cancel();
+        throw NetworkException(
+          NetworkErrorKind.http,
+          '媒体服务器返回 HTTP ${response.statusCode}，请稍后重试。',
+          statusCode: response.statusCode,
+        );
+      }
       return mediaSaveInputFromHttp(response);
     }
-    return convertUgoira(mediaSaveInputFromHttp(response));
+
+    return isUgoiraUrl(source) ? convertUgoira(openRemote) : openRemote();
   }
 
   return platform.saveMediaToPlatform(

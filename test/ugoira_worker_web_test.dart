@@ -126,9 +126,10 @@ void main() {
       );
       final next = converter.convert(_animationZip());
       await failed;
+      final nextGif = await next;
       cancellationTime.stop();
       expect(cancellationTime.elapsed, lessThan(const Duration(seconds: 3)));
-      expect(ascii.decode((await next).take(3).toList()), 'GIF');
+      expect(ascii.decode(nextGif.take(3).toList()), 'GIF');
       expect(starts, 2);
     },
     timeout: const Timeout(Duration(seconds: 45)),
@@ -237,14 +238,14 @@ void main() {
       );
       final zip = _animationZip();
       final saved = await convertUgoiraForSave(
-        MediaSaveInput(Stream.value(zip), length: zip.length),
+        () async => MediaSaveInput(Stream.value(zip), length: zip.length),
       );
       final gif = await saved.stream.expand((chunk) => chunk).toList();
       expect(saved.length, gif.length);
       expect(gif, orderedEquals(mergeUgoiraBytesToGifSync(zip)));
       await expectLater(
         convertUgoiraForSave(
-          MediaSaveInput(Stream.value(zip), length: zip.length),
+          () async => MediaSaveInput(Stream.value(zip), length: zip.length),
           cancelToken: NetworkCancelToken()..cancel(),
         ),
         throwsA(isA<NetworkCancelledException>()),

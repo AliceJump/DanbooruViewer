@@ -137,20 +137,22 @@ Future<File> getUgoiraGifFile(
             ),
           );
           if (cached != null) return cached;
-          final zip = await generation.waitFor(
-            getBoundedUgoiraZipFile(
-              zipUrl,
-              cacheManager: generation.cache,
-              networkService: generation.network,
-              cancelToken: conversionToken,
-            ),
-          );
-          if (await generation.waitFor(zip.length()) > maxUgoiraZipBytes) {
-            throw const FormatException('动图压缩包过大，请打开原链接查看。');
-          }
-          final zipBytes = await generation.waitFor(zip.readAsBytes());
           final bytes = await generation.waitFor(
-            convertUgoiraBytesToGif(zipBytes, cancelToken: conversionToken),
+            convertUgoiraToGif(() async {
+              generation.checkCurrent();
+              final zip = await generation.waitFor(
+                getBoundedUgoiraZipFile(
+                  zipUrl,
+                  cacheManager: generation.cache,
+                  networkService: generation.network,
+                  cancelToken: conversionToken,
+                ),
+              );
+              if (await generation.waitFor(zip.length()) > maxUgoiraZipBytes) {
+                throw const FormatException('动图压缩包过大，请打开原链接查看。');
+              }
+              return generation.waitFor(zip.readAsBytes());
+            }, cancelToken: conversionToken),
           );
           // The shared cache bounds and expires GIFs on native and Web.
           return await generation.waitFor(
