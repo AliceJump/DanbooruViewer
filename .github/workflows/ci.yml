@@ -38,7 +38,9 @@ jobs:
       - run: flutter pub get
 
       - name: Test completion index generator
-        run: python -m unittest discover -s tests -p 'test_completion_index.py'
+        run: |
+          python -m unittest discover -s tests -p 'test_completion_index.py'
+          python -m unittest discover -s tests -p 'test_prepare_release.py'
 
       - uses: actions/setup-node@v6
         with:

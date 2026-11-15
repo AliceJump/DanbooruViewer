@@ -63,7 +63,7 @@ void main() {
       await tester.enterText(filter, 'missing');
       await tester.pump();
       expect(find.text('初音未来'), findsNothing);
-      expect(find.text('还没有收藏的标签'), findsOneWidget);
+      expect(find.text('没有匹配的收藏标签'), findsOneWidget);
       await tester.pump(const Duration(milliseconds: 350));
       await tester.pumpWidget(const SizedBox());
       expect(service.disposeCalls, 0);

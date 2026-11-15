@@ -3,17 +3,60 @@ run-name: ${{ github.ref_name }}
 
 on:
   push:
+    branches:
+      - "release/v*"
     tags:
       - "v*"
-  # 添加手动触发用于测试
+  # Git refs created through the API reliably emit create events.
+  create:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   FLUTTER_VERSION: "3.38.9"
 
 jobs:
+  prepare:
+    name: Verify release source
+    # Branch creation uses create; push handles later branch updates and tags.
+    # Ignore unrelated creates, branch deletion and duplicate creation pushes.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'create' &&
+       github.event.ref_type == 'branch' &&
+       startsWith(github.event.ref, 'release/v')) ||
+      (github.event_name == 'push' && !github.event.deleted &&
+       (startsWith(github.ref, 'refs/tags/v') ||
+        (startsWith(github.ref, 'refs/heads/release/v') && !github.event.created)))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      tag: ${{ steps.verify.outputs.tag }}
+      sha: ${{ steps.verify.outputs.sha }}
+      tag_exists: ${{ steps.verify.outputs.tag_exists }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Test release validation
+        run: python -m unittest discover -s tests -p 'test_prepare_release.py'
+      - name: Verify version, master ancestry, CI and existing release
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/prepare_release.py
+
   build:
     name: Build ${{ matrix.target }}
+    needs: prepare
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -38,7 +81,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           lfs: true
+          persist-credentials: false
 
       - uses: actions/setup-python@v6
         with:
@@ -124,6 +169,7 @@ jobs:
         with:
           name: android-release
           path: release/*.apk
+          if-no-files-found: error
 
       # ---------------- LINUX ----------------
       - name: Install Linux deps
@@ -145,6 +191,7 @@ jobs:
         with:
           name: linux-release
           path: danbooru-viewer-linux-release.tar.gz
+          if-no-files-found: error
 
       # ---------------- WEB ----------------
       - name: Build Web
@@ -159,6 +206,7 @@ jobs:
         with:
           name: web-release
           path: danbooru-viewer-web-release.tar.gz
+          if-no-files-found: error
 
       # ---------------- IOS ----------------
       - name: Build iOS
@@ -175,6 +223,7 @@ jobs:
         with:
           name: ios-release
           path: app.ipa
+          if-no-files-found: error
 
       # ---------------- WINDOWS ----------------
       - name: Build Windows
@@ -198,65 +247,134 @@ jobs:
         with:
           name: windows-release
           path: danbooru-viewer-windows-release.zip
+          if-no-files-found: error
 
   release:
     name: Create GitHub Release
-    needs: build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
+    concurrency:
+      group: danbooru-release-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: write
+      actions: read
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
 
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare.outputs.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
       - name: Generate Changelog
-        id: changelog
         shell: bash
         run: |
-          # 获取当前 tag
-          CURRENT_TAG="${{ github.ref_name }}"
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import subprocess
 
-          # 获取前一个 tag
-          PREV_TAG=$(git tag -l 'v*' --sort=-version:refname | grep -v "^$CURRENT_TAG$" | head -1)
+          tag = os.environ["RELEASE_TAG"]
+          sha = os.environ["RELEASE_SHA"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tags = subprocess.check_output(
+              ["git", "tag", "--merged", sha, "--sort=-version:refname", "-l", "v*"], text=True
+          ).splitlines()
+          previous = next((item for item in tags if item != tag), None)
+          # The new tag may not exist yet; always use the validated commit SHA.
+          revision = f"{previous}..{sha}" if previous else sha
+          commits = subprocess.check_output(
+              ["git", "log", revision, "--oneline", "--no-decorate", "--no-merges"], text=True
+          ).splitlines()
+          commits = [line for line in commits if "Bump version to" not in line and "update download stats" not in line]
+          rows = [f"## 变更日志 ({tag})", "", f"构建提交：`{sha}`", ""]
+          if previous:
+              rows.extend([f"从 {previous} 到 {tag}：", ""])
+          rows.extend(commits or ["本次发布更新构建产物。"])
+          rows.extend(["", "## 下载说明", "", "| 平台 | 文件 | 说明 |", "| --- | --- | --- |"])
+          downloads = [
+              ("Android ARM64", "danbooru-viewer-android-arm64-v8a.apk", "大多数现代 Android 手机和平板"),
+              ("Android ARMv7", "danbooru-viewer-android-armeabi-v7a.apk", "较旧的 32 位 Android 设备"),
+              ("Android x86_64", "danbooru-viewer-android-x86_64.apk", "Android 模拟器或 x86_64 设备"),
+              ("Windows", "danbooru-viewer-windows-release.zip", "解压后运行 danbooru_viewer.exe"),
+              ("Linux", "danbooru-viewer-linux-release.tar.gz", "解压后运行应用程序"),
+              ("iOS", "app.ipa", "未签名 IPA，需要自行签名或侧载"),
+              ("Web", "danbooru-viewer-web-release.tar.gz", "静态网页构建产物"),
+          ]
+          for platform, filename, description in downloads:
+              url = f"https://github.com/{repo}/releases/download/{tag}/{filename}"
+              rows.append(f"| {platform} | [{filename}]({url}) | {description} |")
+          Path(os.environ["RUNNER_TEMP"], "release_body.md").write_text("\n".join(rows) + "\n", encoding="utf-8")
+          PYTHON
 
-          # 生成 changelog（过滤 Bump version 消息）
-          echo "## 变更日志 ($CURRENT_TAG)" > /tmp/release_body.md
-          echo "" >> /tmp/release_body.md
+      - name: Verify all seven release files exist
+        shell: bash
+        run: |
+          python - <<'PYTHON'
+          from pathlib import Path
+          expected = [
+              "android-release/danbooru-viewer-android-arm64-v8a.apk",
+              "android-release/danbooru-viewer-android-armeabi-v7a.apk",
+              "android-release/danbooru-viewer-android-x86_64.apk",
+              "linux-release/danbooru-viewer-linux-release.tar.gz",
+              "web-release/danbooru-viewer-web-release.tar.gz",
+              "ios-release/app.ipa",
+              "windows-release/danbooru-viewer-windows-release.zip",
+          ]
+          for name in expected:
+              file = Path("artifacts", name)
+              if not file.is_file() or file.stat().st_size == 0:
+                  raise SystemExit(f"Missing or empty release file: {name}")
+          print("All seven platform files are present.")
+          PYTHON
 
-          if [ -z "$PREV_TAG" ]; then
-            git log "$CURRENT_TAG" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats" >> /tmp/release_body.md
-          else
-            echo "从 $PREV_TAG 到 $CURRENT_TAG 的变更:" >> /tmp/release_body.md
-            echo "" >> /tmp/release_body.md
-            git log "$PREV_TAG..$CURRENT_TAG" --oneline --no-decorate --no-merges | grep -v -E "Bump version to|update download stats" >> /tmp/release_body.md
+      - name: Create the exact release tag if needed
+        if: needs.prepare.outputs.tag_exists != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # POST is atomic and never moves an existing ref. A competing tag is
+          # accepted only if the following read-only validation resolves it to
+          # this exact SHA; permission/network errors with no tag fail closed.
+          if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_SHA" \
+              > "$RUNNER_TEMP/release-tag.json"; then
+            echo "Tag creation was not completed; verifying any existing tag before continuing."
           fi
 
-          echo "" >> /tmp/release_body.md
-          echo "---" >> /tmp/release_body.md
-          echo "" >> /tmp/release_body.md
-          # 追加下载说明
-          cat >> /tmp/release_body.md << 'DOWNLOADS'
-            ## 下载说明
+      - name: Recheck master CI, tag SHA and absence of an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REQUIRE_TAG: "true"
+        run: python scripts/prepare_release.py
 
-            | 平台 | 推荐下载 | 说明 |
-            | --- | --- | --- |
-            | Android ARM64 | [danbooru-viewer-android-arm64-v8a.apk](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-android-arm64-v8a.apk) | 大多数现代 Android 手机和平板 |
-            | Android ARMv7 | [danbooru-viewer-android-armeabi-v7a.apk](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-android-armeabi-v7a.apk) | 较旧的 32 位 Android 设备 |
-            | Android x86_64 | [danbooru-viewer-android-x86_64.apk](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-android-x86_64.apk) | Android 模拟器或 x86_64 设备 |
-            | Windows | [danbooru-viewer-windows-release.zip](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-windows-release.zip) | 解压后运行 `danbooru_viewer.exe` |
-            | Linux | [danbooru-viewer-linux-release.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-linux-release.tar.gz) | 解压后运行应用程序 |
-            | iOS | [app.ipa](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/app.ipa) | 未签名 IPA，需要自行签名或侧载 |
-            | Web | [danbooru-viewer-web-release.tar.gz](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/danbooru-viewer-web-release.tar.gz) | 静态网页构建产物 |
-            DOWNLOADS
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: artifacts/**/*
-          body_path: /tmp/release_body.md
+      - name: Create Release without overwriting an existing release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --target "$RELEASE_SHA" --title "$RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release_body.md" \
+            artifacts/android-release/danbooru-viewer-android-arm64-v8a.apk \
+            artifacts/android-release/danbooru-viewer-android-armeabi-v7a.apk \
+            artifacts/android-release/danbooru-viewer-android-x86_64.apk \
+            artifacts/linux-release/danbooru-viewer-linux-release.tar.gz \
+            artifacts/web-release/danbooru-viewer-web-release.tar.gz \
+            artifacts/ios-release/app.ipa \
+            artifacts/windows-release/danbooru-viewer-windows-release.zip

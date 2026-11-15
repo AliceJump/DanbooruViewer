@@ -2,6 +2,36 @@
 
 快速参考：如何发布新版本。
 
+## 当前发布入口：已验证的 master 提交
+
+当前默认分支为 `master`。先更新 `pubspec.yaml` 中的 `X.Y.Z+正整数构建号`，
+通过 PR 审查和 squash 合并，再等待该 **合并后完整提交 SHA** 的 `CI` push 运行成功。
+
+可以保留原有 `vX.Y.Z` tag 入口，也可以从这个已验证的 SHA 创建
+`release/vX.Y.Z` 分支，例如：
+
+```bash
+git fetch origin master
+git branch release/v1.0.67 <已通过CI的master提交SHA>
+git push origin release/v1.0.67
+```
+
+GitHub 网页或 Git refs API 创建同名分支也会触发发布。普通分支不会发布；
+手动运行工作流时同样必须选择 `vX.Y.Z` tag 或 `release/vX.Y.Z` 分支，
+直接选择 `master` 会明确失败。
+
+工作流会核对版本与正整数构建号、提交已进入 `master`、该 SHA 最新的 `CI` push
+运行成功，以及已有 tag 指向同一提交。五个平台全部构建成功并确认七个发布文件齐全后，
+才创建缺失的 tag；发布前再次验证上述条件。已有 Release（包括草稿）会阻止发布，
+不会自动替换旧制品。iOS IPA 仍未签名。
+
+构建或网络暂时失败时，修复原因后从 Actions **重新运行失败的工作流**；保持原来的
+发布 SHA 和 tag。代码需要改动时，先走新的 PR 和 CI，并使用新的版本号。
+不要为重试移动已发布 tag、强推 `master` 或覆盖已有 Release。下文早期示例中的
+`main` 应按当前仓库改为 `master`；旧版删除 tag/强推的修复示例已不适用。
+
+---
+
 ## 5 分钟快速发布
 
 ### 第 1 步：更新文件

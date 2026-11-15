@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'app_theme.dart';
 import 'completion_normalization.dart';
 import 'completion_service.dart';
+import 'gallery_controls.dart';
 import 'gallery_grid.dart';
 import 'media_utils.dart';
 import 'ugoira_utils.dart';
@@ -164,8 +165,8 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
+  final FocusNode _pageFocusNode = FocusNode(debugLabel: 'gallery');
   final ScrollController _scrollController = ScrollController();
-  final LayerLink _searchLayerLink = LayerLink();
   List<Post> _posts = [];
   List<SearchCompletionSuggestion> _visibleSuggestions = [];
   late final CompletionService _completionService;
@@ -186,6 +187,9 @@ class _MyHomePageState extends State<MyHomePage> {
   int _page = 1;
   int _requestGeneration = 0;
   bool _hasMorePosts = true;
+  String _activeQueryTags = '';
+  String? _postsError;
+  bool _failedLoadMore = false;
 
   // Multi-select state
   bool _isMultiSelectMode = false;
@@ -208,7 +212,8 @@ class _MyHomePageState extends State<MyHomePage> {
       if (_scrollController.position.pixels ==
               _scrollController.position.maxScrollExtent &&
           !_isLoading &&
-          _hasMorePosts) {
+          _hasMorePosts &&
+          _postsError == null) {
         _fetchPosts(isLoadMore: true);
       }
     });
@@ -225,6 +230,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _searchFocusNode.removeListener(_handleSearchFocusChanged);
     _searchController.dispose();
     _searchFocusNode.dispose();
+    _pageFocusNode.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -608,74 +614,128 @@ class _MyHomePageState extends State<MyHomePage> {
     return selected;
   }
 
-  Future<void> _fetchPosts({bool isLoadMore = false}) async {
+  String _queryTags() {
+    final ratings = getSelectedRatings();
+    return [
+      ..._searchChips.map((chip) => chip.queryValue),
+      ..._searchController.text.split(' ').where((tag) => tag.isNotEmpty),
+      if (ratings.isNotEmpty) 'rating:${ratings.join(',')}',
+    ].join(' ');
+  }
+
+  Future<void> _fetchPosts({
+    bool isLoadMore = false,
+    bool isRefresh = false,
+  }) async {
     if (!mounted || (isLoadMore && (_isLoading || !_hasMorePosts))) return;
 
     final requestGeneration = isLoadMore
         ? _requestGeneration
         : ++_requestGeneration;
     final requestPage = isLoadMore ? _page + 1 : 1;
+    // Pagination and refresh belong to the visible gallery, even while a new
+    // query is being edited in the input field.
+    if (!isLoadMore && !isRefresh) _activeQueryTags = _queryTags();
+    final requestTags = _activeQueryTags;
 
     setState(() {
       _isLoading = true;
-      if (!isLoadMore) {
+      _postsError = null;
+      _failedLoadMore = false;
+      if (!isLoadMore && !isRefresh) {
         _posts = [];
         _page = 1;
         _hasMorePosts = true;
+        _selectedItems.clear();
+        _isMultiSelectMode = false;
       }
     });
 
-    if (!isLoadMore && _scrollController.hasClients) {
+    if (!isLoadMore && !isRefresh && _scrollController.hasClients) {
       _scrollController.jumpTo(0);
     }
 
     try {
-      List<String> ratings = getSelectedRatings();
-      final queryTags = [
-        ..._searchChips.map((chip) => chip.queryValue),
-        ..._searchController.text.split(' ').where((s) => s.isNotEmpty),
-      ];
-
-      final tags = [
-        ...queryTags,
-        if (ratings.isNotEmpty) 'rating:${ratings.join(',')}',
-      ].join(' ');
       final uri = Uri.https('danbooru.donmai.us', '/posts.json', {
-        'tags': tags,
+        'tags': requestTags,
         'limit': '100',
         'page': '$requestPage',
       });
-      final response = await (widget.fetchPosts?.call(uri) ?? http.get(uri));
+      final response = await (widget.fetchPosts?.call(uri) ?? http.get(uri))
+          .timeout(const Duration(seconds: 25));
       if (!mounted || requestGeneration != _requestGeneration) return;
-
-      if (response.statusCode == 200) {
-        final List<dynamic> postsJson = json.decode(response.body);
-        if (postsJson.isEmpty) {
-          setState(() => _hasMorePosts = false);
-          return;
-        }
-        final newPosts = postsJson.map((json) => Post.fromJson(json)).toList();
-        setState(() {
-          if (isLoadMore) {
-            _posts.addAll(newPosts);
-          } else {
-            _posts = newPosts;
-          }
-          _page = requestPage;
-        });
-      } else {
-        debugPrint('Failed to load posts');
+      if (response.statusCode != 200) {
+        _recordPostsError(
+          '请求失败（HTTP ${response.statusCode}），请稍后重试。',
+          isLoadMore: isLoadMore,
+        );
+        return;
       }
-    } catch (e) {
+      final List<dynamic> postsJson = json.decode(response.body);
+      final newPosts = postsJson.map((json) => Post.fromJson(json)).toList();
+      setState(() {
+        if (isLoadMore) {
+          _posts.addAll(newPosts);
+        } else {
+          _posts = newPosts;
+        }
+        _page = requestPage;
+        _hasMorePosts = newPosts.isNotEmpty;
+        final visibleIds = _posts.map((post) => post.id).toSet();
+        _selectedItems.removeWhere((id) => !visibleIds.contains(id));
+        if (_selectedItems.isEmpty) _isMultiSelectMode = false;
+      });
+    } on TimeoutException {
       if (mounted && requestGeneration == _requestGeneration) {
-        debugPrint('Error fetching posts: $e');
+        _recordPostsError('连接超时，请检查网络后重试。', isLoadMore: isLoadMore);
+      }
+    } catch (error) {
+      if (mounted && requestGeneration == _requestGeneration) {
+        debugPrint('Error fetching posts: $error');
+        _recordPostsError('暂时无法加载作品，请检查网络后重试。', isLoadMore: isLoadMore);
       }
     } finally {
       if (mounted && requestGeneration == _requestGeneration) {
-        setState(() {
-          _isLoading = false;
-        });
+        setState(() => _isLoading = false);
       }
+    }
+  }
+
+  void _recordPostsError(String message, {required bool isLoadMore}) {
+    setState(() {
+      _postsError = message;
+      _failedLoadMore = isLoadMore;
+    });
+  }
+
+  void _retryPosts() {
+    _fetchPosts(isLoadMore: _failedLoadMore, isRefresh: !_failedLoadMore);
+  }
+
+  void _clearSearch() {
+    _searchFocusNode.unfocus();
+    _cancelCompletionQuery();
+    setState(() {
+      _setSearchInput('');
+      _searchChips.clear();
+      ratingOptions.updateAll((key, value) => false);
+      _showSuggestions = false;
+      _isQueryPending = false;
+    });
+    _fetchPosts();
+  }
+
+  void _dismissSearchOrSelection() {
+    if (_showSuggestions || _searchFocusNode.hasFocus) {
+      _searchFocusNode.unfocus();
+      _pageFocusNode.requestFocus();
+      _cancelCompletionQuery();
+      setState(() {
+        _showSuggestions = false;
+        _isQueryPending = false;
+      });
+    } else if (_isMultiSelectMode) {
+      _exitMultiSelectMode();
     }
   }
 
@@ -695,10 +755,35 @@ class _MyHomePageState extends State<MyHomePage> {
 
   AppBar _buildDefaultAppBar() {
     return AppBar(
-      title: Text(widget.title),
+      title: Row(
+        children: [
+          ExcludeSemantics(
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primaryContainer,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                Icons.grid_view_rounded,
+                size: 20,
+                color: Theme.of(context).colorScheme.onPrimaryContainer,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              widget.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
       actions: [
         IconButton(
-          icon: const Icon(Icons.favorite),
+          icon: const Icon(Icons.collections_bookmark_outlined),
           onPressed: () async {
             final result = await Navigator.push(
               context,
@@ -722,12 +807,25 @@ class _MyHomePageState extends State<MyHomePage> {
     return AppBar(
       leading: IconButton(
         icon: const Icon(Icons.close),
+        tooltip: '退出多选',
         onPressed: _exitMultiSelectMode,
       ),
-      title: Text('${_selectedItems.length} 已选择'),
+      title: Text(
+        '${_selectedItems.length} 已选择',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       actions: [
-        IconButton(icon: const Icon(Icons.download), onPressed: _batchDownload),
-        IconButton(icon: const Icon(Icons.link), onPressed: _batchCopyLinks),
+        IconButton(
+          tooltip: '下载选中作品',
+          icon: const Icon(Icons.download),
+          onPressed: _selectedItems.isEmpty ? null : _batchDownload,
+        ),
+        IconButton(
+          tooltip: '复制作品链接',
+          icon: const Icon(Icons.link),
+          onPressed: _selectedItems.isEmpty ? null : _batchCopyLinks,
+        ),
       ],
     );
   }
@@ -831,190 +929,260 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
-  Widget _buildSearchInput() {
-    return CompositedTransformTarget(
-      link: _searchLayerLink,
-      child: InputDecorator(
-        decoration: InputDecoration(
-          border: const OutlineInputBorder(),
-          suffixIcon: IconButton(
-            icon: const Icon(Icons.search),
-            onPressed: () {
-              _searchFocusNode.unfocus();
-              _fetchPosts();
-            },
+  void _showTagValue(SearchChip chip) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('搜索标签'),
+        content: SingleChildScrollView(
+          child: SelectableText(
+            chip.label == chip.queryValue
+                ? chip.queryValue
+                : '${chip.label}\n\n${chip.queryValue}',
           ),
         ),
-        child: Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          crossAxisAlignment: WrapCrossAlignment.center,
-          children: [
-            for (var index = 0; index < _searchChips.length; index++)
-              InputChip(
-                label: Text(_searchChips[index].label),
-                onDeleted: () => _removeSearchChip(index),
-              ),
-            SizedBox(
-              width: 180,
-              child: TextField(
-                controller: _searchController,
-                focusNode: _searchFocusNode,
-                decoration: const InputDecoration.collapsed(hintText: '搜索...'),
-                onTapOutside: (_) => _searchFocusNode.unfocus(),
-                onSubmitted: (value) {
-                  _searchFocusNode.unfocus();
-                  _submitSearchText(value);
-                },
-              ),
-            ),
-          ],
-        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildCompletionDropdown() {
-    return Positioned(
-      left: 16,
-      right: 16,
-      top: 0,
-      child: CompositedTransformFollower(
-        link: _searchLayerLink,
-        showWhenUnlinked: false,
-        targetAnchor: Alignment.bottomLeft,
-        followerAnchor: Alignment.topLeft,
-        offset: const Offset(0, 8),
-        child: TextFieldTapRegion(
-          child: Material(
-            color: Colors.transparent,
-            elevation: 0,
-            borderRadius: BorderRadius.circular(12),
-            child: _buildCompletionPanel(),
+  Widget _buildSearchPanel({required bool expanded}) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return GallerySearchPanel(
+          controller: _searchController,
+          focusNode: _searchFocusNode,
+          expanded: expanded,
+          hasQuery:
+              _searchChips.isNotEmpty ||
+              _searchController.text.isNotEmpty ||
+              ratingOptions.values.any((selected) => selected),
+          onClear: _clearSearch,
+          onSearch: () {
+            _searchFocusNode.unfocus();
+            _submitSearchText(_searchController.text);
+          },
+          onSubmitted: (value) {
+            _searchFocusNode.unfocus();
+            _submitSearchText(value);
+          },
+          selectedTags: [
+            for (var index = 0; index < _searchChips.length; index++)
+              ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: (constraints.maxWidth - 32).clamp(
+                    0,
+                    double.infinity,
+                  ),
+                ),
+                child: InputChip(
+                  label: Text(
+                    _searchChips[index].label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  tooltip: '查看完整标签',
+                  deleteButtonTooltipMessage: '移除标签',
+                  onPressed: () => _showTagValue(_searchChips[index]),
+                  onDeleted: () => _removeSearchChip(index),
+                ),
+              ),
+          ],
+          filters: [
+            for (final entry in ratingOptions.entries)
+              FilterChip(
+                label: Text(entry.key),
+                selected: entry.value,
+                onSelected: (selected) {
+                  setState(() => ratingOptions[entry.key] = selected);
+                  _fetchPosts();
+                },
+              ),
+          ],
+          suggestions: _showSuggestions ? _buildCompletionPanel() : null,
+        );
+      },
+    );
+  }
+
+  Widget _buildGallery() {
+    if (_posts.isEmpty) {
+      if (_isLoading) {
+        return const GalleryEmptyState(
+          icon: Icons.photo_library_outlined,
+          title: '正在加载作品',
+          subtitle: '精彩内容即将呈现',
+          action: SizedBox(width: 180, child: LinearProgressIndicator()),
+        );
+      }
+      if (_postsError != null) {
+        return GalleryEmptyState(
+          icon: Icons.cloud_off_outlined,
+          title: '作品加载失败',
+          subtitle: _postsError!,
+          action: FilledButton.icon(
+            onPressed: _retryPosts,
+            icon: const Icon(Icons.refresh),
+            label: const Text('重新加载'),
           ),
-        ),
-      ),
+        );
+      }
+      return GalleryEmptyState(
+        icon: Icons.image_search_outlined,
+        title: '暂无结果',
+        subtitle: '试试其他标签或筛选条件',
+        action: _activeQueryTags.isNotEmpty
+            ? OutlinedButton(onPressed: _clearSearch, child: const Text('清空筛选'))
+            : null,
+      );
+    }
+    return GalleryGrid(
+      controller: _scrollController,
+      onRefresh: () => _fetchPosts(isRefresh: true),
+      itemCount: _posts.length,
+      itemBuilder: (context, index) {
+        final post = _posts[index];
+        final isSelected = _selectedItems.contains(post.id);
+        return PostThumbnailTile(
+          key: ValueKey('post_${post.id}'),
+          previewUrl: post.previewFileUrl,
+          highResUrl: post.fileUrl ?? post.largeFileUrl,
+          heroTag: 'post_${post.id}',
+          semanticLabel: '作品 ${post.id}',
+          selected: _isMultiSelectMode ? isSelected : null,
+          onTap: () {
+            if (_isMultiSelectMode) {
+              _toggleSelection(post.id);
+            } else {
+              _navigateToDetail(index);
+            }
+          },
+          onLongPress: () {
+            if (!_isMultiSelectMode) _enterMultiSelectMode(post.id);
+          },
+          overlay: isSelected
+              ? Container(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.scrim.withValues(alpha: 0.5),
+                  child: const Icon(Icons.check_circle, color: Colors.white),
+                )
+              : null,
+        );
+      },
+    );
+  }
+
+  Widget _buildGalleryPane() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final compact = constraints.maxHeight < 240;
+        final showFeedback = _postsError != null && _posts.isNotEmpty;
+        return Column(
+          children: [
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: constraints.maxHeight * (showFeedback ? 0.6 : 0.5),
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    if (showFeedback)
+                      GalleryRequestFeedback(
+                        message: _postsError!,
+                        onRetry: _retryPosts,
+                        compact: compact,
+                      ),
+                    if (!showFeedback || !compact)
+                      GallerySectionHeader(
+                        compact: compact,
+                        count: _posts.length,
+                        isLoading: _isLoading,
+                        onRefresh: () => _fetchPosts(isRefresh: true),
+                        onSelect: _posts.isEmpty || _isMultiSelectMode
+                            ? null
+                            : () => setState(() => _isMultiSelectMode = true),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            Expanded(child: _buildGallery()),
+            if (_isLoading && _posts.isNotEmpty)
+              const LinearProgressIndicator(minHeight: 2),
+          ],
+        );
+      },
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: !_isMultiSelectMode,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && _isMultiSelectMode) {
-          _exitMultiSelectMode();
-        }
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+            _searchFocusNode.requestFocus,
+        const SingleActivator(LogicalKeyboardKey.keyF, meta: true):
+            _searchFocusNode.requestFocus,
+        const SingleActivator(LogicalKeyboardKey.escape):
+            _dismissSearchOrSelection,
       },
-      child: Scaffold(
-        appBar: _isMultiSelectMode
-            ? _buildMultiSelectAppBar()
-            : _buildDefaultAppBar(),
-        body: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onTap: () => _searchFocusNode.unfocus(),
-          child: Stack(
-            children: [
-              Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 8.0),
-                    child: _buildSearchInput(),
-                  ),
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                    child: Row(
-                      children: ratingOptions.keys.map((key) {
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 8.0),
-                          child: FilterChip(
-                            label: Text(key),
-                            selected: ratingOptions[key]!,
-                            onSelected: (bool selected) {
-                              setState(() {
-                                ratingOptions[key] = selected;
-                              });
-                              _fetchPosts();
-                            },
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-                    child: Row(
+      child: Focus(
+        focusNode: _pageFocusNode,
+        autofocus: true,
+        child: PopScope(
+          canPop: !_isMultiSelectMode,
+          onPopInvokedWithResult: (didPop, result) {
+            if (!didPop && _isMultiSelectMode) _exitMultiSelectMode();
+          },
+          child: Scaffold(
+            appBar: _isMultiSelectMode
+                ? _buildMultiSelectAppBar()
+                : _buildDefaultAppBar(),
+            body: SafeArea(
+              top: false,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final expanded = constraints.maxWidth >= 1000;
+                  final panel = _buildSearchPanel(expanded: expanded);
+                  if (expanded) {
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Text(
-                          '浏览作品',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const Spacer(),
-                        Text(
-                          '${_posts.length} 张作品',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: (_isLoading && _posts.isEmpty)
-                        ? const Center(child: CircularProgressIndicator())
-                        : _posts.isEmpty
-                        ? const GalleryEmptyState(
-                            icon: Icons.image_outlined,
-                            title: '暂无结果',
-                            subtitle: '试试其他标签或筛选条件',
-                          )
-                        : GalleryGrid(
-                            controller: _scrollController,
-                            itemCount: _posts.length,
-                            itemBuilder: (context, index) {
-                              final post = _posts[index];
-                              final isSelected = _selectedItems.contains(
-                                post.id,
-                              );
-                              return PostThumbnailTile(
-                                previewUrl: post.previewFileUrl,
-                                highResUrl: post.fileUrl ?? post.largeFileUrl,
-                                heroTag: 'post_${post.id}',
-                                onTap: () {
-                                  if (_isMultiSelectMode) {
-                                    _toggleSelection(post.id);
-                                  } else {
-                                    _navigateToDetail(index);
-                                  }
-                                },
-                                onLongPress: () {
-                                  if (!_isMultiSelectMode) {
-                                    _enterMultiSelectMode(post.id);
-                                  }
-                                },
-                                overlay: isSelected
-                                    ? Container(
-                                        color: Colors.black.withValues(
-                                          alpha: 0.5,
-                                        ),
-                                        child: const Icon(
-                                          Icons.check_circle,
-                                          color: Colors.white,
-                                        ),
-                                      )
-                                    : null,
-                              );
-                            },
+                        SizedBox(
+                          width: 320,
+                          child: Material(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerLow,
+                            child: SingleChildScrollView(child: panel),
                           ),
-                  ),
-                  if (_isLoading && _posts.isNotEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(8.0),
-                      child: CircularProgressIndicator(),
-                    ),
-                ],
+                        ),
+                        const VerticalDivider(width: 1),
+                        Expanded(child: _buildGalleryPane()),
+                      ],
+                    );
+                  }
+                  return Column(
+                    children: [
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: constraints.maxHeight * 0.46,
+                        ),
+                        child: SingleChildScrollView(child: panel),
+                      ),
+                      const Divider(),
+                      Expanded(child: _buildGalleryPane()),
+                    ],
+                  );
+                },
               ),
-              if (_showSuggestions) _buildCompletionDropdown(),
-            ],
+            ),
           ),
         ),
       ),

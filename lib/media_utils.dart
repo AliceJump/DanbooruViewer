@@ -157,6 +157,8 @@ class PostThumbnailTile extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final double? errorIconSize;
+  final String? semanticLabel;
+  final bool? selected;
 
   const PostThumbnailTile({
     super.key,
@@ -171,28 +173,38 @@ class PostThumbnailTile extends StatelessWidget {
     this.onTap,
     this.onLongPress,
     this.errorIconSize,
+    this.semanticLabel,
+    this.selected,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (previewUrl == null) {
-      return const GridTile(child: Icon(Icons.image_not_supported));
-    }
-
     final image = Stack(
       fit: StackFit.expand,
       children: [
         Hero(
           tag: heroTag,
-          child: cachedHighResImageOrPreview(
-            highResUrl: highResUrl,
-            previewUrl: previewUrl,
-            width: width,
-            height: height,
-            fit: fit,
-            errorBuilder: (context, error, stackTrace) =>
-                Icon(Icons.error, size: errorIconSize),
-          ),
+          child: previewUrl == null
+              ? Center(
+                  child: Icon(
+                    Icons.image_not_supported_outlined,
+                    size: errorIconSize ?? 32,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    semanticLabel: '暂无预览',
+                  ),
+                )
+              : cachedHighResImageOrPreview(
+                  highResUrl: highResUrl,
+                  previewUrl: previewUrl,
+                  width: width,
+                  height: height,
+                  fit: fit,
+                  errorBuilder: (context, error, stackTrace) => Icon(
+                    Icons.broken_image_outlined,
+                    size: errorIconSize,
+                    semanticLabel: '预览加载失败',
+                  ),
+                ),
         ),
         if (overlay != null) overlay!,
       ],
@@ -200,17 +212,24 @@ class PostThumbnailTile extends StatelessWidget {
 
     final content = SizedBox(width: width, height: height, child: image);
 
-    return Material(
-      color: Theme.of(context).colorScheme.surfaceContainerLow,
-      shape: RoundedRectangleBorder(
-        borderRadius: borderRadius ?? BorderRadius.circular(10),
-        side: BorderSide(
-          color: Theme.of(context).colorScheme.outlineVariant,
-          width: 0.5,
+    return Semantics(
+      label: semanticLabel,
+      selected: selected,
+      button: onTap != null,
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        shape: RoundedRectangleBorder(
+          borderRadius: borderRadius ?? BorderRadius.circular(10),
+          side: BorderSide(
+            color: selected == true
+                ? Theme.of(context).colorScheme.primary
+                : Theme.of(context).colorScheme.outlineVariant,
+            width: selected == true ? 2 : 0.5,
+          ),
         ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(onTap: onTap, onLongPress: onLongPress, child: content),
       ),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(onTap: onTap, onLongPress: onLongPress, child: content),
     );
   }
 }

@@ -18,18 +18,21 @@ class GalleryGrid extends StatelessWidget {
     required this.itemCount,
     required this.itemBuilder,
     this.controller,
+    this.onRefresh,
   });
 
   final int itemCount;
   final IndexedWidgetBuilder itemBuilder;
   final ScrollController? controller;
+  final Future<void> Function()? onRefresh;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        return GridView.builder(
+        final grid = GridView.builder(
           controller: controller,
+          physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(_galleryPadding),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: galleryColumnCount(constraints.maxWidth),
@@ -39,6 +42,9 @@ class GalleryGrid extends StatelessWidget {
           itemCount: itemCount,
           itemBuilder: itemBuilder,
         );
+        return onRefresh == null
+            ? grid
+            : RefreshIndicator(onRefresh: onRefresh!, child: grid);
       },
     );
   }
@@ -50,11 +56,13 @@ class GalleryEmptyState extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.subtitle,
+    this.action,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
@@ -76,7 +84,11 @@ class GalleryEmptyState extends StatelessWidget {
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
                     const SizedBox(height: 16),
-                    Text(title, style: theme.textTheme.titleMedium),
+                    Text(
+                      title,
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.titleMedium,
+                    ),
                     const SizedBox(height: 8),
                     Text(
                       subtitle,
@@ -85,6 +97,10 @@ class GalleryEmptyState extends StatelessWidget {
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
+                    if (action != null) ...[
+                      const SizedBox(height: 20),
+                      action!,
+                    ],
                   ],
                 ),
               ),
