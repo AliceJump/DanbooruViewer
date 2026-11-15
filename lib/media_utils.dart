@@ -358,7 +358,11 @@ class _CachedMediaImageState extends State<CachedMediaImage> {
       frame.dispose();
       throw frame.error ?? StateError('图片加载已取消。');
     }
-    return provider;
+    if (!mounted || generation != _generation) {
+      frame.dispose();
+      throw StateError('图片加载已取消。');
+    }
+    return frame.provider;
   }
 
   @override
@@ -382,11 +386,12 @@ class _CachedMediaImageState extends State<CachedMediaImage> {
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<ImageProvider>(
-      key: ValueKey(widget.imageUrl),
+      key: ValueKey('${widget.imageUrl}:$_generation'),
       future: _imageFuture,
       builder: (context, snapshot) {
         final provider = snapshot.data;
         if (provider != null) {
+          _frame?.handoff();
           return Image(
             image: provider,
             width: widget.width,

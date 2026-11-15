@@ -42,6 +42,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
   ImageProvider? _previewProvider;
   MediaImageFrame? _originalFrame;
   MediaImageFrame? _previewFrame;
+  final _pendingImageFrames = <MediaImageFrame>{};
   String? _loadedSource;
   String? _loadedPreview;
   Object? _imageError;
@@ -89,6 +90,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
   @override
   void dispose() {
     _generation++;
+    _cancelPendingImageFrames();
     _originalFrame?.dispose();
     _previewFrame?.dispose();
     WidgetsBinding.instance.removeObserver(this);
@@ -96,6 +98,13 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     _video.removeListener(_mediaChanged);
     _video.dispose();
     super.dispose();
+  }
+
+  void _cancelPendingImageFrames() {
+    for (final frame in _pendingImageFrames) {
+      frame.dispose();
+    }
+    _pendingImageFrames.clear();
   }
 
   void _reload() {
@@ -126,9 +135,10 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     final sameSource = source == _loadedSource && preview == _loadedPreview;
     _loadedSource = source;
     _loadedPreview = preview;
-    _originalFrame?.dispose();
-    _originalFrame = null;
+    _cancelPendingImageFrames();
     if (!sameSource) {
+      _originalFrame?.dispose();
+      _originalFrame = null;
       _previewFrame?.dispose();
       _previewFrame = null;
     }
@@ -165,38 +175,42 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     required bool isOriginal,
   }) async {
     MediaImageFrame? frame;
+    var adopted = false;
     try {
       final provider =
           await (widget.imageProviderLoader ?? cachedMediaImageProvider)(url);
       if (!mounted || generation != _generation) return;
       frame = MediaImageFrame(provider);
-      if (isOriginal) {
-        _originalFrame?.dispose();
-        _originalFrame = frame;
-      } else {
-        _previewFrame?.dispose();
-        _previewFrame = frame;
-      }
+      _pendingImageFrames.add(frame);
       if (!await frame.ready) {
         if (frame.error != null) throw frame.error!;
         return;
       }
       if (!mounted || generation != _generation) return;
       setState(() {
-        if (!isOriginal) _previewProvider = provider;
-        if (isOriginal || _imageProvider == null) _imageProvider = provider;
         if (isOriginal) {
+          _originalFrame?.dispose();
+          _originalFrame = frame;
+          _imageProvider = frame!.provider;
           _loading = false;
           _imageError = null;
+        } else {
+          _previewFrame?.dispose();
+          _previewFrame = frame;
+          _previewProvider = frame!.provider;
+          _imageProvider ??= frame.provider;
         }
+        adopted = true;
       });
     } catch (error) {
-      frame?.dispose();
       if (!mounted || generation != _generation || !isOriginal) return;
       setState(() {
         _loading = false;
         _imageError = error;
       });
+    } finally {
+      _pendingImageFrames.remove(frame);
+      if (!adopted) frame?.dispose();
     }
   }
 
@@ -248,6 +262,8 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
   }
 
   Widget _media() {
+    _originalFrame?.handoff();
+    _previewFrame?.handoff();
     if (_isVideo) {
       if (!supportsInlineVideo) {
         return _error('当前平台使用外部播放器播放视频。媒体会先通过当前网络设置下载。', external: true);
@@ -273,14 +289,10 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     return Stack(
       fit: StackFit.expand,
       children: [
-        PhotoView(
+        _VisibilityAwarePhotoView(
           key: ValueKey('$_index:$_generation'),
-          imageProvider: _imageProvider,
-          heroAttributes: PhotoViewHeroAttributes(tag: _heroTag),
-          minScale: PhotoViewComputedScale.contained,
-          maxScale: PhotoViewComputedScale.covered * 4,
-          loadingBuilder: (context, event) =>
-              const Center(child: CircularProgressIndicator()),
+          imageProvider: _imageProvider!,
+          heroTag: _heroTag,
           errorBuilder: (context, error, stack) =>
               _error(formatMediaLoadError(error), retry: _retryImage),
         ),
@@ -403,6 +415,104 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
           ),
         ),
       ),
+    );
+  }
+}
+
+/// PhotoView owns an image listener that does not follow TickerMode. Keep only
+/// its view values while hidden so neither that listener nor its controllers
+/// survive the hidden child. The image frame itself is retained by the page.
+class _VisibilityAwarePhotoView extends StatefulWidget {
+  const _VisibilityAwarePhotoView({
+    super.key,
+    required this.imageProvider,
+    required this.heroTag,
+    required this.errorBuilder,
+  });
+
+  final ImageProvider imageProvider;
+  final String heroTag;
+  final ImageErrorWidgetBuilder errorBuilder;
+
+  @override
+  State<_VisibilityAwarePhotoView> createState() =>
+      _VisibilityAwarePhotoViewState();
+}
+
+class _VisibilityAwarePhotoViewState extends State<_VisibilityAwarePhotoView> {
+  PhotoViewController? _controller;
+  PhotoViewScaleStateController? _scaleStateController;
+  PhotoViewControllerValue? _savedValue;
+  PhotoViewScaleState _savedScaleState = PhotoViewScaleState.initial;
+  bool _visible = true;
+  int _generation = 0;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _visible = TickerMode.of(context);
+    if (!_visible) _releaseControllers(preserveView: true);
+  }
+
+  @override
+  void didUpdateWidget(_VisibilityAwarePhotoView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.imageProvider != oldWidget.imageProvider) {
+      // A preview and its original can have different pixel dimensions. Never
+      // apply the preview's pixel scale or offset to the replacement image.
+      _savedValue = null;
+      _savedScaleState = PhotoViewScaleState.initial;
+      _releaseControllers(preserveView: false);
+      _generation++;
+    }
+  }
+
+  void _releaseControllers({required bool preserveView}) {
+    final controller = _controller;
+    final scaleStateController = _scaleStateController;
+    if (controller == null || scaleStateController == null) return;
+    if (preserveView) {
+      _savedValue = controller.value;
+      _savedScaleState = scaleStateController.scaleState;
+    }
+    _controller = null;
+    _scaleStateController = null;
+    // Let the old PhotoView detach before closing the controllers. New ones
+    // avoid PhotoView 0.15 retaining output-stream listeners across remounts.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      controller.dispose();
+      scaleStateController.dispose();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    _scaleStateController?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_visible) return const SizedBox.expand();
+    _controller ??= PhotoViewController(
+      initialPosition: _savedValue?.position ?? Offset.zero,
+      initialScale: _savedValue?.scale,
+      initialRotation: _savedValue?.rotation ?? 0,
+    );
+    _scaleStateController ??= PhotoViewScaleStateController()
+      ..setInvisibly(_savedScaleState);
+    return PhotoView(
+      key: ValueKey(_generation),
+      imageProvider: widget.imageProvider,
+      heroAttributes: PhotoViewHeroAttributes(tag: widget.heroTag),
+      controller: _controller,
+      scaleStateController: _scaleStateController,
+      minScale: PhotoViewComputedScale.contained,
+      maxScale: PhotoViewComputedScale.covered * 4,
+      loadingBuilder: (context, event) =>
+          const Center(child: CircularProgressIndicator()),
+      errorBuilder: widget.errorBuilder,
     );
   }
 }

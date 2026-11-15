@@ -47,7 +47,14 @@ Archive decodeBoundedUgoiraArchive(
     if (header.compressionMethod == 8) {
       // Both ZLibDecoder and ZLibDecoderWeb collect output before forwarding
       // it. Inflate writes directly to our budgeted output on every platform.
-      Inflate.stream(input, output: output);
+      // archive's Huffman lookup requires the tree's full maximum code width,
+      // even when a valid final symbol needs fewer remaining bits. Supply two
+      // zero lookahead bytes after the already validated compressed range;
+      // DEFLATE stops at EOB, and output size/CRC/budget checks still apply.
+      final compressed = input.toUint8List();
+      final padded = Uint8List(compressed.length + 2)
+        ..setRange(0, compressed.length, compressed);
+      Inflate.stream(InputMemoryStream(padded), output: output);
     } else {
       output.writeStream(input);
     }

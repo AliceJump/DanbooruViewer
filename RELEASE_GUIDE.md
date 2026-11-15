@@ -12,6 +12,7 @@
 ```bash
 python scripts/build_completion_index.py
 flutter pub get
+dart run tool/build_ugoira_worker.dart
 flutter analyze --no-fatal-infos
 flutter test
 python -m unittest discover -s tests
@@ -61,6 +62,10 @@ git push origin "refs/tags/$release_tag"
 `prepare` 会检查版本与正整数构建号、固定 checkout SHA、提交已进入 `master`、
 该 SHA 最新的 `CI` push 运行成功，以及已有 tag 指向同一提交。随后 Android、
 Linux、Web、iOS 和 Windows 并行构建。
+
+各平台在 `flutter pub get` 后从同一提交的纯 Dart 编码器生成
+`assets/ugoira_worker.js`。Web 查看与保存依赖该资源，构建不应跳过生成步骤；
+原生打包包含资源但不执行 Worker。生成失败会终止构建，不复用旧资源发布。
 
 五个平台全部成功且七个发布文件均非空后，发布作业才创建缺失的 tag，再次检查
 CI、tag 和已有 Release，然后发布。每个构建和发布步骤都使用同一完整 SHA。

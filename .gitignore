@@ -15,6 +15,7 @@ assets/danbooru_completion
 # Derived runtime assets; generate from the versioned source ZIP before build.
 /assets/danbooru_completion.index.zip
 /assets/danbooru_completion.bootstrap.json
+/assets/ugoira_worker.js
 *.tmp
 # IntelliJ related
 *.iml

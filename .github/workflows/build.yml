@@ -125,6 +125,9 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Build Ugoira conversion worker
+        run: dart run tool/build_ugoira_worker.dart
+
       - name: Select Android JDK
         if: matrix.target == 'android'
         run: flutter config --jdk-dir "$JAVA_HOME"

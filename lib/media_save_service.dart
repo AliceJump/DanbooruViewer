@@ -8,6 +8,7 @@ import 'media_save_types.dart';
 import 'media_types.dart';
 import 'network/app_cache_manager.dart';
 import 'network/app_network_service.dart';
+import 'ugoira_conversion.dart';
 import 'ugoira_utils.dart';
 
 export 'media_save_types.dart' show MediaSaveResult, MediaSaveException;
@@ -46,6 +47,23 @@ String mediaSaveFileName(String source, {int? postId}) {
   return 'danbooru_${postId == null ? '' : '${postId}_'}$name';
 }
 
+@visibleForTesting
+Future<MediaSaveInput> convertUgoiraForSave(
+  MediaSaveInput input, {
+  NetworkCancelToken? cancelToken,
+  void Function(int received, int? total)? onProgress,
+}) async {
+  final bytes = await readBoundedUgoiraZipBytes(
+    input.stream,
+    cancelToken: cancelToken,
+    total: input.length,
+    onProgress: onProgress,
+  );
+  final gif = await convertUgoiraBytesToGif(bytes, cancelToken: cancelToken);
+  cancelToken?.throwIfCancelled();
+  return MediaSaveInput(Stream.value(gif), length: gif.length);
+}
+
 Future<MediaSaveResult> saveMediaResource(
   String source, {
   int? postId,
@@ -65,15 +83,11 @@ Future<MediaSaveResult> saveMediaResource(
   }
 
   Future<MediaSaveInput> convertUgoira(MediaSaveInput input) async {
-    final bytes = await readBoundedUgoiraZipBytes(
-      input.stream,
+    return convertUgoiraForSave(
+      input,
       cancelToken: cancelToken,
-      total: input.length,
       onProgress: onProgress,
     );
-    final gif = await compute(mergeUgoiraBytesToGifSync, bytes);
-    cancelToken?.throwIfCancelled();
-    return MediaSaveInput(Stream.value(gif), length: gif.length);
   }
 
   Future<MediaSaveInput> openSource() async {
