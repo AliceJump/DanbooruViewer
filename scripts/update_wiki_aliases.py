@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 import view
 
 from scripts.tag_db import db
+from scripts.batch_sync_tags import create_session
 
 
 WIKI_ENDPOINT = "https://danbooru.donmai.us/wiki_pages"
@@ -81,19 +82,6 @@ def load_local_tags() -> list[tuple[int, str, dict]]:
             tags.append((tag_id, tag_name, payload))
     print(f"Loaded {len(tags)} tag(s) from database...")
     return sorted(tags, key=lambda item: item[0], reverse=True)
-
-
-def create_session(verify_ssl: bool) -> requests.Session:
-    session = requests.Session()
-    session.headers.update({"User-Agent": "DanbooruTagInspector/1.0"})
-    session.verify = verify_ssl
-    session.proxies.update(
-        {
-            "http": "http://127.0.0.1:10808",
-            "https": "http://127.0.0.1:10808",
-        }
-    )
-    return session
 
 
 def safe_get(
@@ -233,18 +221,7 @@ def main() -> int:
     print("Initializing network session...")
     verification_session = create_session(not args.no_verify_ssl)
     if not verify_network(verification_session, args.retries):
-        if args.no_verify_ssl:
-            return 1
-
-        print("[WARN] Network verification failed with SSL verification enabled.")
-        print("[INFO] Retrying with SSL verification disabled...")
-        args.no_verify_ssl = True
-        import urllib3
-
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        verification_session = create_session(False)
-        if not verify_network(verification_session, args.retries):
-            return 1
+        return 1
 
     tags = [item for item in load_local_tags() if item[0] >= args.min_id]
     if args.limit:

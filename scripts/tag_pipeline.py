@@ -44,11 +44,10 @@ if str(ROOT) not in sys.path:
 
 import view
 
-from scripts.tag_db import db
+from scripts.tag_db import QueueClaim, db
 from scripts.batch_sync_tags import (
     create_session,
     fetch_tags_from_api_page,
-    normalize_failed,
     TagRecord,
 )
 
@@ -162,7 +161,7 @@ def run_list_resync_months(args, months: int):
                     break
             if rec.tag_id is not None and rec.name:
                 rows.append((rec.tag_id, rec.name, rec.created_at))
-        added = db.enqueue_many(rows)
+        added = db.requeue_many(rows)
         log(f"[LIST] resync page: +{added} enqueued (scanned {scanned})")
         if stop:
             break
@@ -218,48 +217,26 @@ def _load_success() -> set[str]:
     return set(db.list_successful_tags())
 
 
-def sync_queue_tag(rec: tuple, *, force: bool) -> tuple[str, int]:
-    """rec: (tag_id, name, created_at). Returns (status, tag_id)."""
-    tag_id, name, _created = rec
-    tag = name
+def sync_queue_tag(rec: QueueClaim, *, force: bool) -> tuple[str, int]:
+    """Fetch outside the transaction; only the current lease may commit."""
+    tag_id, tag = rec.tag_id, rec.name
+    if not force:
+        previous = db.get_sync_status(tag)
+        if previous is not None:
+            if previous["status"] == "blocked":
+                return db.complete_claim(rec, "blocked"), tag_id
+            if previous["status"] == "success" and db.has_tag(tag):
+                return db.complete_claim(rec, "skipped"), tag_id
     try:
-        if not force:
-            status = db.get_sync_status(tag)
-            if status is not None:
-                if status["status"] == "blocked":
-                    return "blocked", tag_id
-                if status["status"] == "success" and db.has_tag(tag):
-                    return "skipped", tag_id
         payload = view.sync_data(tag, persist_files=False)
-        db.upsert_tag(payload)
-        db.set_sync_status(
-            tag, "success",
-            last_sync_time=datetime.now(timezone.utc).isoformat(),
-        )
-        return "synced", tag_id
     except Exception as exc:
-        existing = db.get_sync_status(tag)
-        if existing:
-            entry = normalize_failed(existing)
-        else:
-            entry = {"reason": "unknown", "failures": 0, "last_failed_at": None}
-        entry["reason"] = str(exc)
-        entry["failures"] = entry.get("failures", 0) + 1
-        entry["last_failed_at"] = datetime.now(timezone.utc).isoformat()
-        if entry["failures"] >= MAX_FAILED_ATTEMPTS:
-            result = "blocked"
-            db.set_sync_status(
-                tag, "blocked", reason=entry["reason"],
-                failures=entry["failures"], last_failed_at=entry["last_failed_at"],
-            )
-        else:
-            result = "failed"
-            db.set_sync_status(
-                tag, "failed", reason=entry["reason"],
-                failures=entry["failures"], last_failed_at=entry["last_failed_at"],
-            )
-        log(f"[FAIL] {tag}: {exc}")
+        result = db.complete_claim(rec, "failed", error=str(exc), max_failures=MAX_FAILED_ATTEMPTS)
+        if result != "stale":
+            log(f"[FAIL] {tag}: {exc}")
         return result, tag_id
+    # A database error propagates to run_sync after the entire transaction has
+    # rolled back; it must not turn into a second, partially committed result.
+    return db.complete_claim(rec, "synced", payload=payload), tag_id
 
 
 def run_sync(args):
@@ -270,9 +247,8 @@ def run_sync(args):
     log(f"[SYNC] Consumer started. rate={args.rate} req/s, workers={args.workers}, "
         f"retried={retried}, queue pending={db.queue_count('pending')}, "
         f"claimed={db.queue_count('claimed')}")
-    counts = {"synced": 0, "skipped": 0, "failed": 0, "blocked": 0, "processed": 0}
+    counts = {"synced": 0, "skipped": 0, "failed": 0, "blocked": 0, "stale": 0, "processed": 0}
     idle_rounds = 0
-    stop = threading.Event()
 
     while True:
         if args.limit > 0 and counts["processed"] >= args.limit:
@@ -290,6 +266,7 @@ def run_sync(args):
 
         # Process claimed batch with a small pool
         results = []
+        errors = []
         lock = threading.Lock()
         pending = list(batch)
 
@@ -299,32 +276,36 @@ def run_sync(args):
                     if not pending:
                         return
                     rec = pending.pop(0)
-                st, tid = sync_queue_tag(rec, force=args.force)
-                with lock:
-                    counts["processed"] += 1
-                    counts[st if st in counts else "failed"] += 1
-                db.mark_done(tid, st)
-                results.append((tid, st))
-                log(f"[SYNC] {rec[1]} -> {st}")
+                try:
+                    st, tid = sync_queue_tag(rec, force=args.force)
+                    with lock:
+                        counts["processed"] += 1
+                        counts[st if st in counts else "failed"] += 1
+                    results.append((tid, st))
+                    log(f"[SYNC] {rec[1]} -> {st}")
+                except Exception as exc:
+                    with lock:
+                        errors.append(exc)
+                    log(f"[SYNC] Cannot finish {rec[1]}: {exc}")
+                    return
 
         threads = [threading.Thread(target=worker, daemon=True) for _ in range(max(1, args.workers))]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
+        if errors:
+            log("[SYNC] Consumer failed; unfinished claims remain available after their lease expires.")
+            return 1
 
         log(f"[SYNC] batch done: processed={counts['processed']} "
             f"synced={counts['synced']} skipped={counts['skipped']} "
             f"failed={counts['failed']} blocked={counts['blocked']} "
             f"queue pending={db.queue_count('pending')}")
 
-    # Flush metadata
-    try:
-        view.save_sync_metadata({})
-    except Exception:
-        pass
     log(f"[SYNC] Done. processed={counts['processed']} synced={counts['synced']} "
         f"skipped={counts['skipped']} failed={counts['failed']} blocked={counts['blocked']}")
+    return 1 if counts["failed"] or counts["blocked"] else 0
 
 
 def run_status(args):
@@ -387,8 +368,8 @@ def run_list(args):
 
 def main():
     args = parse_args()
-    args.func(args)
+    return args.func(args) or 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

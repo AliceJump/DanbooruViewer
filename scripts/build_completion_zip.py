@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Build the compact Danbooru completion zip shipped inside the app.
 
-Data sources (first non-empty wins):
+Data sources, in order of authority for each tag:
   1. crawler SQLite db (cache/danbooru_tags.db) -- completion_candidates column
   2. previously shipped seed db (assets/danbooru_completion.db)
   3. previously shipped legacy zip (assets/danbooru_completion.zip)
+
+Crawler tags with valid candidates, or a committed explicit empty candidate
+list, replace the whole legacy candidate group for that tag. Category
+placeholders and tags absent from the crawler DB retain legacy fallback data.
 
 The compact JSON entries carry the tag category (`c`) so the app can group
 completion suggestions by category without a database.
@@ -23,12 +27,18 @@ if __package__:
     from .build_completion_index import (
         FORMAT_VERSION as INDEX_FORMAT_VERSION,
         build_index,
+        file_sha256,
     )
+    from .completion_normalization import normalize_completion_key
+    from .tag_db import legacy_completion_authoritative
 else:
     from build_completion_index import (
         FORMAT_VERSION as INDEX_FORMAT_VERSION,
         build_index,
+        file_sha256,
     )
+    from completion_normalization import normalize_completion_key
+    from tag_db import legacy_completion_authoritative
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -222,8 +232,43 @@ def load_category_map() -> dict[str, int]:
     return {name: cat for name, cat in rows}
 
 
+def _authority_rows(conn):
+    """Read old databases without migrating or modifying an export input."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(tags)")}
+    if "completion_authoritative" in columns:
+        yield from conn.execute(
+            "SELECT name, category, completion_candidates, completion_authoritative "
+            "FROM tags ORDER BY name"
+        )
+    else:
+        rows = conn.execute(
+            "SELECT tags.name, tags.category, tags.completion_candidates, "
+            "sync_status.status, sync_status.last_sync_time FROM tags "
+            "LEFT JOIN sync_status ON sync_status.tag=tags.name ORDER BY tags.name"
+        )
+        for name, category, candidates, status, last_sync_time in rows:
+            yield name, category, candidates, int(
+                legacy_completion_authoritative(candidates, status, last_sync_time)
+            )
+
+
+def load_authoritative_tag_names() -> set[str]:
+    """Committed empty lists stay authoritative through later retries."""
+    if not TAG_DB.exists():
+        return set()
+    conn = sqlite3.connect(f"file:{TAG_DB}?mode=ro", uri=True)
+    try:
+        return {
+            normalize_completion_key(name)
+            for name, _category, candidates, authoritative in _authority_rows(conn)
+            if authoritative and isinstance(_loads_json(candidates), list)
+        }
+    finally:
+        conn.close()
+
+
 def build_suggestions() -> dict:
-    """Merge candidates from ALL available sources; keep best score per pair."""
+    """Prefer each tag's current candidate group, falling back only for gaps."""
     sources = []
     db_candidates = load_candidates_from_db()
     if db_candidates:
@@ -234,24 +279,29 @@ def build_suggestions() -> dict:
     zip_candidates = load_candidates_from_legacy_zip()
     if zip_candidates:
         sources.append(("legacy zip", zip_candidates))
-    if not sources:
+    authoritative = load_authoritative_tag_names()
+    if not sources and not authoritative:
         raise SystemExit(
             "no completion data found (crawler db / seed db / legacy zip all empty)"
         )
 
     for name, cands in sources:
         print(f"📂 source {name}: {len(cands):,} candidates")
-    candidates = [c for _, cands in sources for c in cands]
     category_map = load_category_map()
-
     suggestions = {}
-    for v, i, s, r, cat in candidates:
-        key = (v.lower(), i.lower())
-        old = suggestions.get(key)
-        if old is None or r > old[3]:
-            if cat is None:
-                cat = category_map.get(i.lower()) or category_map.get(i)
-            suggestions[key] = (v, i, s, r, cat)
+    for source_name, candidates in sources:
+        source_tags = set()
+        for v, i, s, r, cat in candidates:
+            tag_key = normalize_completion_key(i)
+            if source_name != "crawler database" and tag_key in authoritative:
+                continue
+            source_tags.add(tag_key)
+            key = (normalize_completion_key(v), tag_key)
+            old = suggestions.get(key)
+            if old is None or r > old[3]:
+                cat = category_map.get(i, category_map.get(tag_key, cat))
+                suggestions[key] = (v, i, s, r, cat)
+        authoritative.update(source_tags)
     return suggestions
 
 
@@ -259,32 +309,33 @@ def build_suggestions() -> dict:
 # signature / manifest
 # ========================
 def db_fingerprint() -> dict:
+    """Hash actual export inputs, including changes that preserve row counts.
+
+    The legacy ZIP is both a fallback input and an output. After replacing it,
+    main records its new hash without changing the captured DB input identity.
+    """
     fingerprint = {
-        "output": True,
+        "version": 3,
         "seed_db": {
-            "exists": SEED_DB.exists(),
-            "mtime_ns": SEED_DB.stat().st_mtime_ns if SEED_DB.exists() else 0,
-            "size": SEED_DB.stat().st_size if SEED_DB.exists() else 0,
+            "sha256": file_sha256(SEED_DB) if SEED_DB.exists() else None,
+            "wal_sha256": (
+                file_sha256(Path(str(SEED_DB) + "-wal"))
+                if Path(str(SEED_DB) + "-wal").exists() else None
+            ),
         },
+        "legacy_zip_sha256": file_sha256(OUTPUT_FILE) if OUTPUT_FILE.exists() else None,
+        "crawler_sha256": None,
     }
     if TAG_DB.exists():
+        conn = sqlite3.connect(f"file:{TAG_DB}?mode=ro", uri=True)
         try:
-            conn = sqlite3.connect(str(TAG_DB))
-            try:
-                success = conn.execute(
-                    "SELECT COUNT(*) FROM sync_status WHERE status = 'success'"
-                ).fetchone()[0]
-                tags = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
-                max_updated = conn.execute("SELECT MAX(updated_at) FROM tags").fetchone()[0]
-            finally:
-                conn.close()
-            fingerprint.update({
-                "success_count": success,
-                "tags_count": tags,
-                "max_updated": max_updated,
-            })
-        except Exception:
-            pass
+            digest = hashlib.sha256()
+            for row in _authority_rows(conn):
+                digest.update(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+                digest.update(b"\n")
+            fingerprint["crawler_sha256"] = digest.hexdigest()
+        finally:
+            conn.close()
     return fingerprint
 
 
@@ -457,6 +508,7 @@ def main():
     TEMP_OUTPUT_FILE.replace(OUTPUT_FILE)
 
     size = OUTPUT_FILE.stat().st_size
+    signature["legacy_zip_sha256"] = file_sha256(OUTPUT_FILE)
     write_manifest(signature, len(compact), size)
     build_index(
         OUTPUT_FILE, INDEX_FILE, BOOTSTRAP_FILE,

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.tag_db import db
+from scripts.tag_db import db, merge_import_payload
 
 DEFAULT_ARCHIVE = ROOT / "assets" / "danbooru_latest_10000_raw_json.zip"
 CACHE_DIR = ROOT / ".danbooru_cache"
@@ -36,20 +36,23 @@ def restore_archive(
         manifest = json.loads(
             archive.read(ZIP_MANIFEST_NAME).decode("utf-8")
         )
+        if not isinstance(manifest, dict):
+            raise ValueError("archive manifest must be an object")
         entries = manifest.get("entries")
         if not isinstance(entries, list):
             raise SystemExit("archive manifest does not contain entries")
 
-        restored = 0
+        payloads = []
+        seen_tags = set()
         for entry in entries:
             if not isinstance(entry, dict):
-                continue
+                raise ValueError("archive manifest contains an invalid entry")
 
             archive_name = entry.get("file")
             slug = entry.get("slug")
             expected_hash = entry.get("sha256")
             if not all(isinstance(value, str) for value in (archive_name, slug, expected_hash)):
-                continue
+                raise ValueError("archive entry requires file, slug, and sha256")
 
             payload_bytes = archive.read(archive_name)
             actual_hash = sha256_bytes(payload_bytes)
@@ -59,18 +62,31 @@ def restore_archive(
                     f"expected {expected_hash}, got {actual_hash}"
                 )
 
-            if not dry_run:
-                try:
-                    payload = json.loads(payload_bytes.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    print(f"  [WARN] skip invalid payload {archive_name}: {exc}")
-                    continue
-                if not isinstance(payload, dict) or not payload.get("tag"):
-                    print(f"  [WARN] skip payload without 'tag': {archive_name}")
-                    continue
-                db.upsert_tag(payload)
+            if "size" in entry and entry["size"] != len(payload_bytes):
+                raise ValueError(f"size mismatch for {archive_name}")
+            payload = json.loads(payload_bytes.decode("utf-8"))
+            tag = entry.get("tag")
+            if (not isinstance(tag, str) or not tag
+                    or not isinstance(payload, dict) or payload.get("tag") != tag):
+                raise ValueError(f"manifest tag does not match payload in {archive_name}")
+            if tag in seen_tags:
+                raise ValueError(f"duplicate tag in archive: {tag}")
+            seen_tags.add(tag)
+            tag_id = entry.get("tag_id")
+            if tag_id is not None:
+                if type(tag_id) is not int or tag_id <= 0:
+                    raise ValueError(f"invalid manifest tag id for {tag}")
+                info = payload.get("tag_info", {})
+                if not isinstance(info, dict) or info.get("id") not in (None, tag_id):
+                    raise ValueError(f"manifest tag id does not match payload for {tag}")
+                payload["tag_info"] = {**info, "id": tag_id}
+            stored = None if dry_run else db.get_tag(tag)
+            payloads.append(merge_import_payload(stored, payload))
 
-            restored += 1
+    # Validate the whole archive before a single transactional DB write.
+    if not dry_run:
+        db.upsert_tags_many(payloads)
+    restored = len(payloads)
 
     print(
         f"Restored {restored} tag payloads from {archive_path} into the database"

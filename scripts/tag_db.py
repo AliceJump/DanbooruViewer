@@ -21,6 +21,8 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "cache" / "danbooru_tags.db"
@@ -38,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tags (
     wiki_other_names     TEXT,
     aliases              TEXT,
     completion_candidates TEXT NOT NULL,
+    completion_authoritative INTEGER NOT NULL DEFAULT 0,
     version              INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_tags_tag_id ON tags(tag_id);
@@ -81,6 +84,7 @@ CREATE TABLE IF NOT EXISTS sync_queue (
     enqueued_at TEXT NOT NULL,
     claimed_by  TEXT,
     claimed_at  REAL,
+    claim_token TEXT,
     done_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sync_queue_status ON sync_queue(status);
@@ -109,6 +113,108 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def legacy_completion_authoritative(candidates_json, status, last_sync_time) -> bool:
+    """Infer only what an old schema actually recorded about a complete sync."""
+    candidates = _loads(candidates_json)
+    if not isinstance(candidates, list):
+        return False
+    valid_candidate = any(
+        isinstance(item, dict)
+        and isinstance(item.get("value"), str) and item["value"]
+        and isinstance(item.get("insert_value", item["value"]), str)
+        and item.get("insert_value", item["value"])
+        for item in candidates
+    )
+    return bool(valid_candidate or status == "success" or last_sync_time)
+
+
+class QueueClaim(NamedTuple):
+    tag_id: int
+    name: str
+    created_at: str | None
+    token: str
+
+
+def merge_import_payload(stored: dict | None, incoming: dict) -> dict:
+    """Import only supplied fields; compact backups must not erase metadata."""
+    if (not isinstance(incoming, dict)
+            or not isinstance(incoming.get("tag"), str) or not incoming["tag"]):
+        raise ValueError("import payload requires a non-empty tag")
+    for field in ("completion_candidates", "aliases"):
+        if field in incoming and not isinstance(incoming[field], list):
+            raise ValueError(f"{field} must be a list")
+    if "wiki" in incoming and incoming["wiki"] is not None and not isinstance(incoming["wiki"], dict):
+        raise ValueError("wiki must be an object or null")
+    supplied_info = incoming.get("tag_info", {})
+    if not isinstance(supplied_info, dict):
+        raise ValueError("tag_info must be an object")
+    if supplied_info.get("name", incoming["tag"]) != incoming["tag"]:
+        raise ValueError("tag_info name does not match tag")
+    stored_info = (stored or {}).get("tag_info") or {}
+    supplied_id = supplied_info.get("id")
+    if supplied_id is not None:
+        if type(supplied_id) is not int or supplied_id <= 0:
+            raise ValueError("tag id must be a positive integer")
+        if stored_info.get("id") not in (None, supplied_id):
+            raise ValueError("import tag id conflicts with the stored tag")
+    merged = {**(stored or {}), **incoming}
+    merged["tag_info"] = {
+        **stored_info,
+        **{key: value for key, value in supplied_info.items() if value is not None},
+        "name": incoming["tag"],
+    }
+    # The merged stored list is not evidence that this import supplied a full
+    # list. Preserve the database's existing authority flag in that case.
+    merged["_preserve_completion_authority"] = "completion_candidates" not in incoming
+    return merged
+
+
+_UPSERT_TAG = """INSERT INTO tags
+    (name, tag_id, slug, category, post_count, updated_at, wiki_other_names,
+     aliases, completion_candidates, completion_authoritative, version)
+    VALUES (:name, :tag_id, :slug, :category, :post_count, :updated_at, :wiki,
+            :aliases, :candidates, COALESCE(:authority, 0), 1)
+    ON CONFLICT(name) DO UPDATE SET
+        tag_id=excluded.tag_id, slug=excluded.slug, category=excluded.category,
+        post_count=excluded.post_count, updated_at=excluded.updated_at,
+        wiki_other_names=excluded.wiki_other_names, aliases=excluded.aliases,
+        completion_candidates=excluded.completion_candidates,
+        completion_authoritative=COALESCE(:authority, tags.completion_authoritative),
+        version=tags.version+1"""
+
+_UPSERT_SYNC_STATUS = """INSERT INTO sync_status
+    (tag, status, reason, failures, last_sync_time, last_failed_at, version)
+    VALUES (?, ?, ?, ?, ?, ?, 1)
+    ON CONFLICT(tag) DO UPDATE SET
+        status=excluded.status, reason=excluded.reason, failures=excluded.failures,
+        last_sync_time=excluded.last_sync_time, last_failed_at=excluded.last_failed_at,
+        version=sync_status.version+1"""
+
+
+def _tag_values(payload: dict) -> dict:
+    tag = payload.get("tag")
+    if not tag:
+        raise ValueError("payload missing 'tag'")
+    info = payload.get("tag_info") or {}
+    wiki = payload.get("wiki") or {}
+    wiki_names = wiki.get("other_names") if isinstance(wiki, dict) else None
+    authority = None
+    if "completion_candidates" in payload and not payload.get("_preserve_completion_authority"):
+        authority = int(isinstance(payload["completion_candidates"], list))
+    return {
+        "name": tag,
+        "tag_id": info.get("id") if isinstance(info, dict) else None,
+        "slug": slugify_tag(tag),
+        "category": info.get("category") if isinstance(info, dict) else None,
+        "post_count": info.get("post_count") if isinstance(info, dict) else None,
+        "updated_at": payload.get("updated_at") or now_iso(),
+        "wiki": _dumps(wiki_names) if wiki_names else None,
+        "aliases": _dumps(payload.get("aliases") or []),
+        "candidates": _dumps(payload.get("completion_candidates") or []),
+        "authority": authority,
+    }
+
+
 class TagDB:
     """Thread-safe facade over the SQLite tag database.
 
@@ -123,14 +229,36 @@ class TagDB:
 
     @property
     def conn(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(self.path), check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.executescript(SCHEMA)
-            conn.commit()
-            self._conn = conn
+        with _write_lock:
+            if self._conn is None:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                conn = sqlite3.connect(str(self.path), check_same_thread=False)
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    conn.executescript(SCHEMA)
+                    # Serialize the check-and-alter across processes too.
+                    conn.execute("BEGIN IMMEDIATE")
+                    columns = {row[1] for row in conn.execute("PRAGMA table_info(tags)")}
+                    if "completion_authoritative" not in columns:
+                        conn.execute("ALTER TABLE tags ADD COLUMN completion_authoritative INTEGER NOT NULL DEFAULT 0")
+                        rows = conn.execute(
+                            "SELECT tags.name, tags.completion_candidates, sync_status.status, "
+                            "sync_status.last_sync_time FROM tags LEFT JOIN sync_status "
+                            "ON sync_status.tag=tags.name"
+                        )
+                        for name, candidates, status, last_sync_time in rows:
+                            if legacy_completion_authoritative(candidates, status, last_sync_time):
+                                conn.execute("UPDATE tags SET completion_authoritative=1 WHERE name=?", (name,))
+                    columns = {row[1] for row in conn.execute("PRAGMA table_info(sync_queue)")}
+                    if "claim_token" not in columns:
+                        conn.execute("ALTER TABLE sync_queue ADD COLUMN claim_token TEXT")
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    conn.close()
+                    raise
+                self._conn = conn
         return self._conn
 
     def close(self):
@@ -143,90 +271,18 @@ class TagDB:
     # tags
     # ------------------------------------------------------------------
     def upsert_tag(self, payload: dict):
-        """Insert or update a tag row from a sync payload (view.sync_data)."""
-        tag = payload.get("tag")
-        if not tag:
-            raise ValueError("payload missing 'tag'")
-        tag_info = payload.get("tag_info") or {}
-        wiki = payload.get("wiki") or {}
-        wiki_names = wiki.get("other_names") if isinstance(wiki, dict) else None
-
-        with _write_lock:
-            self.conn.execute(
-                """INSERT INTO tags
-                       (name, tag_id, slug, category, post_count, updated_at,
-                        wiki_other_names, aliases, completion_candidates, version)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                   ON CONFLICT(name) DO UPDATE SET
-                       tag_id = excluded.tag_id,
-                       slug = excluded.slug,
-                       category = excluded.category,
-                       post_count = excluded.post_count,
-                       updated_at = excluded.updated_at,
-                       wiki_other_names = excluded.wiki_other_names,
-                       aliases = excluded.aliases,
-                       completion_candidates = excluded.completion_candidates,
-                       version = tags.version + 1""",
-                (
-                    tag,
-                    tag_info.get("id") if isinstance(tag_info, dict) else None,
-                    slugify_tag(tag),
-                    tag_info.get("category") if isinstance(tag_info, dict) else None,
-                    tag_info.get("post_count") if isinstance(tag_info, dict) else None,
-                    payload.get("updated_at") or now_iso(),
-                    _dumps(wiki_names) if wiki_names else None,
-                    _dumps(payload.get("aliases") or []),
-                    _dumps(payload.get("completion_candidates") or []),
-                ),
-            )
-            self.conn.commit()
+        """Insert or update a complete sync payload, including empty lists."""
+        values = _tag_values(payload)
+        with _write_lock, self.conn:
+            self.conn.execute(_UPSERT_TAG, values)
 
     def upsert_tags_many(self, payloads: list[dict]):
-        """Bulk insert/update tags from payload dicts in a single transaction."""
-        if not payloads:
-            return
-        rows = []
-        for payload in payloads:
-            tag = payload.get("tag")
-            if not tag:
-                continue
-            tag_info = payload.get("tag_info") or {}
-            wiki = payload.get("wiki") or {}
-            wiki_names = wiki.get("other_names") if isinstance(wiki, dict) else None
-            rows.append(
-                (
-                    tag,
-                    tag_info.get("id") if isinstance(tag_info, dict) else None,
-                    slugify_tag(tag),
-                    tag_info.get("category") if isinstance(tag_info, dict) else None,
-                    tag_info.get("post_count") if isinstance(tag_info, dict) else None,
-                    payload.get("updated_at") or now_iso(),
-                    _dumps(wiki_names) if wiki_names else None,
-                    _dumps(payload.get("aliases") or []),
-                    _dumps(payload.get("completion_candidates") or []),
-                )
-            )
+        """Bulk import all supplied payloads in one transaction."""
+        rows = [_tag_values(payload) for payload in payloads if payload.get("tag")]
         if not rows:
             return
-        with _write_lock:
-            self.conn.executemany(
-                """INSERT INTO tags
-                       (name, tag_id, slug, category, post_count, updated_at,
-                        wiki_other_names, aliases, completion_candidates, version)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                   ON CONFLICT(name) DO UPDATE SET
-                       tag_id = excluded.tag_id,
-                       slug = excluded.slug,
-                       category = excluded.category,
-                       post_count = excluded.post_count,
-                       updated_at = excluded.updated_at,
-                       wiki_other_names = excluded.wiki_other_names,
-                       aliases = excluded.aliases,
-                       completion_candidates = excluded.completion_candidates,
-                       version = tags.version + 1""",
-                rows,
-            )
-            self.conn.commit()
+        with _write_lock, self.conn:
+            self.conn.executemany(_UPSERT_TAG, rows)
 
     def upsert_tag_categories(self, rows: list[tuple]):
         """Bulk upsert (name, tag_id, category, post_count) into the tags table.
@@ -237,7 +293,7 @@ class TagDB:
         """
         if not rows:
             return
-        with _write_lock:
+        with _write_lock, self.conn:
             self.conn.executemany(
                 """INSERT INTO tags
                        (name, tag_id, slug, category, post_count, updated_at,
@@ -348,21 +404,11 @@ class TagDB:
         last_sync_time: str | None = None,
         last_failed_at: str | None = None,
     ):
-        with _write_lock:
+        with _write_lock, self.conn:
             self.conn.execute(
-                """INSERT INTO sync_status
-                       (tag, status, reason, failures, last_sync_time, last_failed_at, version)
-                   VALUES (?, ?, ?, ?, ?, ?, 1)
-                   ON CONFLICT(tag) DO UPDATE SET
-                       status = excluded.status,
-                       reason = excluded.reason,
-                       failures = excluded.failures,
-                       last_sync_time = excluded.last_sync_time,
-                       last_failed_at = excluded.last_failed_at,
-                       version = sync_status.version + 1""",
+                _UPSERT_SYNC_STATUS,
                 (tag, status, reason, failures or 0, last_sync_time, last_failed_at),
             )
-            self.conn.commit()
 
     def upsert_sync_status_many(
         self,
@@ -374,7 +420,7 @@ class TagDB:
         """
         if not rows:
             return
-        with _write_lock:
+        with _write_lock, self.conn:
             self.conn.executemany(
                 """INSERT INTO sync_status
                        (tag, status, reason, failures, last_sync_time, last_failed_at, version)
@@ -492,7 +538,7 @@ class TagDB:
 
     def save_metadata(self, metadata: dict):
         """metadata: {slug: {"tag": str, "last_sync_time": str, "version": int}}"""
-        with _write_lock:
+        with _write_lock, self.conn:
             self.conn.executemany(
                 """INSERT INTO sync_metadata (slug, tag, last_sync_time, version)
                    VALUES (?, ?, ?, ?)
@@ -533,12 +579,53 @@ class TagDB:
             self.conn.commit()
             return cur.rowcount
 
+    def requeue_many(self, rows: list[tuple], *, claim_seconds: int = 600) -> int:
+        """Explicitly resync completed tags, preserving unexpired claims.
+
+        The stored payload remains intact. Marking the last attempt as pending
+        makes the consumer refresh it without requiring a separate --force flag.
+        """
+        import time
+
+        rows = [(tid, name, created) for tid, name, created in rows
+                if tid is not None and name]
+        if not rows:
+            return 0
+        now = time.time()
+        with _write_lock, self.conn:
+            cursor = self.conn.executemany(
+                """INSERT INTO sync_queue
+                       (tag_id, name, created_at, status, enqueued_at)
+                   VALUES (?, ?, ?, 'pending', ?)
+                   ON CONFLICT(tag_id) DO UPDATE SET
+                       name=excluded.name, created_at=excluded.created_at,
+                       status='pending', enqueued_at=excluded.enqueued_at,
+                       claimed_by=NULL, claimed_at=NULL, claim_token=NULL, done_at=NULL
+                   WHERE sync_queue.status != 'claimed'
+                      OR sync_queue.claimed_at IS NULL
+                      OR ? - sync_queue.claimed_at > ?""",
+                [(tid, name, created, now_iso(), now, claim_seconds)
+                 for tid, name, created in rows],
+            )
+            count = cursor.rowcount
+            self.conn.executemany(
+                """UPDATE sync_status
+                   SET status='pending', reason=NULL, failures=0,
+                       last_failed_at=NULL, version=version+1
+                   WHERE tag=? AND EXISTS (
+                       SELECT 1 FROM sync_queue
+                       WHERE tag_id=? AND name=? AND status='pending'
+                   )""",
+                [(name, tid, name) for tid, name, _ in rows],
+            )
+            return count
+
     def requeue_failed(self) -> int:
         """Retry failed queue items on the next sync run, unless blocked."""
         with _write_lock:
             cur = self.conn.execute(
                 """UPDATE sync_queue
-                   SET status='pending', claimed_by=NULL, claimed_at=NULL, done_at=NULL
+                   SET status='pending', claimed_by=NULL, claimed_at=NULL, claim_token=NULL, done_at=NULL
                    WHERE status='failed' AND NOT EXISTS (
                        SELECT 1 FROM sync_status
                        WHERE sync_status.tag=sync_queue.name
@@ -549,7 +636,7 @@ class TagDB:
             return cur.rowcount
 
     def claim_batch(self, limit: int = 10, claimer: str = "syncer",
-                    claim_seconds: int = 600) -> list[tuple]:
+                    claim_seconds: int = 600) -> list[QueueClaim]:
         """Atomically claim up to `limit` pending queue rows.
 
         Uses BEGIN IMMEDIATE so only one process/thread claims a given row.
@@ -558,33 +645,88 @@ class TagDB:
         """
         import time as _t
         now = _t.time()
+        token = uuid4().hex
         with _write_lock:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
                 self.conn.execute(
-                    "UPDATE sync_queue SET status='claimed', claimed_by=?, claimed_at=?, done_at=NULL "
+                    "UPDATE sync_queue SET status='claimed', claimed_by=?, claimed_at=?, claim_token=?, done_at=NULL "
                     "WHERE tag_id IN (SELECT tag_id FROM sync_queue "
                     "  WHERE status='pending' "
                     "     OR (status='claimed' AND claimed_at IS NOT NULL AND ? - claimed_at > ?) "
                     "  ORDER BY tag_id LIMIT ?)",
-                    (claimer, now, now, claim_seconds, limit),
+                    (claimer, now, token, now, claim_seconds, limit),
                 )
                 rows = self.conn.execute(
-                    "SELECT tag_id, name, created_at FROM sync_queue "
-                    "WHERE status='claimed' AND claimed_by=? AND claimed_at>=? "
+                    "SELECT tag_id, name, created_at, claim_token FROM sync_queue "
+                    "WHERE status='claimed' AND claim_token=? "
                     "ORDER BY tag_id LIMIT ?",
-                    (claimer, now - 1, limit),
+                    (token, limit),
                 ).fetchall()
                 self.conn.commit()
             except Exception:
                 self.conn.rollback()
                 raise
-            return [(r[0], r[1], r[2]) for r in rows]
+            return [QueueClaim(*row) for row in rows]
+
+    def complete_claim(self, claim: QueueClaim, status: str, *, payload: dict | None = None,
+                       error: str | None = None, max_failures: int = 5) -> str:
+        """Fence all result writes with the current lease in one transaction.
+
+        Expiry makes a lease reclaimable; its token becomes invalid as soon as
+        another producer or consumer replaces it. A late success, failure, or
+        blocked result then has no effect on any table.
+        """
+        if not isinstance(claim, QueueClaim) or not claim.token:
+            raise ValueError("completion requires the claim returned by claim_batch")
+        if status not in ("synced", "failed", "skipped", "blocked"):
+            raise ValueError(f"invalid completion status: {status}")
+        with _write_lock:
+            conn = self.conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                owned = conn.execute(
+                    "SELECT 1 FROM sync_queue WHERE tag_id=? AND name=? "
+                    "AND status='claimed' AND claim_token=?",
+                    (claim.tag_id, claim.name, claim.token),
+                ).fetchone()
+                if owned is None:
+                    conn.rollback()
+                    return "stale"
+
+                timestamp = now_iso()
+                if status == "synced":
+                    if payload is None or payload.get("tag") != claim.name:
+                        raise ValueError("sync payload does not match the claimed tag")
+                    conn.execute(_UPSERT_TAG, _tag_values(payload))
+                    conn.execute(_UPSERT_SYNC_STATUS,
+                                 (claim.name, "success", None, 0, timestamp, None))
+                elif status == "failed":
+                    previous = conn.execute(
+                        "SELECT failures, last_sync_time FROM sync_status WHERE tag=?",
+                        (claim.name,),
+                    ).fetchone()
+                    failures = (previous[0] if previous else 0) + 1
+                    status = "blocked" if failures >= max_failures else "failed"
+                    conn.execute(_UPSERT_SYNC_STATUS,
+                                 (claim.name, status, error, failures,
+                                  previous[1] if previous else None, timestamp))
+
+                conn.execute(
+                    "UPDATE sync_queue SET status=?, done_at=? WHERE tag_id=? AND claim_token=?",
+                    (status, timestamp, claim.tag_id, claim.token),
+                )
+                conn.commit()
+                return status
+            except BaseException:
+                conn.rollback()
+                raise
 
     def mark_done(self, tag_id: int, status: str):
+        """Legacy unclaimed-row update; active workers must use complete_claim."""
         with _write_lock:
             self.conn.execute(
-                "UPDATE sync_queue SET status=?, done_at=? WHERE tag_id=?",
+                "UPDATE sync_queue SET status=?, done_at=? WHERE tag_id=? AND status!='claimed'",
                 (status, now_iso(), tag_id),
             )
             self.conn.commit()
