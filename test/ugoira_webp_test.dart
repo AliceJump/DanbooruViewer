@@ -15,6 +15,10 @@ const _lossy2 =
     'UklGRkAAAABXRUJQVlA4IDQAAAAwAgCdASoCAAEAAMASJaACdLoB+AH4AARoAAD++iGX/3easNN39a3/9aOfron+tHP/WVgA';
 const _alpha2 =
     'UklGRl4AAABXRUJQVlA4WAoAAAAQAAAAAQAAAAAAQUxQSAMAAAAAgIAAVlA4IDQAAAAwAgCdASoCAAEAAMASJaACdLoB+AH4AARoAAD++iGX/3easNN39a3/9aOfron+tHP/WVgA';
+// Independent libwebp lossy 16x16 red, alternating alpha 192/128. Unlike
+// alpha2, its ALPH chunk uses the compressed lossless image stream (method 1).
+const _compressedAlpha16 =
+    'UklGRnAAAABXRUJQVlA4WAoAAAAQAAAADwAADwAAQUxQSBUAAAABEBIQ103zTlQjgmCSptqOkfqcfwcAVlA4IDQAAAAwAgCdASoQABAAAMASJaACdLoB+AH4AARoAAD++iGX/3easNN39a3/9aOfron+tHP/WVgA';
 
 void main() {
   test('lossless, lossy and alpha fixtures retain decoded pixels', () {
@@ -32,6 +36,22 @@ void main() {
     final alpha = prepareUgoiraWebp(base64Decode(_alpha2), maxPixels: 2);
     expect(img.decodeWebP(alpha.bytes)!.getPixel(0, 0).a, 128);
   });
+
+  test(
+    'compressed alpha keeps its pixels through the lossless budget check',
+    () {
+      final original = base64Decode(_compressedAlpha16);
+      final alphaChunk = _imageChunks(original).first;
+      expect(String.fromCharCodes(alphaChunk.sublist(0, 4)), 'ALPH');
+      expect(alphaChunk[8] & 3, 1);
+      final checked = prepareUgoiraWebp(original, maxPixels: 256);
+      final actual = img.decodeWebP(checked.bytes)!;
+      expect(actual.getBytes(), img.decodeWebP(original)!.getBytes());
+      expect((actual.width, actual.height), (16, 16));
+      expect(actual.getPixel(0, 0).a, 192);
+      expect(actual.getPixel(1, 0).a, 128);
+    },
+  );
 
   test(
     'animation returns the checked first frame with its real dimensions',
@@ -68,17 +88,15 @@ void main() {
   test(
     'small canvas cannot hide larger inner lossless allocation dimensions',
     () {
-      // This small fixture reproduces the locked decoder's exact bypass without
-      // allocating a maliciously large image: startDecode reports 1x1, but the
-      // allocation/decode dimensions are 2x1.
+      // A small fixture covers the old outer/inner dimension mismatch. Both
+      // the application preflight and image 4.13.1 must now reject it.
       final bytes = _animation(1, 1, [
         _frame(1, 1, _imageChunks(base64Decode(_lossless2))),
       ]);
       final decoder = img.WebPDecoder();
       final info = decoder.startDecode(bytes)!;
       expect((info.width, info.height), (1, 1));
-      final frame = decoder.decodeFrame(0)!;
-      expect((frame.width, frame.height), (2, 1));
+      expect(() => decoder.decodeFrame(0), throwsA(isA<img.ImageException>()));
       expect(
         () => prepareUgoiraWebp(bytes, maxPixels: 2),
         throwsFormatException,
@@ -92,6 +110,36 @@ void main() {
     ]);
     expect(() => prepareUgoiraWebp(bytes, maxPixels: 2), throwsFormatException);
   });
+
+  test(
+    'both lossless image and compressed alpha check encoded group limits',
+    () {
+      // Six-byte prefix: a 1x1 meta image references group 4096, beyond the
+      // encoded-group budget. No main Huffman tables or image payload follow;
+      // the preflight must reject it before handing it to the real decoder.
+      final prefix = base64Decode('hChE9D8A');
+      final lossless = _riff([
+        _chunk('VP8L', Uint8List.fromList([0x2f, 1, 0, 0, 0, ...prefix])),
+      ]);
+      final compressedAlpha = _riff([
+        _extended(2, 1, flags: 0x10),
+        _chunk('ALPH', Uint8List.fromList([1, ...prefix])),
+        ..._imageChunks(base64Decode(_lossy2)),
+      ]);
+      for (final bytes in [lossless, compressedAlpha]) {
+        expect(
+          () => prepareUgoiraWebp(bytes, maxPixels: 2),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.message,
+              'reason',
+              contains('编码表数量'),
+            ),
+          ),
+        );
+      }
+    },
+  );
 
   test('later frames are checked even though only the first is decoded', () {
     final bytes = _animation(2, 1, [

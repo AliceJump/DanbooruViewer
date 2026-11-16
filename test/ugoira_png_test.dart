@@ -141,14 +141,8 @@ void main() {
         prepareUgoiraPng(png, maxPixels: 64, maxOutputBytes: 207).outputBytes,
         greaterThan(0),
       );
+      expect(img.decodeGif(mergeUgoiraBytesToGifSync(_zipPng(png))), isNotNull);
     }
-    // image 4.8.0 itself mishandles Adam7 passes with zero columns. Check
-    // those valid inputs against our validator above; exercise its complete
-    // PNG -> GIF decode on the 8x8 case with seven nonempty passes.
-    expect(
-      img.decodeGif(mergeUgoiraBytesToGifSync(_zipPng(fixtures.last))),
-      isNotNull,
-    );
   });
 
   test('valid output larger than the 32 KiB history still decodes', () {

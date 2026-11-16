@@ -123,6 +123,23 @@ void main() {
     },
   );
 
+  test('real worker converts WebP with compressed alpha', () async {
+    // Independent libwebp 16x16 red with alternating alpha 192/128; its
+    // compressed ALPH chunk shares the bounded lossless preflight.
+    final webp = base64Decode(
+      'UklGRnAAAABXRUJQVlA4WAoAAAAQAAAADwAADwAAQUxQSBUAAAABEBIQ103zTlQjgmCSptqOkfqcfwcAVlA4IDQAAAAwAgCdASoQABAAAMASJaACdLoB+AH4AARoAAD++iGX/3easNN39a3/9aOfron+tHP/WVgA',
+    );
+    final zip = Uint8List.fromList(
+      ZipEncoder().encode(Archive()..add(ArchiveFile.bytes('000.webp', webp))),
+    );
+    final gif = img.decodeGif(await convertUgoiraBytesToGif(zip))!;
+    expect((gif.width, gif.height), (16, 16));
+    final pixel = gif.getPixel(0, 0);
+    expect(pixel.r, greaterThan(200));
+    expect(pixel.g, lessThan(40));
+    expect(pixel.b, lessThan(40));
+  });
+
   test(
     'real worker leaves browser timers running during conversion',
     () async {

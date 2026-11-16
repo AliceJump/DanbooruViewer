@@ -160,7 +160,8 @@ void main() {
 
   test('coefficient budget includes MCU padding, not just visible pixels', () {
     final jpeg = _rgb(chroma: img.JpegChroma.yuv420);
-    // 17x17 at 4:2:0 => 2x2 MCUs, 6 blocks/MCU, 64 Int32s/block.
+    // 17x17 at 4:2:0 => 2x2 MCUs, 6 blocks/MCU, 64 coefficients/block.
+    // The preflight conservatively reserves four bytes per coefficient.
     const actualBytes = 2 * 2 * 6 * 64 * 4;
     expect(
       () => _prepare(jpeg, maxCoefficientBytes: actualBytes - 1),
@@ -325,5 +326,58 @@ void main() {
     ]) {
       expect(() => _prepare(modified), throwsFormatException);
     }
+  });
+
+  test('progressive scan budget is checked before entropy decoding', () {
+    Uint8List progressive({required bool extraScan}) {
+      final huffman = [1, ...List<int>.filled(15, 0), 0];
+      final scans = <int>[];
+      void scan(int component, int coefficient) {
+        scans.addAll(
+          _segment(0xda, [1, component, 0, coefficient, coefficient, 0]),
+        );
+        scans.add(0x7f);
+      }
+
+      for (var component = 1; component <= 3; component++) {
+        scan(component, 0);
+      }
+      for (var coefficient = 1; coefficient <= 63; coefficient++) {
+        scan(1, coefficient);
+      }
+      for (var coefficient = 1; coefficient <= 34; coefficient++) {
+        scan(2, coefficient);
+      }
+      if (extraScan) scan(2, 35);
+      return Uint8List.fromList([
+        0xff,
+        0xd8,
+        ..._segment(0xdb, [0, ...List<int>.filled(64, 1)]),
+        ..._segment(0xc2, [
+          8,
+          0,
+          8,
+          0,
+          8,
+          3,
+          1,
+          0x11,
+          0,
+          2,
+          0x11,
+          0,
+          3,
+          0x11,
+          0,
+        ]),
+        ..._segment(0xc4, [0, ...huffman, 0x10, ...huffman]),
+        ...scans,
+        0xff,
+        0xd9,
+      ]);
+    }
+
+    expect(_prepare(progressive(extraScan: false)).width, 8);
+    expect(() => _prepare(progressive(extraScan: true)), _fails('扫描次数'));
   });
 }

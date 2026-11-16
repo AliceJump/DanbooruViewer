@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-/// Validate every field which image 4.8.0 uses before or during BMP allocation.
+/// Validate every field which the decoder uses before or during BMP allocation.
 /// Only its implemented uncompressed/bitfield layouts are admitted. Palette
 /// counts must fit both the bit depth and the actual bytes before pixel data.
 ({Uint8List bytes, int width, int height}) prepareUgoiraBmp(
@@ -103,7 +103,7 @@ import 'dart:typed_data';
   }
   var prepared = bytes;
   if (headerSize == 52) {
-    // image 4.8.0 reads four masks for every header > 40. BITMAPV2INFOHEADER
+    // image 4.13.1 reads four masks for every header > 40. BITMAPV2INFOHEADER
     // only has three: use a V5 header with an explicit zero alpha mask so it
     // cannot read palette/pixel bytes as that mask. V5 is also the decoder's
     // supported zero-alpha-mask path for opaque RGB bitfields.

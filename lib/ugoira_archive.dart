@@ -3,6 +3,8 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 
+import 'ugoira_inflate.dart';
+
 const maxUgoiraArchiveFiles = 502;
 const maxUgoiraMetadataBytes = 1024 * 1024;
 
@@ -45,16 +47,10 @@ Archive decodeBoundedUgoiraArchive(
     );
     final input = _compressedData(bytes, header, directory.start);
     if (header.compressionMethod == 8) {
-      // Both ZLibDecoder and ZLibDecoderWeb collect output before forwarding
-      // it. Inflate writes directly to our budgeted output on every platform.
-      // archive's Huffman lookup requires the tree's full maximum code width,
-      // even when a valid final symbol needs fewer remaining bits. Supply two
-      // zero lookahead bytes after the already validated compressed range;
-      // DEFLATE stops at EOB, and output size/CRC/budget checks still apply.
-      final compressed = input.toUint8List();
-      final padded = Uint8List(compressed.length + 2)
-        ..setRange(0, compressed.length, compressed);
-      Inflate.stream(InputMemoryStream(padded), output: output);
+      // Keep literal/back-reference writes inside the shared output budget.
+      // The pinned decoder accepts a short final Huffman symbol without
+      // adding lookahead bytes beyond this validated compressed range.
+      inflateUgoiraStream(input, output);
     } else {
       output.writeStream(input);
     }

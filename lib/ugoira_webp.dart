@@ -1,9 +1,12 @@
 import 'dart:typed_data';
 
+import 'ugoira_webp_budget.dart';
+
 /// Validate dimensions before image's WebP decoder can allocate frame buffers.
-/// In particular, VP8X/ANMF dimensions do not constrain the inner VP8/VP8L
-/// dimensions in image 4.8.0. Validate every frame and pass only the first
-/// frame's checked image/alpha chunks to the decoder. This preserves Ugoira's
+/// Validate both VP8X/ANMF and the inner VP8/VP8L dimensions of every frame,
+/// and pass only the first frame's checked image/alpha chunks to the decoder.
+/// Bound its lossless Huffman tables before the decoder builds them, including
+/// the lossless stream inside a compressed ALPH chunk. This preserves Ugoira's
 /// existing decodeFrame(0) behavior without recursive animation or metadata
 /// parsers selecting a different stream after these checks.
 ({Uint8List bytes, int width, int height}) prepareUgoiraWebp(
@@ -105,11 +108,30 @@ class _WebpPreflight {
         throw const FormatException('动图 WebP 图像与画布尺寸不一致。');
       }
     }
+    _checkLosslessBudget(firstFrame);
     return (
       bytes: _canonicalImage(firstFrame),
       width: firstFrame.width,
       height: firstFrame.height,
     );
+  }
+
+  void _checkLosslessBudget(_WebpFrame frame) {
+    final image = frame.image;
+    final alpha = frame.alpha;
+    if (image.type == 'VP8L') {
+      checkUgoiraWebpLosslessBudget(
+        Uint8List.sublistView(bytes, image.start + 5, image.end),
+        width: frame.width,
+        height: frame.height,
+      );
+    } else if (alpha != null && bytes[alpha.start] & 3 == 1) {
+      checkUgoiraWebpLosslessBudget(
+        Uint8List.sublistView(bytes, alpha.start + 1, alpha.end),
+        width: frame.width,
+        height: frame.height,
+      );
+    }
   }
 
   Iterable<_WebpChunk> _chunks(int start, int end) sync* {
@@ -183,8 +205,8 @@ class _WebpPreflight {
       }
       width = data.getUint16(start + 6, Endian.little);
       height = data.getUint16(start + 8, Endian.little);
-      // image 4.8.0 uses the full 16-bit words as allocation dimensions. WebP
-      // does not use VP8 scaling; reject those bits instead of masking them.
+      // WebP does not use VP8 scaling; reject those bits instead of masking
+      // them before passing the dimensions to the decoder.
       if ((width | height) & 0xc000 != 0) {
         throw const FormatException('动图 WebP 缩放尺寸不受支持。');
       }

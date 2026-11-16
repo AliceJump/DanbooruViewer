@@ -41,8 +41,9 @@ dependencies:
   video_player: ^2.7.0
   flutter_cache_manager: ^3.3.1
   shared_preferences: ^2.2.2
-  archive: ^4.0.7
-  image: ^4.8.0
+  # Recheck the bounded inflate/WebP contracts before upgrading these packages.
+  archive: 4.7.1
+  image: 4.13.1
   web: ^1.1.1
 dev_dependencies:
   flutter_test:

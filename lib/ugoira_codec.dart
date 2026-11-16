@@ -85,11 +85,14 @@ Uint8List mergeUgoiraBytesToGifSync(Uint8List bytes) {
   var pngOutputBytes = 0;
   for (final file in imageFiles) {
     var data = file.content;
-    final decoder = _frameDecoder(data);
     final remainingPixels = _maxAnimationPixels - totalPixels;
     final maxPixels = remainingPixels < 16 * 1024 * 1024
         ? remainingPixels
         : 16 * 1024 * 1024;
+    if (maxPixels <= 0) {
+      throw const FormatException('动图累计解码尺寸过大，请打开原链接查看。');
+    }
+    final decoder = _frameDecoder(data, maxPixels: maxPixels);
     final ({int width, int height}) dimensions;
     if (decoder is img.JpegDecoder) {
       final prepared = prepareUgoiraJpeg(
@@ -127,8 +130,8 @@ Uint8List mergeUgoiraBytesToGifSync(Uint8List bytes) {
         totalPixels > _maxAnimationPixels) {
       throw const FormatException('动图解码尺寸过大，请打开原链接查看。');
     }
-    // JPEG's startDecode/readInfo also allocates coefficient blocks. The
-    // preflight supplies dimensions so direct decode allocates them once.
+    // The validated JPEG already supplies dimensions; decode it directly
+    // without reparsing it through startDecode/readInfo first.
     final frame = decoder is img.JpegDecoder
         ? decoder.decode(data)
         : decoder.decodeFrame(0);
@@ -146,8 +149,8 @@ Uint8List mergeUgoiraBytesToGifSync(Uint8List bytes) {
     final gifFrame = frame.format == img.Format.uint16
         ? frame.convert(format: img.Format.uint8)
         : frame;
-    // image 4.8.0 computes the sample count before its small-image fallback.
-    // With its default factor 10, frames below 10 pixels train no colors.
+    // Train the palette on every pixel of tiny frames, including frames with
+    // fewer pixels than the normal sampling factor.
     encoder.samplingFactor = pixels < 10 ? 1 : 10;
     encoder.addFrame(gifFrame, duration: centi < 1 ? 1 : centi);
   }
@@ -159,7 +162,7 @@ Uint8List mergeUgoiraBytesToGifSync(Uint8List bytes) {
   return gif;
 }
 
-img.Decoder _frameDecoder(Uint8List bytes) {
+img.Decoder _frameDecoder(Uint8List bytes, {required int maxPixels}) {
   bool startsWith(List<int> signature, [int offset = 0]) {
     if (bytes.length < offset + signature.length) return false;
     for (var index = 0; index < signature.length; index++) {
@@ -171,14 +174,16 @@ img.Decoder _frameDecoder(Uint8List bytes) {
   // Do not run general decoder probing on untrusted frames. Some format
   // detectors parse metadata; only these four explicit signatures are used.
   if (startsWith(const [137, 80, 78, 71, 13, 10, 26, 10])) {
-    return img.PngDecoder();
+    return img.PngDecoder(maxPixels: maxPixels);
   }
-  if (startsWith(const [0xff, 0xd8])) return img.JpegDecoder();
+  if (startsWith(const [0xff, 0xd8])) {
+    return img.JpegDecoder(maxPixels: maxPixels);
+  }
   if (startsWith(const [82, 73, 70, 70]) &&
       startsWith(const [87, 69, 66, 80], 8)) {
-    return img.WebPDecoder();
+    return img.WebPDecoder()..maxPixels = maxPixels;
   }
-  if (startsWith(const [66, 77])) return img.BmpDecoder();
+  if (startsWith(const [66, 77])) return img.BmpDecoder(maxPixels: maxPixels);
   throw const FormatException('动图帧只支持 PNG、JPEG、WebP 和 BMP。');
 }
 

@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 
+import 'ugoira_inflate.dart';
+
 /// Check PNG's *inner* zlib stream before image's decoder can allocate it.
 /// Only a 32 KiB DEFLATE history is retained during this validation. The exact
 /// scanline size includes filters, packed samples, and all nonempty Adam7
@@ -167,13 +169,12 @@ import 'package:archive/archive.dart';
       flg & 32 != 0) {
     throw const FormatException('动图 PNG 压缩流头无效。');
   }
-  // The four Adler bytes supply the maximum two-byte Huffman lookahead.
   // Inflate rewinds unused whole bytes at EOB, so the final input position
-  // also rejects concatenated streams/trailing payload that the downstream
-  // web zlib decoder would otherwise inflate without our limit.
+  // also requires exactly one checked zlib stream, without a concatenated
+  // stream or trailing payload.
   final input = InputMemoryStream(compressed)..skip(2);
   final output = _PngInflateCounter(expected);
-  Inflate.stream(input, output: output);
+  inflateUgoiraStream(input, output);
   if (input.position != compressed.length - 4 ||
       output.length != expected ||
       output.adler32 !=

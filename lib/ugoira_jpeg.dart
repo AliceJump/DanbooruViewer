@@ -1,15 +1,16 @@
 import 'dart:typed_data';
 
-/// Validate JPEG before image 4.8.0's readInfo/read can allocate DCT blocks.
+/// Validate JPEG before the decoder can allocate DCT coefficients.
 ///
-/// The coefficient budget counts the actual Int32List(64) backing storage,
-/// including MCU padding for every component. Dart list/object and output
-/// image overhead are additional; this is not a process memory limit.
+/// The coefficient budget conservatively counts four bytes per coefficient
+/// for a full MCU-padded frame. image 4.13.1 uses Int16List storage and can
+/// decode baseline frames a band at a time, so its backing store is smaller.
+/// Object and output image overhead are additional; this is not a process
+/// memory limit.
 /// Only one 8-bit Huffman DCT frame is accepted. The returned bytes retain
 /// validated coding segments and entropy, a bounded Adobe color transform,
 /// and at most a fixed-size EXIF orientation segment. Callers must decode
-/// these bytes directly after checking the returned pixel count, without
-/// invoking JpegDecoder.startDecode (which also allocates the coefficients).
+/// these bytes directly after checking the returned pixel count.
 ({Uint8List bytes, int width, int height}) prepareUgoiraJpeg(
   Uint8List bytes, {
   required int maxPixels,
@@ -347,7 +348,8 @@ class _JpegPreparation {
         component.approximation[coefficient] = approximation;
       }
     }
-    _scans++;
+    // Match the pinned decoder's scan limit before doing entropy decoding.
+    if (++_scans > 100) _fail('扫描次数超出限制。');
   }
 
   void _readEntropy() {
