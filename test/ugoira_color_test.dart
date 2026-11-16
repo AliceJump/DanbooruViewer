@@ -55,4 +55,17 @@ void main() {
       );
     }
   });
+
+  test('GIF dimensions cannot wrap its 16-bit width or height fields', () {
+    // These source images occupy less than 0.3 MiB. Their pixel counts are
+    // within the resource budget, but GIF cannot represent the long axis.
+    for (final size in [(65536, 1), (1, 65536)]) {
+      final frame = img.Image(width: size.$1, height: size.$2);
+      final bytes = _zip('000.png', img.encodePng(frame));
+      expect(
+        () => mergeUgoiraBytesToGifSync(bytes),
+        throwsA(isA<FormatException>()),
+      );
+    }
+  });
 }

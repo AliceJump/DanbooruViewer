@@ -121,6 +121,8 @@ Uint8List mergeUgoiraBytesToGifSync(Uint8List bytes) {
     totalPixels += pixels;
     if (dimensions.width <= 0 ||
         dimensions.height <= 0 ||
+        dimensions.width > 0xffff ||
+        dimensions.height > 0xffff ||
         pixels > 16 * 1024 * 1024 ||
         totalPixels > _maxAnimationPixels) {
       throw const FormatException('动图解码尺寸过大，请打开原链接查看。');
