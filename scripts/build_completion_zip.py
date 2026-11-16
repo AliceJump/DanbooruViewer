@@ -14,6 +14,7 @@ The compact JSON entries carry the tag category (`c`) so the app can group
 completion suggestions by category without a database.
 """
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import sqlite3
@@ -103,27 +104,45 @@ def _loads_json(value):
         return None
 
 
+class _ExportSnapshot(ExitStack):
+    """Share read-only transactions until fingerprinting and merging finish."""
+
+    def __init__(self):
+        super().__init__()
+        self._connections = {}
+
+    def connection(self, path):
+        # Open lazily so an unchanged export need not reload candidate data.
+        if path not in self._connections:
+            conn = None
+            if path.exists():
+                conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+                self.callback(conn.close)
+                # Deferred/read-only: WAL writers can still commit. Subsequent
+                # SELECTs see the same snapshot as this connection's first read.
+                conn.execute("BEGIN")
+            self._connections[path] = conn
+        return self._connections[path]
+
+
 # ========================
 # candidate sources
 # ========================
-def load_candidates_from_db() -> list[tuple]:
+def load_candidates_from_db(snapshot=None) -> list[tuple]:
     """Candidates from the crawler SQLite db (tags.completion_candidates).
 
     Each candidate is a 5-tuple (value, insert_value, source, score, category).
     """
-    if not TAG_DB.exists():
+    if snapshot is None:
+        with _ExportSnapshot() as snapshot:
+            return load_candidates_from_db(snapshot)
+    conn = snapshot.connection(TAG_DB)
+    if conn is None:
         return []
-    try:
-        conn = sqlite3.connect(f"file:{TAG_DB}?mode=ro", uri=True)
-    except Exception:
-        conn = sqlite3.connect(str(TAG_DB))
-    try:
-        rows = conn.execute(
-            "SELECT completion_candidates, category FROM tags "
-            "WHERE completion_candidates IS NOT NULL"
-        ).fetchall()
-    finally:
-        conn.close()
+    rows = conn.execute(
+        "SELECT completion_candidates, category FROM tags "
+        "WHERE completion_candidates IS NOT NULL"
+    ).fetchall()
 
     result = []
     for payload_json, category in rows:
@@ -149,38 +168,38 @@ def load_candidates_from_db() -> list[tuple]:
     return result
 
 
-def load_candidates_from_seed_db() -> list[tuple]:
-    """Candidates from the legacy seed database (kept until migrated)."""
-    if not SEED_DB.exists():
-        return []
+def _seed_rows(conn):
+    """Use the same row representation for legacy suggestions and their hash."""
     try:
-        conn = sqlite3.connect(f"file:{SEED_DB}?mode=ro", uri=True)
-    except Exception:
-        conn = sqlite3.connect(str(SEED_DB))
-    try:
-        try:
-            rows = conn.execute(
-                "SELECT value, insert_value, source, score, category "
-                "FROM completion_candidates"
-            ).fetchall()
-        except sqlite3.OperationalError:
-            rows = conn.execute(
-                "SELECT value, insert_value, source, score, NULL "
-                "FROM completion_candidates"
-            ).fetchall()
-    finally:
-        conn.close()
-    return [
-        (
-            sys.intern(v),
-            sys.intern(i),
-            s if isinstance(s, str) else "",
-            r if isinstance(r, int) else 0,
-            c if isinstance(c, int) else None,
+        rows = conn.execute(
+            "SELECT value, insert_value, source, score, category "
+            "FROM completion_candidates"
         )
-        for v, i, s, r, c in rows
-        if isinstance(v, str) and isinstance(i, str) and v and i
-    ]
+    except sqlite3.OperationalError:
+        rows = conn.execute(
+            "SELECT value, insert_value, source, score, NULL "
+            "FROM completion_candidates"
+        )
+    for v, i, s, r, c in rows:
+        if isinstance(v, str) and isinstance(i, str) and v and i:
+            yield (
+                sys.intern(v),
+                sys.intern(i),
+                s if isinstance(s, str) else "",
+                r if isinstance(r, int) else 0,
+                c if isinstance(c, int) else None,
+            )
+
+
+def load_candidates_from_seed_db(snapshot=None) -> list[tuple]:
+    """Candidates from the legacy seed database (kept until migrated)."""
+    if snapshot is None:
+        with _ExportSnapshot() as snapshot:
+            return load_candidates_from_seed_db(snapshot)
+    conn = snapshot.connection(SEED_DB)
+    if conn is None:
+        return []
+    return list(_seed_rows(conn))
 
 
 def load_candidates_from_legacy_zip() -> list[tuple]:
@@ -215,20 +234,17 @@ def load_candidates_from_legacy_zip() -> list[tuple]:
     return result
 
 
-def load_category_map() -> dict[str, int]:
+def load_category_map(snapshot=None) -> dict[str, int]:
     """name -> category map from the crawler SQLite db."""
-    if not TAG_DB.exists():
+    if snapshot is None:
+        with _ExportSnapshot() as snapshot:
+            return load_category_map(snapshot)
+    conn = snapshot.connection(TAG_DB)
+    if conn is None:
         return {}
-    try:
-        conn = sqlite3.connect(f"file:{TAG_DB}?mode=ro", uri=True)
-    except Exception:
-        conn = sqlite3.connect(str(TAG_DB))
-    try:
-        rows = conn.execute(
-            "SELECT name, category FROM tags WHERE category IS NOT NULL"
-        ).fetchall()
-    finally:
-        conn.close()
+    rows = conn.execute(
+        "SELECT name, category FROM tags WHERE category IS NOT NULL"
+    ).fetchall()
     return {name: cat for name, cat in rows}
 
 
@@ -252,34 +268,37 @@ def _authority_rows(conn):
             )
 
 
-def load_authoritative_tag_names() -> set[str]:
+def load_authoritative_tag_names(snapshot=None) -> set[str]:
     """Committed empty lists stay authoritative through later retries."""
-    if not TAG_DB.exists():
+    if snapshot is None:
+        with _ExportSnapshot() as snapshot:
+            return load_authoritative_tag_names(snapshot)
+    conn = snapshot.connection(TAG_DB)
+    if conn is None:
         return set()
-    conn = sqlite3.connect(f"file:{TAG_DB}?mode=ro", uri=True)
-    try:
-        return {
-            normalize_completion_key(name)
-            for name, _category, candidates, authoritative in _authority_rows(conn)
-            if authoritative and isinstance(_loads_json(candidates), list)
-        }
-    finally:
-        conn.close()
+    return {
+        normalize_completion_key(name)
+        for name, _category, candidates, authoritative in _authority_rows(conn)
+        if authoritative and isinstance(_loads_json(candidates), list)
+    }
 
 
-def build_suggestions() -> dict:
+def build_suggestions(snapshot=None) -> dict:
     """Prefer each tag's current candidate group, falling back only for gaps."""
+    if snapshot is None:
+        with _ExportSnapshot() as snapshot:
+            return build_suggestions(snapshot)
     sources = []
-    db_candidates = load_candidates_from_db()
+    db_candidates = load_candidates_from_db(snapshot)
     if db_candidates:
         sources.append(("crawler database", db_candidates))
-    seed_candidates = load_candidates_from_seed_db()
+    seed_candidates = load_candidates_from_seed_db(snapshot)
     if seed_candidates:
         sources.append(("legacy seed db", seed_candidates))
     zip_candidates = load_candidates_from_legacy_zip()
     if zip_candidates:
         sources.append(("legacy zip", zip_candidates))
-    authoritative = load_authoritative_tag_names()
+    authoritative = load_authoritative_tag_names(snapshot)
     if not sources and not authoritative:
         raise SystemExit(
             "no completion data found (crawler db / seed db / legacy zip all empty)"
@@ -287,7 +306,7 @@ def build_suggestions() -> dict:
 
     for name, cands in sources:
         print(f"📂 source {name}: {len(cands):,} candidates")
-    category_map = load_category_map()
+    category_map = load_category_map(snapshot)
     suggestions = {}
     for source_name, candidates in sources:
         source_tags = set()
@@ -308,35 +327,34 @@ def build_suggestions() -> dict:
 # ========================
 # signature / manifest
 # ========================
-def db_fingerprint() -> dict:
+def _rows_digest(rows):
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def db_fingerprint(snapshot=None) -> dict:
     """Hash actual export inputs, including changes that preserve row counts.
 
     The legacy ZIP is both a fallback input and an output. After replacing it,
     main records its new hash without changing the captured DB input identity.
     """
-    fingerprint = {
-        "version": 3,
+    if snapshot is None:
+        with _ExportSnapshot() as snapshot:
+            return db_fingerprint(snapshot)
+    crawler = snapshot.connection(TAG_DB)
+    seed = snapshot.connection(SEED_DB)
+    return {
+        "version": 4,
         "seed_db": {
-            "sha256": file_sha256(SEED_DB) if SEED_DB.exists() else None,
-            "wal_sha256": (
-                file_sha256(Path(str(SEED_DB) + "-wal"))
-                if Path(str(SEED_DB) + "-wal").exists() else None
-            ),
+            # Hash the rows this transaction reads, not changing DB/WAL files.
+            "sha256": _rows_digest(_seed_rows(seed)) if seed is not None else None,
         },
         "legacy_zip_sha256": file_sha256(OUTPUT_FILE) if OUTPUT_FILE.exists() else None,
-        "crawler_sha256": None,
+        "crawler_sha256": _rows_digest(_authority_rows(crawler)) if crawler is not None else None,
     }
-    if TAG_DB.exists():
-        conn = sqlite3.connect(f"file:{TAG_DB}?mode=ro", uri=True)
-        try:
-            digest = hashlib.sha256()
-            for row in _authority_rows(conn):
-                digest.update(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-                digest.update(b"\n")
-            fingerprint["crawler_sha256"] = digest.hexdigest()
-        finally:
-            conn.close()
-    return fingerprint
 
 
 def load_manifest() -> dict | None:
@@ -455,14 +473,20 @@ def main():
     compression = "stored" if args.store else "deflated"
     compresslevel = None if args.store else (9 if args.best else args.compresslevel)
 
-    signature = db_fingerprint()
-    manifest = load_manifest()
-    if (
-        not args.force
-        and OUTPUT_FILE.exists()
-        and manifest is not None
-        and manifest.get("signature") == signature
-    ):
+    with _ExportSnapshot() as snapshot:
+        signature = db_fingerprint(snapshot)
+        manifest = load_manifest()
+        unchanged = (
+            not args.force
+            and OUTPUT_FILE.exists()
+            and manifest is not None
+            and manifest.get("signature") == signature
+        )
+        if not unchanged:
+            print(f"📂 building (compression={compression}{'' if compresslevel is None else f':{compresslevel}'})")
+            suggestions = build_suggestions(snapshot)
+    # Release the read transactions before ZIP/index compression and output I/O.
+    if unchanged:
         print(
             f"✅ unchanged: {OUTPUT_FILE} "
             f"({manifest.get('items', 0):,} items, {manifest.get('output_size', 0):,} bytes)"
@@ -476,9 +500,6 @@ def main():
         if args.clean_legacy:
             _clean_legacy()
         return
-
-    print(f"📂 building (compression={compression}{'' if compresslevel is None else f':{compresslevel}'})")
-    suggestions = build_suggestions()
 
     print(f"⚙️ merge {len(suggestions)}")
     sorted_list = sorted(

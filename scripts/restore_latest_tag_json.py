@@ -80,12 +80,15 @@ def restore_archive(
                 if not isinstance(info, dict) or info.get("id") not in (None, tag_id):
                     raise ValueError(f"manifest tag id does not match payload for {tag}")
                 payload["tag_info"] = {**info, "id": tag_id}
-            stored = None if dry_run else db.get_tag(tag)
-            payloads.append(merge_import_payload(stored, payload))
+            # Validate source structure without reading a database snapshot.
+            # Stored identity conflicts and partial merges are checked below,
+            # inside the same transaction that writes every restored record.
+            merge_import_payload(None, payload)
+            payloads.append(payload)
 
     # Validate the whole archive before a single transactional DB write.
     if not dry_run:
-        db.upsert_tags_many(payloads)
+        db.import_tags(payloads)
     restored = len(payloads)
 
     print(

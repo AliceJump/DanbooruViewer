@@ -73,7 +73,7 @@ class MigrationIntegrityTest(TemporaryDatabaseTest):
     def test_failed_database_write_preserves_source(self):
         source = self.raw / "sample.json"
         source.write_text(json.dumps(payload()), encoding="utf-8")
-        with patch.object(self.db, "upsert_tags_many", side_effect=sqlite3.OperationalError("disk full")):
+        with patch.object(self.db, "import_tags", side_effect=sqlite3.OperationalError("disk full")):
             self.assertEqual(migration.main(), 1)
         self.assertTrue(source.exists())
         self.assertEqual(self.db.count_tags(), 0)
@@ -668,7 +668,7 @@ class RestoreIntegrityTest(TemporaryDatabaseTest):
     def test_dry_run_validates_payload_without_opening_database(self):
         self.write_archive([("sample", 1, payload())])
         with patch.object(self.db, "get_tag", side_effect=AssertionError("database opened")), patch.object(
-            self.db, "upsert_tags_many", side_effect=AssertionError("database written"),
+            self.db, "import_tags", side_effect=AssertionError("database written"),
         ):
             self.restore(dry_run=True)
         self.assertFalse(self.db.path.exists())

@@ -72,7 +72,13 @@ def sync_category(
     while True:
         if limit > 0 and total >= limit:
             break
-        tags = fetch_page(session, category, cursor)
+        try:
+            tags = fetch_page(session, category, cursor)
+        except Exception:
+            # Retain completed pages below the batch threshold, but do not
+            # turn a failed request (or failed flush) into a successful scan.
+            flush()
+            raise
         if not tags:
             break
 

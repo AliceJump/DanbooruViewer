@@ -143,6 +143,14 @@ def merge_import_payload(stored: dict | None, incoming: dict) -> dict:
     for field in ("completion_candidates", "aliases"):
         if field in incoming and not isinstance(incoming[field], list):
             raise ValueError(f"{field} must be a list")
+    for candidate in incoming.get("completion_candidates", []):
+        if not isinstance(candidate, dict):
+            raise ValueError("completion_candidates must contain candidate objects")
+        value = candidate.get("value")
+        insert_value = candidate.get("insert_value", value)
+        if (not isinstance(value, str) or not value
+                or not isinstance(insert_value, str) or not insert_value):
+            raise ValueError("completion_candidates require non-empty string value and insert_value")
     if "wiki" in incoming and incoming["wiki"] is not None and not isinstance(incoming["wiki"], dict):
         raise ValueError("wiki must be an object or null")
     supplied_info = incoming.get("tag_info", {})
@@ -283,6 +291,29 @@ class TagDB:
             return
         with _write_lock, self.conn:
             self.conn.executemany(_UPSERT_TAG, rows)
+
+    def import_tags(self, payloads: list[dict]):
+        """Merge partial imports against current records under one write lock.
+
+        BEGIN IMMEDIATE fences other SQLite connections before the first read;
+        the process-local lock alone cannot protect against another sync process.
+        Any validation or database failure rolls back the entire batch.
+        """
+        if not payloads:
+            return
+        with _write_lock:
+            conn = self.conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for incoming in payloads:
+                    tag = incoming.get("tag") if isinstance(incoming, dict) else None
+                    stored = self.get_tag(tag) if isinstance(tag, str) and tag else None
+                    merged = merge_import_payload(stored, incoming)
+                    conn.execute(_UPSERT_TAG, _tag_values(merged))
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
     def upsert_tag_categories(self, rows: list[tuple]):
         """Bulk upsert (name, tag_id, category, post_count) into the tags table.

@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.tag_db import db, merge_import_payload, now_iso
+from scripts.tag_db import db, now_iso
 
 CACHE_DIR = ROOT / "cache"
 DOT_CACHE_DIR = ROOT / ".danbooru_cache"
@@ -188,10 +188,7 @@ def migrate_tags(imported_sources: dict[Path, str] | None = None) -> tuple[int, 
         seen[tag] = payload
         payloads.append(payload)
 
-    db.upsert_tags_many([
-        merge_import_payload(db.get_tag(payload["tag"]), payload)
-        for payload in payloads
-    ])
+    db.import_tags(payloads)
     imported = len(payloads)
 
     print(f"  imported per-tag payloads -> {imported} rows (from {len(sources)} files)")
