@@ -15,7 +15,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.67+67
+version: 1.0.68+68
 environment:
   sdk: ^3.10.7
 # Dependencies specify other packages that your package needs in order to work.
@@ -31,7 +31,7 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   crypto: ^3.0.7
-  http: ^1.2.1
+  http: ^1.5.0
   share_plus: ^10.1.4
   url_launcher: ^6.3.0
   photo_view: ^0.15.0
@@ -41,11 +41,17 @@ dependencies:
   video_player: ^2.7.0
   flutter_cache_manager: ^3.3.1
   shared_preferences: ^2.2.2
-  archive: ^4.0.7
-  image: ^4.8.0
+  # Recheck the bounded inflate/WebP contracts before upgrading these packages.
+  archive: 4.7.1
+  image: 4.13.1
+  web: ^1.1.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  file: ^7.0.1
+  path_provider_platform_interface: ^2.1.2
+  shared_preferences_platform_interface: ^2.4.1
+  video_player_platform_interface: ^6.6.0
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
   # activated in the `analysis_options.yaml` file located at the root of your
@@ -63,6 +69,7 @@ flutter:
   assets:
     - assets/danbooru_completion.index.zip
     - assets/danbooru_completion.bootstrap.json
+    - assets/ugoira_worker.js
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

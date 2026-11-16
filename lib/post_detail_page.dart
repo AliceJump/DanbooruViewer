@@ -1,9 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
@@ -12,8 +11,11 @@ import 'completion_normalization.dart';
 import 'completion_service.dart';
 import 'favorites_manager.dart';
 import 'full_screen_image_page.dart';
-import 'main.dart';
+import 'main.dart' show SearchChip;
 import 'media_utils.dart';
+import 'media_video_session.dart';
+import 'network/app_network_service.dart';
+import 'post.dart';
 import 'ugoira_utils.dart';
 import 'video_controls.dart';
 
@@ -71,14 +73,15 @@ Future<Object?> openPostDetailPage({
   );
 }
 
-class _PostDetailPageState extends State<PostDetailPage> {
+class _PostDetailPageState extends State<PostDetailPage>
+    with WidgetsBindingObserver {
   late PageController _pageController;
   late int _currentIndex;
-  final Map<int, String> _imageUrls = {};
-  final Map<int, File> _imageFiles = {};
   final Map<int, String> _commentaryByPostId = {};
-  final Map<int, VideoPlayerController> _videoControllers = {};
-  final Set<int> _initializingVideoIndices = {};
+  final Map<int, Future<String?>> _commentaryRequests = {};
+  final _commentaryCancel = NetworkCancelToken();
+  late final MediaVideoSession _video;
+  bool _openingFullScreen = false;
   bool _didChangeDependenciesRun = false;
   final Map<String, CompletionTagInfo> _completionMetadata = {};
   final Set<String> _requestedMetadata = {};
@@ -86,30 +89,32 @@ class _PostDetailPageState extends State<PostDetailPage> {
   final _favoritesManager = FavoritesManager();
   bool _isFavorite = false;
   int _favoriteRequestGeneration = 0;
-  bool _didTriggerDragAction = false;
-  bool _canShowLoadedImage = false;
-  double? _verticalDragStartDy;
-
-  static const double _dragActionThreshold = 120.0;
 
   @override
   void initState() {
     super.initState();
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: _currentIndex);
+    _video = MediaVideoSession(controllerFactory: widget.videoControllerFactory)
+      ..addListener(_mediaChanged);
+    WidgetsBinding.instance.addObserver(this);
+    AppNetworkService.instance.addListener(_networkChanged);
     _checkFavoriteStatus();
     _recordCurrentPostHistory();
     _loadTagMetadata(_currentIndex);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      Future<void>.delayed(const Duration(milliseconds: 300), () {
-        if (mounted) {
-          setState(() {
-            _canShowLoadedImage = true;
-          });
-        }
-      });
-    });
+  }
+
+  void _mediaChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _networkChanged() {
+    if (mounted) _loadMediaForIndex(_currentIndex);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _video.pause();
   }
 
   Future<void> _loadTagMetadata(int index) async {
@@ -183,17 +188,19 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    AppNetworkService.instance.removeListener(_networkChanged);
+    _video.removeListener(_mediaChanged);
+    _video.dispose();
+    _commentaryCancel.cancel();
     _pageController.dispose();
-    // 清理所有视频控制器
-    for (var controller in _videoControllers.values) {
-      controller.dispose();
-    }
     super.dispose();
   }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    if (ModalRoute.isCurrentOf(context) == false) _video.pause();
     if (!_didChangeDependenciesRun) {
       _loadMediaForIndex(_currentIndex, prioritizePreview: true);
       _didChangeDependenciesRun = true;
@@ -204,79 +211,60 @@ class _PostDetailPageState extends State<PostDetailPage> {
     int index, {
     bool prioritizePreview = false,
   }) async {
-    if (index < 0 || index >= widget.posts.length) return;
+    if (_openingFullScreen || index < 0 || index >= widget.posts.length) return;
     final post = widget.posts[index];
-    // 拉图时顺带拉取并缓存分享简介，分享时无需再发请求。
-    _prefetchCommentary(post);
-    final previewUrl = post.previewFileUrl;
-    final highResUrl = post.fileUrl ?? post.largeFileUrl;
+    unawaited(_prefetchCommentary(post));
+    final source = post.fileUrl ?? post.largeFileUrl;
+    await _video.setSource(
+      source != null &&
+              isVideoUrl(source) &&
+              (supportsInlineVideo || widget.videoControllerFactory != null)
+          ? source
+          : null,
+      revision: AppNetworkService.instance.revision,
+    );
+  }
 
-    if (prioritizePreview && previewUrl != null) {
-      try {
-        await precacheImage(NetworkImage(previewUrl), context);
-      } catch (e) {
-        debugPrint('Failed to precache preview for post ${post.id}: $e');
-      }
-      if (!mounted) return;
+  Future<void> _openFullScreen(int index) async {
+    if (_openingFullScreen) return;
+    _openingFullScreen = true;
+    // Release the detail decoder before the full-screen route takes ownership.
+    _video.pause();
+    await _video.setSource(null);
+    if (!mounted) return;
+    final post = widget.posts[index];
+    final result = await Navigator.push<int>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => FullScreenImagePage(
+          previewUrl: post.previewFileUrl ?? '',
+          highResUrl: post.fileUrl ?? post.largeFileUrl,
+          heroTag: 'post_${post.id}',
+          posts: widget.posts,
+          initialIndex: index,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    _openingFullScreen = false;
+    if (result != null &&
+        result >= 0 &&
+        result < widget.posts.length &&
+        result != _currentIndex) {
+      _pageController.jumpToPage(result);
+    } else {
+      unawaited(_loadMediaForIndex(_currentIndex));
     }
+  }
 
-    if (highResUrl != null &&
-        _imageUrls[index] == null &&
-        _videoControllers[index] == null &&
-        _imageFiles[index] == null) {
-      if (isUgoiraUrl(highResUrl)) {
-        try {
-          final gifFile = await getUgoiraGifFile(highResUrl);
-          if (!mounted) return;
-          setState(() {
-            _imageFiles[index] = gifFile;
-          });
-        } catch (e) {
-          debugPrint('Failed to process ugoira for post ${post.id}: $e');
-        }
-        return;
-      }
-
-      if (isVideoUrl(highResUrl)) {
-        if (!_initializingVideoIndices.add(index)) return;
-        VideoPlayerController? pendingController;
-        try {
-          pendingController =
-              widget.videoControllerFactory?.call(Uri.parse(highResUrl)) ??
-              VideoPlayerController.networkUrl(Uri.parse(highResUrl));
-          await pendingController.initialize().timeout(
-            const Duration(seconds: 12),
-          );
-          if (!mounted) return;
-          setState(() {
-            _videoControllers[index] = pendingController!;
-          });
-          pendingController = null;
-        } catch (e) {
-          debugPrint('Failed to initialize video for post ${post.id}: $e');
-        } finally {
-          _initializingVideoIndices.remove(index);
-          if (pendingController != null) {
-            try {
-              await pendingController.dispose();
-            } catch (e) {
-              debugPrint('Failed to dispose video for post ${post.id}: $e');
-            }
-          }
-        }
-        return;
-      }
-
-      try {
-        await precacheImage(NetworkImage(highResUrl), context);
-        if (!mounted) return;
-        setState(() {
-          _imageUrls[index] = highResUrl;
-        });
-      } catch (e) {
-        debugPrint('Failed to precache image for post ${post.id}: $e');
-      }
-    }
+  void _movePage(int delta) {
+    final next = _currentIndex + delta;
+    if (next < 0 || next >= widget.posts.length) return;
+    _pageController.animateToPage(
+      next,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+    );
   }
 
   void _onPageChanged(int index) {
@@ -352,76 +340,78 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Future<void> _sharePost(Post post) async {
-    // 简介已缓存时直接分享，无需等待网络请求。
-    final hasCachedIntro =
-        _commentaryByPostId[post.id] != null ||
-        await _favoritesManager.getCachedCommentary(post.id) != null;
+    _video.pause();
+    final intro = await _postIntro(post).timeout(
+      const Duration(milliseconds: 1200),
+      onTimeout: () => _fallbackPostIntro(post),
+    );
     if (!mounted) return;
-    if (!hasCachedIntro) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('正在获取分享简介...'),
-          duration: Duration(milliseconds: 800),
-        ),
-      );
-    }
-
     final postUrl = _postUrl(post);
-    final intro = await _postIntro(post);
     final text = intro == null || intro.isEmpty
         ? postUrl
         : '$postUrl\n\n$intro';
-
     try {
-      await Share.share(text, subject: 'Danbooru Post #${post.id}');
-    } catch (e) {
+      final box = context.findRenderObject() as RenderBox?;
+      await Share.share(
+        text,
+        subject: 'Danbooru Post #${post.id}',
+        sharePositionOrigin: box == null
+            ? null
+            : box.localToGlobal(Offset.zero) & box.size,
+      );
+    } catch (_) {
+      await Clipboard.setData(ClipboardData(text: text));
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('分享失败: $e')));
+      ).showSnackBar(const SnackBar(content: Text('系统分享不可用，已复制作品链接和简介。')));
     }
   }
 
-  Future<String?> _postIntro(Post post) async {
+  Future<String?> _postIntro(Post post) {
     final cached = _commentaryByPostId[post.id];
-    if (cached != null) return cached.isEmpty ? null : cached;
-
-    // 读取持久化缓存（上次拉图时已保存的简介）。
-    final persisted = await _favoritesManager.getCachedCommentary(post.id);
-    if (persisted != null) {
-      _commentaryByPostId[post.id] = persisted;
-      return persisted.isEmpty ? null : persisted;
-    }
-
-    final commentary = await _fetchArtistCommentary(post.id);
-    if (commentary != null) {
-      await _favoritesManager.setCachedCommentary(post.id, commentary);
-    }
-    final intro = commentary ?? _fallbackPostIntro(post);
-    if (intro != null && intro.isNotEmpty) {
-      _commentaryByPostId[post.id] = intro;
-    }
-    return intro;
+    if (cached != null) return Future.value(cached.isEmpty ? null : cached);
+    final pending = _commentaryRequests[post.id];
+    if (pending != null) return pending;
+    late Future<String?> request;
+    request =
+        (() async {
+          try {
+            final persisted = await _favoritesManager.getCachedCommentary(
+              post.id,
+            );
+            if (persisted != null) {
+              _commentaryByPostId[post.id] = persisted;
+              return persisted.isEmpty ? null : persisted;
+            }
+            final commentary = await _fetchArtistCommentary(post.id);
+            if (commentary != null) {
+              _commentaryByPostId[post.id] = commentary;
+              await _favoritesManager.setCachedCommentary(post.id, commentary);
+            }
+            return commentary ?? _fallbackPostIntro(post);
+          } on Object {
+            return _fallbackPostIntro(post);
+          } finally {
+            while (_commentaryByPostId.length > 80) {
+              _commentaryByPostId.remove(_commentaryByPostId.keys.first);
+            }
+          }
+        })().whenComplete(() {
+          if (identical(_commentaryRequests[post.id], request)) {
+            _commentaryRequests.remove(post.id);
+          }
+        });
+    _commentaryRequests[post.id] = request;
+    return request;
   }
 
-  /// 拉图时后台预取简介：优先用持久化缓存，否则请求一次并保存，
-  /// 这样点分享时 `_postIntro` 直接从缓存读取，无需再发网络请求。
   Future<void> _prefetchCommentary(Post post) async {
-    if (_commentaryByPostId.containsKey(post.id)) return;
-
-    final persisted = await _favoritesManager.getCachedCommentary(post.id);
-    if (persisted != null) {
-      _commentaryByPostId[post.id] = persisted;
+    if (_commentaryByPostId.containsKey(post.id) ||
+        _commentaryRequests.length >= 2) {
       return;
     }
-
-    final commentary = await _fetchArtistCommentary(post.id);
-    if (commentary != null) {
-      await _favoritesManager.setCachedCommentary(post.id, commentary);
-      if (!_commentaryByPostId.containsKey(post.id)) {
-        _commentaryByPostId[post.id] = commentary;
-      }
-    }
+    await _postIntro(post);
   }
 
   Future<String?> _fetchArtistCommentary(int postId) async {
@@ -430,7 +420,12 @@ class _PostDetailPageState extends State<PostDetailPage> {
         'search[post_id]': '$postId',
         'limit': '1',
       });
-      final response = await http.get(uri);
+      final response = await AppNetworkService.instance.get(
+        uri,
+        cancelToken: _commentaryCancel,
+        timeout: const Duration(seconds: 3),
+        retry: false,
+      );
       if (response.statusCode != 200) return null;
 
       final payload = json.decode(response.body);
@@ -483,20 +478,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
     ];
     if (lines.isEmpty) return null;
     return lines.join('\n');
-  }
-
-  void _handleDragAction(double currentDy) {
-    if (_didTriggerDragAction) return;
-    final startDy = _verticalDragStartDy;
-    if (startDy == null) return;
-
-    final dragDistance = currentDy - startDy;
-    if (dragDistance < -_dragActionThreshold) {
-      _didTriggerDragAction = true;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('准备复制链接 ⬆')));
-    }
   }
 
   Widget _buildTagSection(String title, String? tags, BuildContext context) {
@@ -627,9 +608,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
     final uri = Uri.tryParse(value);
     if (uri == null) return null;
-    if (uri.hasScheme) return uri;
-
-    return Uri.tryParse('https://$value');
+    return remoteMediaUri(uri.hasScheme ? value : 'https://$value');
   }
 
   String _postUrl(Post post) {
@@ -639,7 +618,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
   String? _sourceUrl(Post post) {
     final source = post.source?.trim();
     if (source == null || source.isEmpty) return null;
-    return _normalizePixivSource(source);
+    return _normalizeUrl(_normalizePixivSource(source))?.toString();
   }
 
   String _normalizePixivSource(String source) {
@@ -710,134 +689,151 @@ class _PostDetailPageState extends State<PostDetailPage> {
   Widget _buildMediaPager(double height) {
     return SizedBox(
       height: height,
-      child: PageView.builder(
-        controller: _pageController,
-        itemCount: widget.posts.length,
-        onPageChanged: _onPageChanged,
-        itemBuilder: (context, index) {
-          final post = widget.posts[index];
-          final previewUrl = post.previewFileUrl;
-          final highResUrlForDetailPage = _imageUrls[index];
-          final localImageFile = _imageFiles[index];
-          final videoController = _videoControllers[index];
-          final definitiveHighResUrl = post.fileUrl ?? post.largeFileUrl;
-          final isVideo =
-              definitiveHighResUrl != null && isVideoUrl(definitiveHighResUrl);
-          final heroTag = 'post_${post.id}';
-
-          if (previewUrl == null) {
-            return const Center(child: Icon(Icons.broken_image));
-          }
-
-          Widget mediaContent = Stack(
-            fit: StackFit.expand,
-            alignment: Alignment.center,
-            children: [
-              Hero(
-                tag: heroTag,
-                child: cachedHighResImageOrPreview(
-                  highResUrl: definitiveHighResUrl,
-                  previewUrl: previewUrl,
-                  fit: BoxFit.contain,
-                  errorBuilder: (context, error, stackTrace) =>
-                      const Icon(Icons.error),
-                ),
-              ),
-              if (videoController != null)
-                Center(
+      child: Stack(
+        children: [
+          PageView.builder(
+            controller: _pageController,
+            itemCount: widget.posts.length,
+            onPageChanged: _onPageChanged,
+            itemBuilder: (context, index) {
+              final post = widget.posts[index];
+              final original = post.fileUrl ?? post.largeFileUrl;
+              final video = original != null && isVideoUrl(original);
+              final source = video || isUgoiraUrl(original)
+                  ? original
+                  : post.largeFileUrl ?? original ?? post.previewFileUrl;
+              final controller = index == _currentIndex
+                  ? _video.controller
+                  : null;
+              final inlineVideo =
+                  supportsInlineVideo || widget.videoControllerFactory != null;
+              Widget media;
+              if (video && controller != null) {
+                media = Center(
                   child: DanbooruVideoPlayer(
-                    controller: videoController,
+                    controller: controller,
                     compact: true,
-                    onOpenFullScreen: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => FullScreenImagePage(
-                            previewUrl: previewUrl,
-                            highResUrl: definitiveHighResUrl,
-                            heroTag: heroTag,
+                    onOpenFullScreen: () => _openFullScreen(index),
+                  ),
+                );
+              } else if (video && inlineVideo && _video.error == null) {
+                media = const Center(child: CircularProgressIndicator());
+              } else if (video) {
+                media = Center(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (inlineVideo && _video.error == null)
+                          const CircularProgressIndicator()
+                        else ...[
+                          Text(
+                            inlineVideo
+                                ? '视频加载失败。${formatMediaLoadError(_video.error!)}'
+                                : '当前平台使用外部播放器播放视频。',
+                            textAlign: TextAlign.center,
                           ),
-                        ),
-                      );
-                    },
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            alignment: WrapAlignment.center,
+                            children: [
+                              if (inlineVideo)
+                                TextButton(
+                                  onPressed: () => _loadMediaForIndex(index),
+                                  child: const Text('重试'),
+                                ),
+                              OutlinedButton.icon(
+                                onPressed: () =>
+                                    openMediaExternally(context, source!),
+                                icon: const Icon(Icons.open_in_new),
+                                label: const Text('外部播放'),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
-                ),
-              if (isVideo && videoController == null)
-                Center(
+                );
+              } else if (source == null) {
+                media = const Center(
                   child: Icon(
-                    Icons.play_circle_outline,
-                    size: 60,
-                    color: Colors.white.withValues(alpha: 0.7),
+                    Icons.image_not_supported_outlined,
+                    semanticLabel: '作品没有可显示的媒体',
                   ),
-                ),
-              if (localImageFile != null)
-                Center(
-                  child: Image.file(
-                    localImageFile,
+                );
+              } else {
+                media = Hero(
+                  tag: 'post_${post.id}',
+                  child: CachedMediaImage(
+                    imageUrl: source,
+                    previewUrl: post.previewFileUrl,
                     fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const SizedBox.shrink();
-                    },
+                    errorBuilder: (context, error, stack) => Center(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              formatMediaLoadError(error),
+                              textAlign: TextAlign.center,
+                            ),
+                            TextButton(
+                              onPressed: () => _openFullScreen(index),
+                              child: const Text('打开并重试'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
-                ),
-              if (_canShowLoadedImage &&
-                  highResUrlForDetailPage != null &&
-                  videoController == null)
-                AnimatedOpacity(
-                  opacity: highResUrlForDetailPage != previewUrl ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 300),
-                  child: Image.network(
-                    highResUrlForDetailPage,
-                    fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) {
-                      return const SizedBox.shrink();
-                    },
-                  ),
-                ),
-            ],
-          );
-
-          if (definitiveHighResUrl != null) {
-            mediaContent = TimedMediaHoldGesture(
-              media: localImageFile?.path ?? definitiveHighResUrl,
-              child: mediaContent,
-            );
-          }
-
-          return GestureDetector(
-            onVerticalDragStart: (_) {
-              _didTriggerDragAction = false;
-              _verticalDragStartDy = null;
-            },
-            onVerticalDragUpdate: (details) {
-              _verticalDragStartDy ??= details.localPosition.dy;
-              _handleDragAction(details.localPosition.dy);
-            },
-            onVerticalDragEnd: (_) {
-              _didTriggerDragAction = false;
-              _verticalDragStartDy = null;
-            },
-            onVerticalDragCancel: () {
-              _didTriggerDragAction = false;
-              _verticalDragStartDy = null;
-            },
-            onTap: () {
-              if (_didTriggerDragAction) return;
-
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => FullScreenImagePage(
-                    previewUrl: previewUrl,
-                    highResUrl: definitiveHighResUrl,
-                    heroTag: heroTag,
-                  ),
-                ),
+                );
+              }
+              if (source != null) {
+                media = TimedMediaHoldGesture(
+                  media: original ?? source,
+                  child: media,
+                );
+              }
+              return GestureDetector(
+                onTap: source == null ? null : () => _openFullScreen(index),
+                child: media,
               );
             },
-            child: mediaContent,
-          );
-        },
+          ),
+          if (widget.posts.length > 1) ...[
+            Positioned(
+              left: 0,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: IconButton.filledTonal(
+                  tooltip: '上一张 (←)',
+                  onPressed: _currentIndex == 0 ? null : () => _movePage(-1),
+                  icon: const Icon(Icons.chevron_left),
+                ),
+              ),
+            ),
+            Positioned(
+              right: 0,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: IconButton.filledTonal(
+                  tooltip: '下一张 (→)',
+                  onPressed: _currentIndex + 1 >= widget.posts.length
+                      ? null
+                      : () => _movePage(1),
+                  icon: const Icon(Icons.chevron_right),
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -859,6 +855,13 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
+  void _savePost(Post post) {
+    final source = post.fileUrl ?? post.largeFileUrl;
+    if (source == null) return;
+    _video.pause();
+    saveMediaToGallery(context, source);
+  }
+
   @override
   Widget build(BuildContext context) {
     final currentPostForTags = widget.posts[_currentIndex];
@@ -866,45 +869,94 @@ class _PostDetailPageState extends State<PostDetailPage> {
     final screenSize = MediaQuery.sizeOf(context);
     final isLandscape = orientation == Orientation.landscape;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Post #${currentPostForTags.id}'),
-        actions: [
-          IconButton(
-            icon: Icon(
-              _isFavorite ? Icons.favorite : Icons.favorite_border,
-              color: _isFavorite ? Theme.of(context).colorScheme.primary : null,
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () =>
+            _movePage(-1),
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () =>
+            _movePage(1),
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            Navigator.maybePop(context),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          appBar: AppBar(
+            title: Text(
+              'Post #${currentPostForTags.id}',
+              overflow: TextOverflow.ellipsis,
             ),
-            onPressed: _toggleFavorite,
-            tooltip: _isFavorite ? '取消收藏' : '收藏',
+            actions: [
+              if (screenSize.width >= 360)
+                IconButton(
+                  icon: const Icon(Icons.download_outlined),
+                  tooltip: '保存原图或视频',
+                  onPressed:
+                      currentPostForTags.fileUrl == null &&
+                          currentPostForTags.largeFileUrl == null
+                      ? null
+                      : () => _savePost(currentPostForTags),
+                ),
+              IconButton(
+                icon: Icon(
+                  _isFavorite ? Icons.favorite : Icons.favorite_border,
+                  color: _isFavorite
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                ),
+                onPressed: _toggleFavorite,
+                tooltip: _isFavorite ? '取消收藏' : '收藏',
+              ),
+              if (screenSize.width >= 360)
+                IconButton(
+                  icon: const Icon(Icons.share),
+                  onPressed: () => _sharePost(currentPostForTags),
+                  tooltip: '分享',
+                ),
+              if (screenSize.width < 360)
+                PopupMenuButton<String>(
+                  tooltip: '更多操作',
+                  onSelected: (action) {
+                    if (action == 'save') _savePost(currentPostForTags);
+                    if (action == 'share') _sharePost(currentPostForTags);
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: 'save',
+                      enabled:
+                          currentPostForTags.fileUrl != null ||
+                          currentPostForTags.largeFileUrl != null,
+                      child: const Text('保存原图或视频'),
+                    ),
+                    const PopupMenuItem(value: 'share', child: Text('分享')),
+                  ],
+                ),
+            ],
           ),
-          IconButton(
-            icon: const Icon(Icons.share),
-            onPressed: () => _sharePost(currentPostForTags),
-            tooltip: '分享',
-          ),
-        ],
-      ),
-      body: Flex(
-        direction: isLandscape ? Axis.horizontal : Axis.vertical,
-        children: [
-          Expanded(
-            flex: isLandscape ? 3 : 1,
-            child: _buildMediaPager(
-              isLandscape
-                  ? screenSize.height
-                  : _portraitMediaHeight(currentPostForTags, screenSize),
+          body: SafeArea(
+            child: Flex(
+              direction: isLandscape ? Axis.horizontal : Axis.vertical,
+              children: [
+                Expanded(
+                  flex: isLandscape ? 3 : 1,
+                  child: _buildMediaPager(
+                    isLandscape
+                        ? screenSize.height
+                        : _portraitMediaHeight(currentPostForTags, screenSize),
+                  ),
+                ),
+                if (isLandscape)
+                  const VerticalDivider(width: 1)
+                else
+                  const Divider(height: 1),
+                Expanded(
+                  flex: isLandscape ? 2 : 1,
+                  child: _buildInfoPanel(currentPostForTags),
+                ),
+              ],
             ),
           ),
-          if (isLandscape)
-            const VerticalDivider(width: 1)
-          else
-            const Divider(height: 1),
-          Expanded(
-            flex: isLandscape ? 2 : 1,
-            child: _buildInfoPanel(currentPostForTags),
-          ),
-        ],
+        ),
       ),
     );
   }

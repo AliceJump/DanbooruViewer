@@ -57,15 +57,31 @@ class _DanbooruVideoPlayerState extends State<DanbooruVideoPlayer> {
   }
 
   Future<void> _togglePlay() async {
-    if (_controller.value.isPlaying) {
-      await _controller.pause();
-    } else {
-      await _controller.play();
+    try {
+      if (_controller.value.isPlaying) {
+        await _controller.pause();
+      } else {
+        await _controller.play();
+      }
+    } on Object {
+      _showPlaybackError();
     }
   }
 
+  void _showPlaybackError() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('系统无法播放此媒体，请重试或保存后使用外部播放器。')));
+  }
+
   Future<void> _setSpeed(double speed) async {
-    await _controller.setPlaybackSpeed(speed);
+    try {
+      await _controller.setPlaybackSpeed(speed);
+    } on Object {
+      _showPlaybackError();
+      return;
+    }
     if (!mounted) return;
     setState(() {
       _speed = speed;
@@ -96,13 +112,19 @@ class _DanbooruVideoPlayerState extends State<DanbooruVideoPlayer> {
             )
             .toList();
       },
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-        child: Text(
-          '${_speed}x',
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w600,
+      child: SizedBox(
+        width: 56,
+        height: 48,
+        child: Center(
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Text(
+              '${_speed}x',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ),
       ),
@@ -147,11 +169,16 @@ class _DanbooruVideoPlayerState extends State<DanbooruVideoPlayer> {
                 icon: Icon(value.isPlaying ? Icons.pause : Icons.play_arrow),
                 onPressed: _togglePlay,
               ),
-              Text(
-                '${_formatDuration(position)} / ${_formatDuration(duration)}',
-                style: const TextStyle(color: Colors.white, fontSize: 12),
+              Expanded(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '${_formatDuration(position)} / ${_formatDuration(duration)}',
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ),
               ),
-              const Spacer(),
               _buildSpeedButton(),
               if (widget.onOpenFullScreen != null)
                 IconButton(
@@ -184,7 +211,13 @@ class _DanbooruVideoPlayerState extends State<DanbooruVideoPlayer> {
                 });
               },
               onChangeEnd: (value) async {
-                await _controller.seekTo(Duration(milliseconds: value.round()));
+                try {
+                  await _controller.seekTo(
+                    Duration(milliseconds: value.round()),
+                  );
+                } on Object {
+                  _showPlaybackError();
+                }
                 if (!mounted) return;
                 setState(() {
                   _isSeeking = false;

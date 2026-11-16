@@ -1,14 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'completion_normalization.dart';
 import 'completion_service.dart';
 import 'favorites_manager.dart';
 import 'gallery_grid.dart';
 import 'media_utils.dart';
 import 'post_detail_page.dart';
-import 'main.dart';
+import 'post.dart';
+import 'network/app_network_service.dart';
 
 /// Danbooru tag category display names (0=general, 1=artist, 3=copyright,
 /// 4=character, 5=meta).
@@ -50,6 +51,9 @@ class _FavoritesPageState extends State<FavoritesPage>
   List<Map<String, dynamic>> _browsingHistory = [];
   bool _isLoading = true;
   int _dataGeneration = 0;
+  String? _loadError;
+  NetworkCancelToken? _previewCancelToken;
+  int _previewGeneration = 0;
   final Map<String, CompletionTagInfo> _completionMetadata = {};
   final Map<String, int> _storedCategoryByTag = {};
 
@@ -57,7 +61,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   // 图片收藏页的筛选
   final TextEditingController _favFilterController = TextEditingController();
   final FocusNode _favFilterFocusNode = FocusNode();
-  List<String> _favFilterChips = [];
+  final List<String> _favFilterChips = [];
   List<String> _allFavTags = [];
   List<String> _favSuggestions = [];
   bool _showFavSuggestions = false;
@@ -65,7 +69,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   // 历史记录页的筛选
   final TextEditingController _histFilterController = TextEditingController();
   final FocusNode _histFilterFocusNode = FocusNode();
-  List<String> _histFilterChips = [];
+  final List<String> _histFilterChips = [];
   List<String> _allHistTags = [];
   List<String> _histSuggestions = [];
   bool _showHistSuggestions = false;
@@ -78,14 +82,13 @@ class _FavoritesPageState extends State<FavoritesPage>
   int? _selectedTagCategory;
 
   // ============ 标签预览数据 ============
-  Map<String, List<Post>> _tagPreviewPosts = {};
+  final Map<String, List<Post>> _tagPreviewPosts = {};
   final Set<String> _tagPreviewLoading = {};
 
   // 请求失败（网络错误 / 429 限流等）的标签，刷新时会重新拉取。
   final Set<String> _tagPreviewFailed = {};
 
-  // Danbooru 读取接口建议约 1 请求/秒（突发上限 10/秒），
-  // 顺序拉取每个收藏标签的预览时留出间隔，避免触发 429 限流。
+  // Keep preview concurrency bounded and space subsequent requests.
   static const Duration _previewRequestDelay = Duration(milliseconds: 300);
 
   // ============ 补全数据（从主页传入，通过widget.completionDisplayByValue） ============
@@ -93,6 +96,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   @override
   void initState() {
     super.initState();
+    AppNetworkService.instance.addListener(_networkSettingsChanged);
     _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging) {
@@ -113,6 +117,8 @@ class _FavoritesPageState extends State<FavoritesPage>
 
   @override
   void dispose() {
+    _previewCancelToken?.cancel();
+    AppNetworkService.instance.removeListener(_networkSettingsChanged);
     _tabController.dispose();
     _favFilterController.removeListener(_onFavFilterChanged);
     _histFilterController.removeListener(_onHistFilterChanged);
@@ -213,40 +219,55 @@ class _FavoritesPageState extends State<FavoritesPage>
     }
   }
 
+  void _networkSettingsChanged() {
+    if (mounted) unawaited(_loadTagPreviews(force: true));
+  }
+
   Future<void> _loadData() async {
     final generation = ++_dataGeneration;
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+    });
+    try {
+      final posts = await _favoritesManager.getFavoritePostsFull();
+      final tagEntries = await _favoritesManager.getFavoriteTagEntries();
+      final history = await _favoritesManager.getBrowsingHistory();
+      if (!mounted || generation != _dataGeneration) return;
 
-    final posts = await _favoritesManager.getFavoritePostsFull();
-    final tagEntries = await _favoritesManager.getFavoriteTagEntries();
-    final history = await _favoritesManager.getBrowsingHistory();
-    if (!mounted || generation != _dataGeneration) return;
-
-    final tags = <String>[];
-    final storedCategories = <String, int>{};
-    for (final entry in tagEntries) {
-      final tag = entry['tag'] as String? ?? '';
-      if (tag.isEmpty) continue;
-      tags.add(tag);
-      final category = entry['category'];
-      if (category is int) {
-        storedCategories[normalizeCompletionKey(tag)] = category;
+      final tags = <String>[];
+      final storedCategories = <String, int>{};
+      for (final entry in tagEntries) {
+        final tag = entry['tag'] as String? ?? '';
+        if (tag.isEmpty) continue;
+        tags.add(tag);
+        final category = entry['category'];
+        if (category is int) {
+          storedCategories[normalizeCompletionKey(tag)] = category;
+        }
+      }
+      setState(() {
+        _favoritePosts = posts;
+        _favoriteTags = tags;
+        _browsingHistory = history;
+        _storedCategoryByTag
+          ..clear()
+          ..addAll(storedCategories);
+        _extractAllTags();
+      });
+      unawaited(_loadCompletionMetadata(generation, tagEntries));
+      unawaited(_loadTagPreviews());
+    } catch (_) {
+      if (mounted && generation == _dataGeneration) {
+        setState(() {
+          _loadError = '无法读取收藏数据。原始数据已保留，请重试。';
+        });
+      }
+    } finally {
+      if (mounted && generation == _dataGeneration) {
+        setState(() => _isLoading = false);
       }
     }
-
-    setState(() {
-      _favoritePosts = posts;
-      _favoriteTags = tags;
-      _browsingHistory = history;
-      _storedCategoryByTag
-        ..clear()
-        ..addAll(storedCategories);
-      _extractAllTags();
-      _isLoading = false;
-    });
-    // Local favorites render immediately; only their own metadata is fetched.
-    _loadCompletionMetadata(generation, tagEntries);
-    _loadTagPreviews();
   }
 
   Future<void> _loadCompletionMetadata(
@@ -292,66 +313,67 @@ class _FavoritesPageState extends State<FavoritesPage>
   }
 
   // ============ 标签预览图加载 ============
-  Future<void> _loadTagPreviews() async {
-    for (final tag in _favoriteTags) {
-      if (!mounted) return;
+  Future<void> _loadTagPreviews({bool force = false}) async {
+    _previewCancelToken?.cancel();
+    final cancelToken = NetworkCancelToken();
+    _previewCancelToken = cancelToken;
+    final generation = ++_previewGeneration;
+    final tags = _favoriteTags.where((tag) {
+      return force ||
+          !_tagPreviewPosts.containsKey(tag) ||
+          _tagPreviewFailed.contains(tag);
+    }).toList();
+    if (!mounted) return;
+    setState(_tagPreviewLoading.clear);
+    var next = 0;
 
-      // 已成功（或确认无图）的标签跳过；失败的标签在刷新时重试。
-      final existing = _tagPreviewPosts[tag];
-      if (existing != null && !_tagPreviewFailed.contains(tag)) {
-        continue;
-      }
-      if (_tagPreviewLoading.contains(tag)) {
-        continue;
-      }
-
-      setState(() {
-        _tagPreviewLoading.add(tag);
-        _tagPreviewFailed.remove(tag);
-      });
-
-      try {
-        // 用 Uri.https + queryParameters 自动做百分号编码，
-        // 避免含括号等特殊字符的标签（如 maree_rouge_(3d)_(daiblos_core)）构造出非法 URL。
-        final uri = Uri.https('danbooru.donmai.us', '/posts.json', {
-          'tags': tag,
-          'limit': '8',
-          'page': '1',
+    Future<void> worker() async {
+      while (mounted &&
+          generation == _previewGeneration &&
+          next < tags.length) {
+        final tag = tags[next++];
+        setState(() {
+          _tagPreviewLoading.add(tag);
+          _tagPreviewFailed.remove(tag);
         });
-        final response = await http.get(uri);
-        if (response.statusCode == 200) {
-          final List<dynamic> postsJson = json.decode(response.body);
-          final posts = postsJson.map((json) => Post.fromJson(json)).toList();
-          if (mounted) {
-            setState(() {
-              _tagPreviewPosts[tag] = posts;
-            });
+        try {
+          final uri = Uri.https('danbooru.donmai.us', '/posts.json', {
+            'tags': tag,
+            'limit': '8',
+            'page': '1',
+          });
+          final response = await AppNetworkService.instance.get(
+            uri,
+            cancelToken: cancelToken,
+            timeout: const Duration(seconds: 12),
+          );
+          if (!mounted || generation != _previewGeneration) return;
+          if (response.statusCode == 200) {
+            final List<dynamic> postsJson = json.decode(response.body);
+            final posts = postsJson.map((json) => Post.fromJson(json)).toList();
+            setState(() => _tagPreviewPosts[tag] = posts);
+          } else {
+            setState(() => _tagPreviewFailed.add(tag));
           }
-        } else if (mounted) {
-          setState(() {
-            _tagPreviewPosts[tag] = const [];
-            _tagPreviewFailed.add(tag);
-          });
+        } on NetworkCancelledException {
+          return;
+        } catch (_) {
+          if (mounted && generation == _previewGeneration) {
+            setState(() => _tagPreviewFailed.add(tag));
+          }
+        } finally {
+          if (mounted && generation == _previewGeneration) {
+            setState(() => _tagPreviewLoading.remove(tag));
+          }
         }
-      } catch (e) {
-        debugPrint('Failed to load tag preview for $tag: $e');
-        if (mounted) {
-          setState(() {
-            _tagPreviewPosts[tag] = const [];
-            _tagPreviewFailed.add(tag);
-          });
-        }
-      } finally {
-        if (mounted) {
-          setState(() {
-            _tagPreviewLoading.remove(tag);
-          });
+        if (next < tags.length) {
+          await Future<void>.delayed(_previewRequestDelay);
         }
       }
-
-      // 限流保护：每个标签请求之间留出间隔。
-      await Future<void>.delayed(_previewRequestDelay);
     }
+
+    // One stalled request cannot block every other favorite tag.
+    await Future.wait([worker(), worker()]);
   }
 
   // ============ 本地标签筛选逻辑 ============
@@ -499,8 +521,11 @@ class _FavoritesPageState extends State<FavoritesPage>
       completionCategoryByValue: widget.completionCategoryByValue,
       completionService: widget.completionService,
     );
-    if (result != null && mounted) {
+    if (!mounted) return;
+    if (result != null) {
       Navigator.pop(context, result);
+    } else {
+      await _loadData();
     }
   }
 
@@ -513,8 +538,11 @@ class _FavoritesPageState extends State<FavoritesPage>
       completionCategoryByValue: widget.completionCategoryByValue,
       completionService: widget.completionService,
     );
-    if (result != null && mounted) {
+    if (!mounted) return;
+    if (result != null) {
       Navigator.pop(context, result);
+    } else {
+      await _loadData();
     }
   }
 
@@ -587,6 +615,16 @@ class _FavoritesPageState extends State<FavoritesPage>
         top: false,
         child: _isLoading
             ? const Center(child: CircularProgressIndicator())
+            : _loadError != null
+            ? GalleryEmptyState(
+                icon: Icons.warning_amber_outlined,
+                title: '收藏暂时无法读取',
+                subtitle: _loadError!,
+                action: FilledButton(
+                  onPressed: _loadData,
+                  child: const Text('重试'),
+                ),
+              )
             : TabBarView(
                 controller: _tabController,
                 children: [

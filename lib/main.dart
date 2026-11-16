@@ -3,97 +3,28 @@ import 'dart:convert';
 
 import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/post_detail_page.dart';
-import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:gal/gal.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
 
 import 'app_theme.dart';
+import 'post.dart';
 import 'completion_normalization.dart';
 import 'completion_service.dart';
 import 'gallery_controls.dart';
 import 'gallery_grid.dart';
+import 'download_progress_dialog.dart';
 import 'media_utils.dart';
-import 'ugoira_utils.dart';
+import 'network/app_network_service.dart';
+import 'network/network_settings_page.dart';
 
 export 'completion_models.dart' show SearchCompletionSuggestion;
+export 'post.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AppNetworkService.instance.initialize();
   runApp(const MyApp());
-}
-
-class Post {
-  final int id;
-  final String rating;
-  final String tagString;
-  final String? fileUrl;
-  final String? largeFileUrl;
-  final String? previewFileUrl;
-  final String? tagStringGeneral;
-  final String? tagStringArtist;
-  final String? tagStringCharacter;
-  final String? tagStringCopyright;
-  final String? tagStringMeta;
-  final String? source;
-  final int? imageWidth;
-  final int? imageHeight;
-
-  Post({
-    required this.id,
-    required this.rating,
-    required this.tagString,
-    this.fileUrl,
-    this.largeFileUrl,
-    this.previewFileUrl,
-    this.tagStringGeneral,
-    this.tagStringArtist,
-    this.tagStringCharacter,
-    this.tagStringCopyright,
-    this.tagStringMeta,
-    this.source,
-    this.imageWidth,
-    this.imageHeight,
-  });
-
-  factory Post.fromJson(Map<String, dynamic> json) {
-    return Post(
-      id: json['id'],
-      rating: json['rating'],
-      tagString: json['tag_string'],
-      fileUrl: json['file_url'],
-      largeFileUrl: json['large_file_url'],
-      previewFileUrl: json['preview_file_url'],
-      tagStringGeneral: json['tag_string_general'],
-      tagStringArtist: json['tag_string_artist'],
-      tagStringCharacter: json['tag_string_character'],
-      tagStringCopyright: json['tag_string_copyright'],
-      tagStringMeta: json['tag_string_meta'],
-      source: json['source'],
-      imageWidth: json['image_width'],
-      imageHeight: json['image_height'],
-    );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'rating': rating,
-      'tag_string': tagString,
-      'file_url': fileUrl,
-      'large_file_url': largeFileUrl,
-      'preview_file_url': previewFileUrl,
-      'tag_string_general': tagStringGeneral,
-      'tag_string_artist': tagStringArtist,
-      'tag_string_character': tagStringCharacter,
-      'tag_string_copyright': tagStringCopyright,
-      'tag_string_meta': tagStringMeta,
-      'source': source,
-      'image_width': imageWidth,
-      'image_height': imageHeight,
-    };
-  }
 }
 
 /// Danbooru tag category display names (0=general, 1=artist, 3=copyright,
@@ -190,6 +121,8 @@ class _MyHomePageState extends State<MyHomePage> {
   String _activeQueryTags = '';
   String? _postsError;
   bool _failedLoadMore = false;
+  NetworkCancelToken? _postsCancelToken;
+  bool _isDownloading = false;
 
   // Multi-select state
   bool _isMultiSelectMode = false;
@@ -206,6 +139,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void initState() {
     super.initState();
     _completionService = widget.completionService ?? IndexedCompletionService();
+    AppNetworkService.instance.addListener(_networkSettingsChanged);
     _searchController.addListener(_refreshCompletionSuggestions);
     _searchFocusNode.addListener(_handleSearchFocusChanged);
     _scrollController.addListener(() {
@@ -224,6 +158,8 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   void dispose() {
+    _postsCancelToken?.cancel();
+    AppNetworkService.instance.removeListener(_networkSettingsChanged);
     _cancelCompletionQuery();
     unawaited(_disposeCompletionService());
     _searchController.removeListener(_refreshCompletionSuggestions);
@@ -233,6 +169,10 @@ class _MyHomePageState extends State<MyHomePage> {
     _pageFocusNode.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _networkSettingsChanged() {
+    if (mounted) unawaited(_fetchPosts(isRefresh: true));
   }
 
   Future<void> _disposeCompletionService() async {
@@ -500,6 +440,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<void> _batchDownload() async {
+    if (_isDownloading) return;
     final itemsToDownload = _selectedPosts();
 
     if (itemsToDownload.isEmpty) {
@@ -507,58 +448,25 @@ class _MyHomePageState extends State<MyHomePage> {
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('开始下载 ${_selectedItems.length} 张图片...')),
-    );
-
+    setState(() => _isDownloading = true);
     try {
-      final hasAccess = await Gal.hasAccess();
-      if (!hasAccess) {
-        final status = await Gal.requestAccess();
-        if (!status) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text('需要存储权限来保存图片')));
-          return;
-        }
-      }
-
-      int successCount = 0;
-      final tempDir = await getTemporaryDirectory();
-      final dio = Dio();
-
-      for (final post in itemsToDownload) {
-        final imageUrl = post.fileUrl ?? post.largeFileUrl;
-        if (imageUrl != null) {
-          try {
-            if (isUgoiraUrl(imageUrl)) {
-              // ugoira 动画帖：合并为 GIF 后保存
-              final gifFile = await getUgoiraGifFile(imageUrl);
-              await Gal.putImage(gifFile.path, album: 'danbooru_viewer');
-            } else {
-              final path = '${tempDir.path}/${imageUrl.split('/').last}';
-              await dio.download(imageUrl, path);
-              await Gal.putImage(path, album: 'danbooru_viewer');
-            }
-            successCount++;
-          } catch (e) {
-            // Log individual download error if needed
-          }
-        }
-      }
-
+      final unfinished = await showDialog<Set<int>>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => DownloadProgressDialog(posts: itemsToDownload),
+      );
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$successCount 张图片已保存到相册')));
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('下载失败: $e')));
+      if (unfinished != null) {
+        final available = _posts.map((post) => post.id).toSet();
+        setState(() {
+          _selectedItems
+            ..clear()
+            ..addAll(unfinished.intersection(available));
+          _isMultiSelectMode = _selectedItems.isNotEmpty;
+        });
+      }
     } finally {
-      _exitMultiSelectMode();
+      if (mounted) setState(() => _isDownloading = false);
     }
   }
 
@@ -629,6 +537,10 @@ class _MyHomePageState extends State<MyHomePage> {
   }) async {
     if (!mounted || (isLoadMore && (_isLoading || !_hasMorePosts))) return;
 
+    _postsCancelToken?.cancel();
+    final cancelToken = NetworkCancelToken();
+    _postsCancelToken = cancelToken;
+
     final requestGeneration = isLoadMore
         ? _requestGeneration
         : ++_requestGeneration;
@@ -661,21 +573,24 @@ class _MyHomePageState extends State<MyHomePage> {
         'limit': '100',
         'page': '$requestPage',
       });
-      final response = await (widget.fetchPosts?.call(uri) ?? http.get(uri))
-          .timeout(const Duration(seconds: 25));
+      final response = widget.fetchPosts == null
+          ? await AppNetworkService.instance.get(uri, cancelToken: cancelToken)
+          : await widget.fetchPosts!(uri).timeout(const Duration(seconds: 25));
       if (!mounted || requestGeneration != _requestGeneration) return;
       if (response.statusCode != 200) {
-        _recordPostsError(
-          '请求失败（HTTP ${response.statusCode}），请稍后重试。',
-          isLoadMore: isLoadMore,
-        );
+        _recordPostsError(switch (response.statusCode) {
+          401 || 403 => '服务器拒绝访问（HTTP ${response.statusCode}），请检查站点权限或访问限制。',
+          429 => '请求过于频繁（HTTP 429），请稍后再试。',
+          _ => '请求失败（HTTP ${response.statusCode}），请稍后重试。',
+        }, isLoadMore: isLoadMore);
         return;
       }
       final List<dynamic> postsJson = json.decode(response.body);
       final newPosts = postsJson.map((json) => Post.fromJson(json)).toList();
       setState(() {
         if (isLoadMore) {
-          _posts.addAll(newPosts);
+          final knownIds = _posts.map((post) => post.id).toSet();
+          _posts.addAll(newPosts.where((post) => knownIds.add(post.id)));
         } else {
           _posts = newPosts;
         }
@@ -685,14 +600,15 @@ class _MyHomePageState extends State<MyHomePage> {
         _selectedItems.removeWhere((id) => !visibleIds.contains(id));
         if (_selectedItems.isEmpty) _isMultiSelectMode = false;
       });
+    } on NetworkCancelledException {
+      // A newer query, a proxy change or route disposal owns the next result.
     } on TimeoutException {
       if (mounted && requestGeneration == _requestGeneration) {
         _recordPostsError('连接超时，请检查网络后重试。', isLoadMore: isLoadMore);
       }
     } catch (error) {
       if (mounted && requestGeneration == _requestGeneration) {
-        debugPrint('Error fetching posts: $error');
-        _recordPostsError('暂时无法加载作品，请检查网络后重试。', isLoadMore: isLoadMore);
+        _recordPostsError(networkErrorMessage(error), isLoadMore: isLoadMore);
       }
     } finally {
       if (mounted && requestGeneration == _requestGeneration) {
@@ -783,6 +699,14 @@ class _MyHomePageState extends State<MyHomePage> {
       ),
       actions: [
         IconButton(
+          icon: const Icon(Icons.settings_outlined),
+          tooltip: '网络设置',
+          onPressed: () => Navigator.push<void>(
+            context,
+            MaterialPageRoute(builder: (_) => const NetworkSettingsPage()),
+          ),
+        ),
+        IconButton(
           icon: const Icon(Icons.collections_bookmark_outlined),
           onPressed: () async {
             final result = await Navigator.push(
@@ -819,7 +743,9 @@ class _MyHomePageState extends State<MyHomePage> {
         IconButton(
           tooltip: '下载选中作品',
           icon: const Icon(Icons.download),
-          onPressed: _selectedItems.isEmpty ? null : _batchDownload,
+          onPressed: _selectedItems.isEmpty || _isDownloading
+              ? null
+              : _batchDownload,
         ),
         IconButton(
           tooltip: '复制作品链接',

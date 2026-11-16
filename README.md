@@ -77,6 +77,29 @@ CI、Release 与 Web 部署会在 Flutter 步骤之前自动生成这两个资�
 基于 2,132,126 条候选的完整测量、缓存空间与平台限制见
 [标签搜索性能说明](docs/tag-search-performance.md)。
 
+## Ugoira 动图转换资源
+
+浏览器中的 ZIP 解压、帧解码和 GIF 编码在专用 Web Worker 内执行。查看与保存
+共用编码器及输入、实际解压和像素上限；同一页面最多运行一个转换，等待队列也
+限制任务数与输入字节数。取消保存或切换网络设置会停止相应任务，转换超时也会
+释放 Worker；资源加载失败时会显示错误，重试不会改成在界面线程转换。
+
+每次全新检出、编码器或依赖更新后，在 `flutter pub get` 之后、运行或测试应用
+之前生成资源（使用工作流固定的 Flutter 3.38.9 自带的 Dart）：
+
+```bash
+flutter pub get
+dart run tool/build_ugoira_worker.dart
+flutter test
+# Web 实际 Worker 与界面响应回归需要 Chrome：
+flutter test --platform chrome test/media_web_test.dart test/ugoira_worker_web_test.dart
+```
+
+`assets/ugoira_worker.js` 是忽略提交的派生文件。该 Flutter 版本不支持按平台
+声明资源，因此原生构建也先生成它，但只有 Web 会加载、执行该文件。CI、Release
+和 Pages 工作流都包含生成步骤。部署使用 Flutter 的资源路径，支持仓库子目录；
+自定义 CSP 需要允许 `worker-src blob:`，拒绝时会明确报告组件无法加载。
+
 ## 技术栈
 
 ### 框架与语言
@@ -180,9 +203,10 @@ https://danbooru.donmai.us/posts.json?tags=&limit=100&page=1
    git lfs pull --include='assets/danbooru_completion.zip'
    python scripts/build_completion_index.py
    ```
-3. 运行依赖安装：
+3. 安装依赖并生成动图转换资源：
    ```bash
    flutter pub get
+   dart run tool/build_ugoira_worker.dart
    ```
 4. 选择目标设备/模拟器：
    ```bash
@@ -193,7 +217,7 @@ https://danbooru.donmai.us/posts.json?tags=&limit=100&page=1
    flutter run
    ```
 
-直接运行 `flutter test` 或其他 Flutter 构建命令前，也需先完成第 2 步。
+直接运行 `flutter test` 或其他 Flutter 构建命令前，也需先完成第 2、3 步。
 
 ### 基本操作
 

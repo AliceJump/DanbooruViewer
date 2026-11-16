@@ -33,6 +33,8 @@ jobs:
           cache: true
 
       - run: flutter pub get
+      - name: Build Ugoira conversion worker
+        run: dart run tool/build_ugoira_worker.dart
 
       - name: Build Web
         run: |
