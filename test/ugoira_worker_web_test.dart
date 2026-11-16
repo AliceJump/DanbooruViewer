@@ -3,6 +3,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:danbooru_viewer/media_save_service.dart';
@@ -70,6 +71,57 @@ void main() {
     expect(decoded.frames.length, 2);
     expect(decoded.frames.map((frame) => frame.frameDuration), [100, 110]);
   });
+
+  test(
+    'real worker converts guarded JPEG, BMP and WebP frame formats',
+    () async {
+      final source = img.Image(width: 2, height: 1, numChannels: 4);
+      for (final pixel in source) {
+        pixel.setRgba(255, 0, 0, 255);
+      }
+      final frames = {
+        '000.jpg': img.encodeJpg(source),
+        '000.bmp': img.encodeBmp(source),
+        // Independent libwebp fixture, also exercised by ugoira_webp_test.dart.
+        '000.webp': base64Decode(
+          'UklGRhwAAABXRUJQVlA4TA8AAAAvAQAAAAcQ/Y/+ByKi/wEA',
+        ),
+      };
+      for (final entry in frames.entries) {
+        final zip = Uint8List.fromList(
+          ZipEncoder().encode(
+            Archive()..add(ArchiveFile.bytes(entry.key, entry.value)),
+          ),
+        );
+        final gif = img.decodeGif(await convertUgoiraBytesToGif(zip))!;
+        expect((gif.width, gif.height), (2, 1), reason: entry.key);
+        final pixel = gif.getPixel(0, 0);
+        expect(pixel.r, greaterThan(200), reason: entry.key);
+        expect(pixel.g, lessThan(40), reason: entry.key);
+        expect(pixel.b, lessThan(40), reason: entry.key);
+      }
+      final invalidPalette = Uint8List.fromList(frames['000.bmp']!);
+      ByteData.sublistView(invalidPalette)
+        ..setUint16(28, 8, Endian.little)
+        ..setUint32(30, 0, Endian.little)
+        ..setUint32(46, 257, Endian.little);
+      final invalidZip = Uint8List.fromList(
+        ZipEncoder().encode(
+          Archive()..add(ArchiveFile.bytes('000.bmp', invalidPalette)),
+        ),
+      );
+      await expectLater(
+        convertUgoiraBytesToGif(invalidZip),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.message,
+            'reason',
+            contains('调色板'),
+          ),
+        ),
+      );
+    },
+  );
 
   test(
     'real worker leaves browser timers running during conversion',
