@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:ui' show PointerDeviceKind, Tristate;
 
 import 'package:danbooru_viewer/app_theme.dart';
+import 'package:danbooru_viewer/favorites_manager.dart';
 import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/media_utils.dart';
 import 'package:flutter/material.dart';
@@ -21,6 +22,9 @@ Future<void> pumpCollection(
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
+  // Scenarios seed the platform directly; explicitly refresh the shared
+  // confirmed snapshot after these external fixture changes.
+  await FavoritesManager().reload();
   await tester.pumpWidget(
     MaterialApp(
       theme: dark ? AppTheme.dark() : AppTheme.light(),

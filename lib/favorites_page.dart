@@ -276,7 +276,7 @@ class _FavoritesPageState extends State<FavoritesPage>
     if (mounted) unawaited(_loadTagPreviews(force: true));
   }
 
-  Future<void> _loadData() async {
+  Future<void> _loadData({bool refresh = false}) async {
     if (!mounted) return;
     final generation = ++_dataGeneration;
     setState(() {
@@ -284,6 +284,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       _loadError = null;
     });
     try {
+      if (refresh) await _favoritesManager.reload();
       final posts = await _favoritesManager.getFavoritePostsFull();
       final tagEntries = await _favoritesManager.getFavoriteTagEntries();
       final history = await _favoritesManager.getBrowsingHistory();
@@ -702,7 +703,9 @@ class _FavoritesPageState extends State<FavoritesPage>
           ),
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _isLoading || _isMutating ? null : _loadData,
+            onPressed: _isLoading || _isMutating
+                ? null
+                : () => _loadData(refresh: true),
             tooltip: '刷新',
           ),
         ],
@@ -721,7 +724,10 @@ class _FavoritesPageState extends State<FavoritesPage>
                   runSpacing: 8,
                   alignment: WrapAlignment.center,
                   children: [
-                    FilledButton(onPressed: _loadData, child: const Text('重试')),
+                    FilledButton(
+                      onPressed: () => _loadData(refresh: true),
+                      child: const Text('重试'),
+                    ),
                     OutlinedButton.icon(
                       onPressed: () => copyCollectionBackup(
                         context,

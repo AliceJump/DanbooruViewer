@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'storage/reliable_preferences.dart';
+
 class FavoritesDataException implements Exception {
   const FavoritesDataException(this.collection);
   final String collection;
@@ -32,7 +34,8 @@ class FavoritesManager {
     : _prefs = preferences;
 
   SharedPreferences? _prefs;
-  bool _needsReload = false;
+  ReliablePreferences? _storage;
+  Map<String, Object> _values = {};
   Future<void> _mutationTail = Future<void>.value();
 
   Future<T> _mutate<T>(Future<T> Function() action) {
@@ -47,15 +50,21 @@ class FavoritesManager {
 
   Future<void> _ensureInitialized() async {
     _prefs ??= await SharedPreferences.getInstance();
-    if (_needsReload) {
-      await _prefs!.reload();
-      _needsReload = false;
-    }
+    _storage ??= ReliablePreferences.forInstance(_prefs!);
+    _values = await _storage!.readAll();
   }
+
+  /// Explicit recovery/refresh for a user's retry after a storage error.
+  /// Ordinary reads keep using the shared confirmed snapshot.
+  Future<void> reload() => _mutate(() async {
+    await _ensureInitialized();
+    await _storage!.recover();
+    _values = await _storage!.readAll(refresh: true);
+  });
 
   List<dynamic> _readList(String key, String collection) {
     try {
-      final raw = _prefs!.getString(key);
+      final raw = _values[key] as String?;
       if (raw == null) return [];
       final decoded = jsonDecode(raw);
       if (decoded is! List) throw const FormatException();
@@ -95,44 +104,18 @@ class FavoritesManager {
     return posts;
   }
 
-  Future<void> _writePreference(Future<bool> Function() action) async {
-    // Other settings stores can reload the shared plugin cache while this
-    // write is pending. The next read must observe the committed platform
-    // value, even when our write itself succeeds.
-    _needsReload = true;
-    try {
-      if (!await action()) {
-        throw StateError('本地数据保存失败，请重试。');
-      }
-    } catch (_) {
-      // SharedPreferences updates its in-memory cache before calling the
-      // platform. Never let a failed write become the next mutation's input.
-      _needsReload = true;
-      try {
-        await _prefs!.reload();
-        _needsReload = false;
-      } catch (_) {
-        // All future reads must reload successfully before using this cache.
-      }
-      rethrow;
-    }
-  }
-
   Future<void> _saveString(String key, String value) =>
-      _writePreference(() => _prefs!.setString(key, value));
+      _storage!.setString(key, value);
 
-  Future<void> _removePreference(String key) =>
-      _writePreference(() => _prefs!.remove(key));
+  Future<void> _removePreference(String key) => _storage!.remove(key);
 
   /// Preserve exact raw values, including damaged JSON, for recovery.
   /// This deliberately excludes network settings and cached commentary.
   Future<String> exportBackupJson() => _mutate(() async {
     await _ensureInitialized();
-    // Other settings stores share this plugin cache. A backup must reflect
-    // the platform, including after another store's failed write.
-    _needsReload = true;
-    await _prefs!.reload();
-    _needsReload = false;
+    // An uncertain native write cannot be read back from disk through reload.
+    // Preserve the last confirmed raw values and identify pending recovery.
+    _values = await _storage!.readAll(refresh: true);
     const keys = [
       _favoritesKey,
       _favoritePostsFullKey,
@@ -145,9 +128,11 @@ class FavoritesManager {
       'format': 'danbooru-viewer-raw-backup',
       'version': 1,
       'created_at': DateTime.now().toUtc().toIso8601String(),
+      if (_storage!.recoveryRequired)
+        'recovery_keys': _storage!.recoveryKeys.toList()..sort(),
       'values': {
         for (final key in keys)
-          if (_prefs!.containsKey(key)) key: _prefs!.get(key),
+          if (_values.containsKey(key)) key: _values[key],
       },
     });
   });
@@ -160,7 +145,7 @@ class FavoritesManager {
 
   Future<List<Map<String, dynamic>>> _readFavoritePostsFull() async {
     await _ensureInitialized();
-    if (!_prefs!.containsKey(_favoritePostsFullKey)) {
+    if (!_values.containsKey(_favoritePostsFullKey)) {
       // A nonempty legacy ID list is the only authoritative record here. It
       // cannot be replaced by an empty/full list without losing old favorites.
       final ids = await _readFavoritePostIds();
@@ -175,7 +160,7 @@ class FavoritesManager {
 
   Future<List<int>> _readFavoritePostIds() async {
     await _ensureInitialized();
-    if (_prefs!.containsKey(_favoritePostsFullKey)) {
+    if (_values.containsKey(_favoritePostsFullKey)) {
       return _readPosts(
         _favoritePostsFullKey,
         '收藏图片',
@@ -275,7 +260,7 @@ class FavoritesManager {
     await _ensureInitialized();
 
     // 优先读新格式
-    if (_prefs!.containsKey(_favoriteTagsV2Key)) {
+    if (_values.containsKey(_favoriteTagsV2Key)) {
       final decoded = _readList(_favoriteTagsV2Key, '收藏标签');
       final entries = <Map<String, dynamic>>[];
       for (final item in decoded) {
@@ -291,7 +276,7 @@ class FavoritesManager {
     }
 
     // 旧格式：纯字符串列表，迁移为带分类条目（category 由调用方补全）
-    if (!_prefs!.containsKey(_favoriteTagsKey)) return [];
+    if (!_values.containsKey(_favoriteTagsKey)) return [];
     final decoded = _readList(_favoriteTagsKey, '收藏标签');
     if (decoded.any((tag) => tag is! String || tag.trim().isEmpty)) {
       throw const FavoritesDataException('收藏标签');
@@ -416,7 +401,7 @@ class FavoritesManager {
   /// 读取缓存的简介；未缓存过返回 null。
   Future<String?> getCachedCommentary(int postId) => _mutate(() async {
     await _ensureInitialized();
-    return _prefs!.getString(_commentaryKey(postId));
+    return _values[_commentaryKey(postId)] as String?;
   });
 
   /// 保存简介到缓存。

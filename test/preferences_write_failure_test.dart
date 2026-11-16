@@ -83,7 +83,7 @@ void main() {
     );
 
     test(
-      'failed write and reload ($failure) block dirty favorite reads and writes',
+      'failed write and reload ($failure) retain trusted reads and block writes',
       () async {
         final original = jsonEncode([_post(1)]);
         final backend = FailingPreferencesStore({
@@ -96,15 +96,19 @@ void main() {
         backend.failReads = true;
 
         await expectLater(manager.toggleFavorite(_post(2)), throwsStateError);
-        expect(preferences.getString(_fullKey), isNot(original));
+        expect(preferences.getString(_fullKey), original);
         expect(backend.persisted[_fullKey], original);
         final writesAfterFailure = backend.setCalls.length;
 
-        await expectLater(manager.getFavoritePostsFull(), throwsStateError);
-        await expectLater(manager.getFavoritePostIds(), throwsStateError);
-        await expectLater(manager.exportBackupJson(), throwsStateError);
+        expect(await manager.getFavoritePostsFull(), [_post(1)]);
+        expect(await manager.getFavoritePostIds(), [1]);
+        final backup = jsonDecode(await manager.exportBackupJson());
+        expect(backup['values'][_fullKey], original);
+        expect(backup['recovery_keys'], [_fullKey]);
         await expectLater(manager.toggleFavorite(_post(3)), throwsStateError);
-        expect(backend.setCalls, hasLength(writesAfterFailure));
+        // The only subsequent write is an attempt to restore the old value.
+        expect(backend.setCalls, hasLength(writesAfterFailure + 1));
+        expect(backend.setCalls.toSet(), {_fullKey});
         expect(backend.persisted[_fullKey], original);
 
         backend.failReads = false;
@@ -186,12 +190,14 @@ void main() {
         expect(store.tags, ['cat']);
         expect(backend.persisted[TagBlocklist.storageKey], original);
         await store.retryLoad();
-        expect(store.loadError, isNull);
+        expect(store.loadError, isNotNull);
         expect(store.tags, ['cat']);
         expect(store.hides('dog'), isFalse);
         expect(await store.rawBackup(), original);
 
         backend.setFailures.remove(TagBlocklist.storageKey);
+        await store.retryLoad();
+        expect(store.loadError, isNull);
         expect(await store.addTags(['dog']), {'dog'});
         expect(store.tags, ['cat', 'dog']);
         final saved = jsonDecode(
@@ -216,7 +222,7 @@ void main() {
         backend.failReads = true;
 
         await expectLater(store.addTags(['dog']), throwsStateError);
-        expect(preferences.getString(TagBlocklist.storageKey), isNot(original));
+        expect(preferences.getString(TagBlocklist.storageKey), original);
         expect(backend.persisted[TagBlocklist.storageKey], original);
         expect(store.tags, ['cat']);
         expect(store.hides('cat'), isTrue);
@@ -227,17 +233,17 @@ void main() {
         await store.retryLoad();
         expect(store.loadError, isNotNull);
         expect(store.tags, ['cat']);
-        await expectLater(store.rawBackup(), throwsStateError);
+        expect(await store.rawBackup(), original);
         await expectLater(store.addTags(['bird']), throwsStateError);
-        expect(backend.setCalls, hasLength(writesAfterFailure));
+        expect(backend.setCalls, hasLength(writesAfterFailure + 1));
 
         // A second store must not accept the first one's poisoned plugin cache.
         final reopened = TagBlocklist(loadPreferences: () async => preferences);
         addTearDown(reopened.dispose);
         await reopened.initialize();
         expect(reopened.loadError, isNotNull);
-        expect(reopened.tags, isEmpty);
-        await expectLater(reopened.rawBackup(), throwsStateError);
+        expect(reopened.tags, ['cat']);
+        expect(await reopened.rawBackup(), original);
 
         backend.failReads = false;
         backend.setFailures.remove(TagBlocklist.storageKey);
@@ -253,7 +259,7 @@ void main() {
     );
 
     test(
-      'combined backup rejects another store\'s failed write cache ($failure)',
+      'combined backup retains confirmed values during another store\'s failure ($failure)',
       () async {
         final original = _rules(['cat']);
         final backend = FailingPreferencesStore({
@@ -268,12 +274,20 @@ void main() {
         backend.failReads = true;
 
         await expectLater(store.addTags(['dog']), throwsStateError);
-        await expectLater(manager.exportBackupJson(), throwsStateError);
+        final failedBackup = jsonDecode(await manager.exportBackupJson());
+        expect(failedBackup['values'][TagBlocklist.storageKey], original);
+        expect(failedBackup['recovery_keys'], [TagBlocklist.storageKey]);
         expect(backend.persisted[TagBlocklist.storageKey], original);
 
         backend.failReads = false;
         final backup = jsonDecode(await manager.exportBackupJson());
         expect(backup['values'][TagBlocklist.storageKey], original);
+        expect(backup['recovery_keys'], [TagBlocklist.storageKey]);
+        backend.setFailures.remove(TagBlocklist.storageKey);
+        await store.retryLoad();
+        final recoveredBackup = jsonDecode(await manager.exportBackupJson());
+        expect(recoveredBackup['values'][TagBlocklist.storageKey], original);
+        expect(recoveredBackup.containsKey('recovery_keys'), isFalse);
       },
     );
   }

@@ -293,6 +293,58 @@ void main() {
     expect(visibleIds(tester), ['post_1', 'post_2']);
   });
 
+  testWidgets('empty multi-select survives a rule change', (tester) async {
+    final store = await blocklistWith([]);
+    await showHome(
+      tester,
+      store,
+      (_) async => postsResponse([(1, 'cat'), (2, 'dog')]),
+    );
+    await tester.tap(find.byTooltip('选择作品'));
+    await tester.pumpAndSettle();
+    expect(find.text('0 已选择'), findsOneWidget);
+
+    await store.addTags(['cat']);
+    await tester.pumpAndSettle();
+    expect(visibleIds(tester), ['post_2']);
+    expect(find.text('0 已选择'), findsOneWidget);
+    expect(find.byTooltip('退出多选'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('post_2')));
+    await tester.pumpAndSettle();
+    expect(find.text('1 已选择'), findsOneWidget);
+    expect(find.byType(PostDetailPage), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('empty multi-select survives loading another page', (
+    tester,
+  ) async {
+    final store = await blocklistWith([]);
+    final requestedPages = <int>[];
+    await showHome(tester, store, (uri) async {
+      final page = int.parse(uri.queryParameters['page']!);
+      requestedPages.add(page);
+      return postsResponse(page == 1 ? [(1, 'cat')] : [(2, 'dog')]);
+    });
+    await tester.tap(find.byTooltip('选择作品'));
+    await tester.pumpAndSettle();
+    expect(find.text('0 已选择'), findsOneWidget);
+
+    await tester.tap(find.text('加载更多'));
+    await tester.pumpAndSettle();
+    expect(requestedPages, [1, 2]);
+    expect(visibleIds(tester), ['post_1', 'post_2']);
+    expect(find.text('0 已选择'), findsOneWidget);
+    expect(find.byTooltip('退出多选'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('post_2')));
+    await tester.pumpAndSettle();
+    expect(find.text('1 已选择'), findsOneWidget);
+    expect(find.byType(PostDetailPage), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('new rules remove hidden selections immediately', (tester) async {
     final store = await blocklistWith([]);
     await showHome(

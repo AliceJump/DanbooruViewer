@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:danbooru_viewer/favorites_manager.dart';
 import 'package:danbooru_viewer/network/app_network_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -9,6 +10,21 @@ import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/failing_preferences_store.dart';
+import 'support/native_memory_preferences_store.dart';
+
+class _OneFailedCommitStore extends NativeMemoryPreferencesStore {
+  _OneFailedCommitStore(super.initialValues);
+
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async {
+    try {
+      return await super.setValue(valueType, key, value);
+    } finally {
+      // Only the original commit fails; an explicit rollback can succeed.
+      failures.remove(key.substring('flutter.'.length));
+    }
+  }
+}
 
 void main() {
   group('bounded request policy', () {
@@ -275,10 +291,10 @@ void main() {
 
   group('persisted settings fail closed', () {
     for (final failure in PreferenceFailure.values) {
-      test('failed preference write restores disk truth: $failure', () async {
+      test('acknowledged rollback retains the old route: $failure', () async {
         const original = NetworkSettings(mode: NetworkMode.socks5, port: 9050);
         final encoded = jsonEncode(original.toJson());
-        final backend = FailingPreferencesStore({
+        final backend = _OneFailedCommitStore({
           AppNetworkService.settingsKey: encoded,
         });
         final preferences = await backend.install();
@@ -286,7 +302,7 @@ void main() {
         final service = AppNetworkService.forTesting(loadPreferences: true);
         addTearDown(service.dispose);
         await service.initialize();
-        backend.setFailures[AppNetworkService.settingsKey] = failure;
+        backend.failures[AppNetworkService.settingsKey] = failure;
         await expectLater(
           service.updateSettings(
             const NetworkSettings(mode: NetworkMode.direct),
@@ -298,11 +314,92 @@ void main() {
         expect(service.configurationLoadError, isNull);
         expect(preferences.getString(AppNetworkService.settingsKey), encoded);
         expect(backend.persisted[AppNetworkService.settingsKey], encoded);
+        expect(backend.nativeMemory[AppNetworkService.settingsKey], encoded);
+        expect(backend.attemptedWrites, [
+          AppNetworkService.settingsKey,
+          AppNetworkService.settingsKey,
+        ]);
       });
+
+      test(
+        'unconfirmed native writes block reopened routes: $failure',
+        () async {
+          const original = NetworkSettings(
+            mode: NetworkMode.socks5,
+            port: 9050,
+          );
+          const attempted = NetworkSettings(mode: NetworkMode.direct);
+          final encoded = jsonEncode(original.toJson());
+          final backend = NativeMemoryPreferencesStore({
+            AppNetworkService.settingsKey: encoded,
+          })..heldKey = AppNetworkService.settingsKey;
+          await backend.install();
+          addTearDown(() {
+            backend.release();
+            SharedPreferences.setMockInitialValues({});
+          });
+          final routes = <NetworkSettings>[];
+          http.Client factory(NetworkSettings settings) =>
+              MockClient((_) async {
+                routes.add(settings);
+                return http.Response('ok', 200);
+              });
+          final service = AppNetworkService.forTesting(
+            loadPreferences: true,
+            clientFactory: factory,
+          );
+          addTearDown(service.dispose);
+          await service.initialize();
+          backend.failures[AppNetworkService.settingsKey] = failure;
+          final rejected = expectLater(
+            service.updateSettings(attempted),
+            throwsStateError,
+          );
+          await backend.started.future;
+          expect(
+            backend.nativeMemory[AppNetworkService.settingsKey],
+            jsonEncode(attempted.toJson()),
+          );
+          expect(backend.persisted[AppNetworkService.settingsKey], encoded);
+
+          final reopened = AppNetworkService.forTesting(
+            loadPreferences: true,
+            clientFactory: factory,
+          );
+          addTearDown(reopened.dispose);
+          var initialized = false;
+          final initialization = reopened.initialize().then((_) {
+            initialized = true;
+          });
+          await Future<void>.delayed(Duration.zero);
+          expect(initialized, isFalse);
+          backend.release();
+          await rejected;
+          await initialization;
+          for (final candidate in [service, reopened]) {
+            expect(candidate.settings, original);
+            expect(candidate.revision, 0);
+            expect(candidate.configurationLoadError, isNotNull);
+            await expectLater(
+              candidate.get(Uri.parse('https://example.test/')),
+              throwsA(isA<NetworkException>()),
+            );
+          }
+          expect(routes, isEmpty);
+
+          backend.failures.clear();
+          await service.updateSettings(original);
+          expect(service.configurationLoadError, isNull);
+          expect(service.revision, 1);
+          await service.get(Uri.parse('https://example.test/'));
+          expect(routes, [original]);
+          expect(backend.persisted[AppNetworkService.settingsKey], encoded);
+        },
+      );
     }
 
     test(
-      'failed write and failed reload block traffic until a successful save',
+      'failed write and rollback block traffic until a successful save',
       () async {
         final backend = FailingPreferencesStore();
         await backend.install();
@@ -319,7 +416,8 @@ void main() {
         await service.initialize();
         backend.setFailures[AppNetworkService.settingsKey] =
             PreferenceFailure.returnFalse;
-        backend.failReads = true;
+        backend.removeFailures[AppNetworkService.settingsKey] =
+            PreferenceFailure.returnFalse;
         await expectLater(
           service.updateSettings(
             const NetworkSettings(mode: NetworkMode.direct),
@@ -332,7 +430,7 @@ void main() {
           throwsA(isA<NetworkException>()),
         );
         expect(requests, 0);
-        backend.failReads = false;
+        backend.removeFailures.clear();
         backend.setFailures.clear();
         await service.updateSettings(const NetworkSettings());
         expect(service.configurationLoadError, isNull);
@@ -342,6 +440,76 @@ void main() {
         );
       },
     );
+
+    test('another store cannot commit an unconfirmed network value', () async {
+      const original = NetworkSettings(mode: NetworkMode.socks5, port: 9050);
+      final encoded = jsonEncode(original.toJson());
+      final backend = NativeMemoryPreferencesStore({
+        AppNetworkService.settingsKey: encoded,
+        'favorite_posts_full': '[]',
+        'favorite_posts': '[]',
+      });
+      final preferences = await backend.install();
+      addTearDown(() => SharedPreferences.setMockInitialValues({}));
+      final service = AppNetworkService.forTesting(loadPreferences: true);
+      addTearDown(service.dispose);
+      await service.initialize();
+      backend.failures[AppNetworkService.settingsKey] =
+          PreferenceFailure.returnFalse;
+      await expectLater(
+        service.updateSettings(const NetworkSettings(mode: NetworkMode.direct)),
+        throwsStateError,
+      );
+      final favorites = FavoritesManager.forTesting(preferences);
+      await expectLater(favorites.toggleFavorite({'id': 1}), throwsStateError);
+      expect(backend.attemptedWrites.toSet(), {AppNetworkService.settingsKey});
+      expect(backend.persisted['favorite_posts_full'], '[]');
+      expect(backend.persisted[AppNetworkService.settingsKey], encoded);
+
+      backend.failures.clear();
+      expect(await favorites.toggleFavorite({'id': 1}), isTrue);
+      expect(backend.persisted[AppNetworkService.settingsKey], encoded);
+      expect(jsonDecode(backend.persisted['favorite_posts_full']! as String), [
+        {'id': 1},
+      ]);
+    });
+
+    test('an unrelated recovery never invalidates a confirmed route', () async {
+      const original = NetworkSettings(mode: NetworkMode.socks5, port: 9050);
+      final encoded = jsonEncode(original.toJson());
+      final backend = NativeMemoryPreferencesStore({
+        AppNetworkService.settingsKey: encoded,
+        'favorite_posts_full': '[]',
+        'favorite_posts': '[]',
+      });
+      final preferences = await backend.install();
+      addTearDown(() => SharedPreferences.setMockInitialValues({}));
+      final favorites = FavoritesManager.forTesting(preferences);
+      backend.failures['favorite_posts_full'] = PreferenceFailure.returnFalse;
+      await expectLater(favorites.toggleFavorite({'id': 1}), throwsStateError);
+      final routes = <NetworkSettings>[];
+      final service = AppNetworkService.forTesting(
+        loadPreferences: true,
+        clientFactory: (settings) => MockClient((_) async {
+          routes.add(settings);
+          return http.Response('ok', 200);
+        }),
+      );
+      addTearDown(service.dispose);
+      await service.initialize();
+      expect(service.configurationLoadError, isNull);
+      await expectLater(
+        service.updateSettings(const NetworkSettings(mode: NetworkMode.direct)),
+        throwsStateError,
+      );
+      expect(service.settings, original);
+      expect(service.configurationLoadError, isNull);
+      await service.get(Uri.parse('https://example.test/'));
+      expect(routes, [original]);
+      expect(backend.persisted[AppNetworkService.settingsKey], encoded);
+      expect(backend.attemptedWrites.toSet(), {'favorite_posts_full'});
+    });
+
     test('saves only endpoint information and restores it', () async {
       SharedPreferences.setMockInitialValues({});
       final service = AppNetworkService.forTesting(loadPreferences: true);

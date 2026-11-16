@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'completion_normalization.dart';
+import 'storage/reliable_preferences.dart';
 
 /// Exact, canonical Danbooru tags. Each entry is an independent OR rule.
 /// Keeping rules local avoids server query limits and preserves raw pagination.
@@ -16,7 +17,7 @@ class TagBlocklist extends ChangeNotifier {
   static const maxTags = 2000;
 
   final Future<SharedPreferences> Function() _loadPreferences;
-  SharedPreferences? _preferences;
+  ReliablePreferences? _storage;
   Future<void>? _initialization;
   Future<void> _mutationTail = Future<void>.value();
   Set<String> _tags = {};
@@ -24,7 +25,6 @@ class TagBlocklist extends ChangeNotifier {
   bool _temporarilyShow = false;
   String? _loadError;
   bool _loaded = false;
-  bool _needsReload = false;
 
   List<String> get tags => List.unmodifiable(_tags.toList()..sort());
   bool get enabled => _enabled;
@@ -41,18 +41,25 @@ class TagBlocklist extends ChangeNotifier {
     // Finish any initial read and serialize reloads with mutations. An older
     // retry must never publish its snapshot after a newer write has committed.
     await _initialization;
-    _initialization = _read();
+    _initialization = _read(recover: true);
     await _initialization;
   });
 
-  Future<void> _read() async {
+  static const _recoveryMessage = '本地保存状态尚未恢复，仍使用上次确认的屏蔽规则。请重试读取以恢复，或复制原始数据。';
+
+  Future<void> _read({bool recover = false}) async {
     try {
       final preferences = await _loadPreferences();
-      // A new store must also avoid another instance's failed-write cache.
-      _needsReload = true;
-      await preferences.reload();
-      _needsReload = false;
-      final raw = preferences.getString(storageKey);
+      final storage = _storage ??= ReliablePreferences.forInstance(preferences);
+      if (recover) {
+        try {
+          await storage.recover();
+        } catch (_) {
+          // Read the confirmed snapshot below, retaining explicit protection.
+        }
+      }
+      final values = await storage.readAll(refresh: true);
+      final raw = values[storageKey] as String?;
       var tags = <String>{};
       var enabled = true;
       if (raw != null) {
@@ -70,10 +77,9 @@ class TagBlocklist extends ChangeNotifier {
         tags = values.cast<String>().map(_validatedTag).toSet();
         enabled = decoded['enabled'] as bool;
       }
-      _preferences = preferences;
       _tags = tags;
       _enabled = enabled;
-      _loadError = null;
+      _loadError = storage.recoveryRequired ? _recoveryMessage : null;
     } catch (_) {
       // Never overwrite an unreadable configuration with an empty list.
       _loadError = '屏蔽列表无法读取，原始数据已保留。请重试或复制原始数据。';
@@ -123,12 +129,8 @@ class TagBlocklist extends ChangeNotifier {
   });
 
   Future<void> _save(Set<String> tags, bool enabled) async {
-    if (_needsReload) {
-      await _preferences!.reload();
-      _needsReload = false;
-    }
     try {
-      final ok = await _preferences!.setString(
+      await _storage!.setString(
         storageKey,
         jsonEncode({
           'version': 1,
@@ -136,16 +138,9 @@ class TagBlocklist extends ChangeNotifier {
           'tags': tags.toList()..sort(),
         }),
       );
-      if (!ok) throw StateError('屏蔽设置保存失败，请重试');
     } catch (_) {
-      _needsReload = true;
-      try {
-        await _preferences!.reload();
-        _needsReload = false;
-      } catch (_) {
-        _loadError = '无法确认屏蔽设置是否保存，原有规则仍生效。请重试读取。';
-        notifyListeners();
-      }
+      _loadError = _storage!.recoveryRequired ? _recoveryMessage : null;
+      notifyListeners();
       rethrow;
     }
     _tags = tags;
@@ -187,11 +182,11 @@ class TagBlocklist extends ChangeNotifier {
   }
 
   Future<String> rawBackup() async {
-    final preferences = _preferences ?? await _loadPreferences();
-    _needsReload = true;
-    await preferences.reload();
-    _needsReload = false;
-    final raw = preferences.get(storageKey);
+    final storage = _storage ??= ReliablePreferences.forInstance(
+      await _loadPreferences(),
+    );
+    final values = await storage.readAll(refresh: true);
+    final raw = values[storageKey];
     return raw is String ? raw : jsonEncode({'value': raw});
   }
 }

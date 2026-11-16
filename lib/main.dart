@@ -190,8 +190,9 @@ class _MyHomePageState extends State<MyHomePage> {
         .where((post) => !_blocklist.hides(postTagsForBlocking(post)))
         .toList();
     final visibleIds = _visiblePosts.map((post) => post.id).toSet();
+    final hadSelection = _selectedItems.isNotEmpty;
     _selectedItems.removeWhere((id) => !visibleIds.contains(id));
-    if (_selectedItems.isEmpty) _isMultiSelectMode = false;
+    if (hadSelection && _selectedItems.isEmpty) _isMultiSelectMode = false;
   }
 
   void _blocklistChanged() {

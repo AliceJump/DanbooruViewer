@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../storage/reliable_preferences.dart';
 import 'network_errors.dart';
 import 'network_settings.dart';
 import 'network_transport_io.dart'
@@ -86,12 +87,17 @@ class AppNetworkService extends ChangeNotifier {
 
   Future<void> _loadSettings() async {
     try {
-      final preferences = await _preferencesLoader();
-      final encoded = preferences.getString(settingsKey);
+      final preferences = ReliablePreferences.forInstance(
+        await _preferencesLoader(),
+      );
+      final encoded = (await preferences.readAll())[settingsKey];
       if (encoded != null) {
         _settings = NetworkSettings.fromJson(
-          Map<String, dynamic>.from(jsonDecode(encoded) as Map),
+          Map<String, dynamic>.from(jsonDecode(encoded as String) as Map),
         );
+      }
+      if (preferences.recoveryKeys.contains(settingsKey)) {
+        throw StateError('网络配置尚未确认恢复。');
       }
     } on Object {
       // Keep settings accessible, but do not silently replace a saved proxy
@@ -112,25 +118,27 @@ class AppNetworkService extends ChangeNotifier {
       if (error != null) {
         throw NetworkException(NetworkErrorKind.proxy, error);
       }
-      if (settings == _settings && _configurationLoadError == null) return;
-      if (_persistSettings) {
-        final preferences = await _preferencesLoader();
+      final preferences = _persistSettings
+          ? ReliablePreferences.forInstance(await _preferencesLoader())
+          : null;
+      if (settings == _settings &&
+          _configurationLoadError == null &&
+          preferences?.recoveryRequired != true) {
+        return;
+      }
+      if (preferences != null) {
         try {
-          final saved = await preferences.setString(
+          await preferences.setString(
             settingsKey,
             jsonEncode(settings.toJson()),
           );
-          if (!saved) throw StateError('无法保存网络设置。');
         } catch (error, stack) {
-          // SharedPreferences updates its in-memory map before the platform
-          // write. Restore disk truth after false/throw so a later reader
-          // cannot mistake the failed save for a successful configuration.
-          try {
-            await preferences.reload();
-          } catch (_) {
+          // A successful platform reload can still return an uncommitted
+          // native value. Only the shared recovery guard can confirm rollback.
+          if (preferences.recoveryKeys.contains(settingsKey)) {
             _configurationLoadError = const NetworkException(
               NetworkErrorKind.proxy,
-              '网络配置保存失败，且无法重新读取。请确认并重新保存后再连接。',
+              '网络配置保存失败，且尚未确认恢复。请确认并重新保存后再连接。',
             );
             for (final request in _active.toList()) {
               request.abort(_configurationLoadError!);
