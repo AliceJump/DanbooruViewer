@@ -567,6 +567,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
                   : source == null
                   ? _media()
                   : TimedMediaHoldGesture(
+                      key: ValueKey((postId, source)),
                       media: source,
                       canInteract: () => _canInteract(postId, source),
                       child: _media(),

@@ -68,6 +68,91 @@ Future<FavoritesManager> _manager() async =>
     FavoritesManager.forTesting(await SharedPreferences.getInstance());
 
 void main() {
+  for (final sameSource in [false, true]) {
+    for (final waitForDrag in [false, true]) {
+      testWidgets(
+        'full-screen holds stay with their post when filtering replaces it '
+        '(same source: $sameSource, wait for drag: $waitForDrag)',
+        (tester) async {
+          _viewport(tester);
+          final store = await _store();
+          const sourceA = '/cache/cat.mp4';
+          final sourceB = sameSource ? sourceA : '/cache/dog.mp4';
+          const dragChannel = MethodChannel(
+            'com.alicejump.danbooru_viewer/drag',
+          );
+          final dragCalls = <MethodCall>[];
+          final messenger =
+              TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+          messenger.setMockMethodCallHandler(dragChannel, (call) async {
+            dragCalls.add(call);
+            return true;
+          });
+          addTearDown(
+            () => messenger.setMockMethodCallHandler(dragChannel, null),
+          );
+          await tester.pumpWidget(
+            MaterialApp(
+              home: FullScreenImagePage(
+                previewUrl: '',
+                heroTag: 'hold-filter',
+                posts: [
+                  _post(100, 'cat', fileUrl: sourceA),
+                  _post(200, 'dog', fileUrl: sourceB),
+                ],
+                blocklist: store,
+                videoControllerFactory: (_) => _Video(),
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+
+          Offset holdPosition() =>
+              tester.getRect(find.byType(DanbooruVideoPlayer)).topCenter +
+              const Offset(0, 20);
+
+          final oldHold = await tester.startGesture(holdPosition());
+          await tester.pump(const Duration(milliseconds: 600));
+          await store.addTags(['cat']);
+          await tester.pumpAndSettle();
+          expect(find.text('#200'), findsOneWidget);
+          if (waitForDrag) {
+            await tester.pump(const Duration(milliseconds: 1100));
+          }
+          expect(dragCalls, isEmpty);
+          await oldHold.up();
+          await tester.pumpAndSettle();
+          expect(find.byType(AlertDialog), findsNothing);
+          expect(dragCalls, isEmpty);
+
+          // The replacement keeps its own normal hold behavior: a new long
+          // hold drags B, and a new shorter hold opens B's save flow.
+          final newDrag = await tester.startGesture(holdPosition());
+          await tester.pump(const Duration(milliseconds: 600));
+          await tester.pump(const Duration(milliseconds: 1100));
+          expect(dragCalls, hasLength(1));
+          expect(dragCalls.single.method, 'startDrag');
+          expect(dragCalls.single.arguments, {
+            'path': sourceB,
+            'type': 'video',
+          });
+          await newDrag.up();
+          await tester.pumpAndSettle();
+          expect(find.byType(AlertDialog), findsNothing);
+          final newSave = await tester.startGesture(holdPosition());
+          await tester.pump(const Duration(milliseconds: 600));
+          await newSave.up();
+          await tester.pumpAndSettle();
+          expect(find.byType(AlertDialog), findsOneWidget);
+          expect(dragCalls, hasLength(1));
+          expect(tester.takeException(), isNull);
+          await tester.pumpWidget(const SizedBox());
+        },
+        variant: TargetPlatformVariant.only(TargetPlatform.android),
+      );
+    }
+  }
+
   testWidgets(
     'detail captures scoped store, preserves raw IDs and restores hidden posts',
     (tester) async {
