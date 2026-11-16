@@ -128,7 +128,7 @@ def generate_svg(items):
         '<text x="24" y="38" fill="#e5e7eb" '
         'font-size="20" font-weight="700" '
         'font-family="Segoe UI, Arial">'
-        'Monthly Downloads'
+        'Downloads by Release Month'
         '</text>'
     )
 
@@ -136,7 +136,7 @@ def generate_svg(items):
     svg.append(
         f'<text x="24" y="56" fill="#94a3b8" '
         f'font-size="12" font-family="Segoe UI, Arial">'
-        f'{len(items)} months · {total_downloads:,} total downloads'
+        f'{len(items)} release months · {total_downloads:,} total downloads'
         '</text>'
     )
 

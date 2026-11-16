@@ -8,6 +8,7 @@ All API operations are GET requests; this script never creates or moves refs.
 from __future__ import annotations
 
 import json
+import argparse
 import os
 from pathlib import Path
 import re
@@ -195,8 +196,17 @@ def validate_release(
     return ReleaseMetadata(tag, sha, version, build, latest.get("html_url", ""), tag_exists)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     root = Path(__file__).resolve().parents[1]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--guide", action="store_true",
+        help="Print the local release guide without Git/API operations or changes.",
+    )
+    args = parser.parse_args(argv)
+    if args.guide:
+        print((root / "RELEASE_GUIDE.md").read_text(encoding="utf-8"))
+        return 0
     try:
         head = subprocess.check_output(
             ["git", "rev-parse", "HEAD^{commit}"], cwd=root, text=True

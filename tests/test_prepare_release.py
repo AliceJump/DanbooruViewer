@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+import prepare_release  # noqa: E402
 from prepare_release import (  # noqa: E402
     GitHubReader,
     MAX_RELEASE_PAGES,
@@ -257,6 +258,13 @@ class PrepareReleaseTests(unittest.TestCase):
         with patch("prepare_release.urlopen", side_effect=HTTPError("url", 403, "Forbidden", {}, None)):
             with self.assertRaisesRegex(ReleaseError, "HTTP 403"):
                 api.get("/git/ref/tags/v1.0.67", missing_ok=True)
+
+
+    def test_release_guide_does_not_use_git_or_github(self):
+        with patch.object(prepare_release, "GitHubReader", side_effect=AssertionError("network access")), patch.object(
+            prepare_release.subprocess, "check_output", side_effect=AssertionError("git access"),
+        ):
+            self.assertEqual(prepare_release.main(["--guide"]), 0)
 
 
 if __name__ == "__main__":
