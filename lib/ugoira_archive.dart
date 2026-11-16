@@ -211,5 +211,14 @@ class _BoundedInflateOutput extends OutputStream {
   }
 
   @override
+  void writeBackReference(int distance, int count) {
+    if (distance < 1 || distance > 32768 || distance > length) {
+      throw const FormatException('动图 ZIP 压缩引用无效。');
+    }
+    _reserve(count);
+    _buffer.writeBackReference(distance, count);
+  }
+
+  @override
   Uint8List subset(int start, [int? end]) => _buffer.subset(start, end);
 }

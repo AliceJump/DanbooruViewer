@@ -145,15 +145,36 @@ void main() {
     }
   });
 
-  test('valid output larger than the 32 KiB history still decodes', () {
-    final png = _png(width: 128, height: 128, raw: Uint8List(128 * 385));
+  test('overlapping PNG matches wrap history and retain Adler and pixels', () {
+    final raw = Uint8List(128 * 385);
+    for (var row = 0; row < 128; row++) {
+      for (var column = 0; column < 128; column++) {
+        raw.setRange(row * 385 + 1 + column * 3, row * 385 + 4 + column * 3, [
+          17,
+          85,
+          204,
+        ]);
+      }
+    }
+    final png = _png(width: 128, height: 128, raw: raw);
+    expect(png.length, lessThan(1024));
+    final prepared = prepareUgoiraPng(
+      png,
+      maxPixels: 16384,
+      maxOutputBytes: raw.length,
+    );
+    expect(prepared.outputBytes, raw.length);
+    final source = img.decodePng(prepared.bytes)!;
+    for (final pixel in source) {
+      expect((pixel.r, pixel.g, pixel.b), (17, 85, 204));
+    }
     expect(
-      prepareUgoiraPng(
+      () => prepareUgoiraPng(
         png,
         maxPixels: 16384,
-        maxOutputBytes: 128 * 385,
-      ).outputBytes,
-      128 * 385,
+        maxOutputBytes: raw.length - 1,
+      ),
+      throwsFormatException,
     );
     final gif = img.decodeGif(mergeUgoiraBytesToGifSync(_zipPng(png)))!;
     expect((gif.width, gif.height), (128, 128));

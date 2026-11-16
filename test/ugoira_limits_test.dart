@@ -61,6 +61,45 @@ void main() {
       });
     }
 
+    test(
+      'overlapping ZIP matches survive buffer growth at the exact budget',
+      () {
+        for (final pattern in [
+          [65],
+          [7, 23, 91],
+        ]) {
+          final plain = Uint8List.fromList(
+            List.generate(40 * 1024, (i) => pattern[i % pattern.length]),
+          );
+          final bytes = _zip({'frame.bin': plain});
+          expect(bytes.length, lessThan(512));
+          final decoded = decodeBoundedUgoiraArchive(
+            bytes,
+            maxOutputBytes: plain.length,
+          );
+          expect(decoded.files.single.content, plain);
+
+          // Bypass the directory's early size check: the final match must be
+          // rejected by the actual sink budget before it writes any bytes.
+          final header = _centralHeaders(bytes).single;
+          ByteData.sublistView(bytes).setUint32(header + 24, 1, Endian.little);
+          expect(
+            () => decodeBoundedUgoiraArchive(
+              bytes,
+              maxOutputBytes: plain.length - 1,
+            ),
+            throwsA(
+              isA<FormatException>().having(
+                (error) => error.message,
+                'reason',
+                contains('超出限制'),
+              ),
+            ),
+          );
+        }
+      },
+    );
+
     test('forged small length cannot bypass the actual deflate budget', () {
       final bytes = _zip({'frame.png': List<int>.filled(4096, 65)});
       final data = ByteData.sublistView(bytes);

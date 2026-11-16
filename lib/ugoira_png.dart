@@ -261,6 +261,19 @@ class _PngInflateCounter extends OutputStream {
   }
 
   @override
+  void writeBackReference(int distance, int count) {
+    if (distance < 1 || distance > _history.length || distance > length) {
+      throw const FormatException('动图 PNG 压缩引用无效。');
+    }
+    _reserve(count);
+    final start = _length - distance;
+    for (var i = 0; i < count; i++) {
+      // A source byte may have been appended earlier in this same match.
+      _append(_history[(start + i) & 32767]);
+    }
+  }
+
+  @override
   Uint8List subset(int start, [int? end]) {
     final from = start < 0 ? length + start : start;
     final to = end == null ? length : (end < 0 ? length + end : end);
