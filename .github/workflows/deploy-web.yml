@@ -3,7 +3,8 @@ name: Deploy Web to GitHub Pages
 on:
   push:
     branches:
-      - main
+      - master
+  workflow_dispatch:
 
 env:
   FLUTTER_VERSION: "3.38.9"
@@ -11,14 +12,77 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
 jobs:
-  build:
+  preflight:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      ready: ${{ steps.pages.outputs.ready }}
+
+    steps:
+      - name: Check existing Pages configuration
+        id: pages
+        uses: actions/github-script@v8
+        with:
+          script: |
+            core.setOutput('ready', 'false');
+            const {owner, repo} = context.repo;
+            const finish = async (ready, message) => {
+              core.setOutput('ready', String(ready));
+              core.info(message);
+              await core.summary
+                .addHeading('GitHub Pages preflight')
+                .addRaw(message, true)
+                .write();
+            };
+            const {data: repository} = await github.rest.repos.get({owner, repo});
+            if (context.ref !== `refs/heads/${repository.default_branch}`) {
+              await finish(false, 'Skipped: only the repository default branch can deploy GitHub Pages.');
+              return;
+            }
+            if (!repository.has_pages) {
+              await finish(false, 'Skipped: GitHub Pages is not enabled for this repository. No site was created or changed.');
+              return;
+            }
+            let site;
+            try {
+              ({data: site} = await github.rest.repos.getPages({owner, repo}));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await finish(false, 'Skipped: no GitHub Pages configuration was found. No site was created or changed.');
+              return;
+            }
+            if (site.build_type !== 'workflow') {
+              await finish(false, 'Skipped: GitHub Pages is not configured with GitHub Actions as its publishing source. Repository settings were left unchanged.');
+              return;
+            }
+            await finish(true, 'Ready: GitHub Pages is already configured for Actions, and this run targets the default branch.');
+
+  build:
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
 
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
+          persist-credentials: false
+
+      - name: Read Pages build metadata
+        id: pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: false
 
       - uses: actions/setup-python@v6
         with:
@@ -37,22 +101,28 @@ jobs:
         run: dart run tool/build_ugoira_worker.dart
 
       - name: Build Web
+        env:
+          PAGES_BASE_PATH: ${{ steps.pages.outputs.base_path }}
         run: |
           flutter build web --release \
-            --base-href "/${{ github.event.repository.name }}/"
+            --base-href "${PAGES_BASE_PATH%/}/"
 
       - uses: actions/upload-pages-artifact@v3
         with:
           path: build/web
 
   deploy:
-    needs: build
+    needs: [preflight, build]
+    if: needs.preflight.outputs.ready == 'true'
     runs-on: ubuntu-latest
     permissions:
       pages: write
       id-token: write
     environment:
       name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      - uses: actions/deploy-pages@v4
+      - name: Deploy existing Pages site
+        id: deployment
+        uses: actions/deploy-pages@v4

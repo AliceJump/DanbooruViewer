@@ -411,30 +411,29 @@ https://danbooru.donmai.us/posts.json?tags=&limit=100&page=1
 
 ### 快速发布版本
 
-#### 方法 1：使用脚本（推荐）
+#### 查看发布指南
 
 **Linux/macOS:**
 ```bash
-chmod +x scripts/release.sh
-./scripts/release.sh
+bash ./release.sh
 ```
 
 **Windows:**
 ```cmd
-scripts\release.bat
+release.bat
 ```
 
-脚本会引导你完成整个发布流程。
+PowerShell 也可以运行 `./release.ps1`。三个入口都会显示
+[发布指南](RELEASE_GUIDE.md)，不会自动修改版本、提交或推送代码。
 
-#### 方法 2：手动发布
+#### 从已验证的提交发布
 
-创建并推送 Git Tag 以自动构建所有平台的 Release 版本：
+先通过 PR 更新版本和构建号，完成审查并合并到 `master`，等待该完整 SHA
+的 CI push 运行成功。然后按发布指南从这个 SHA 创建匹配 `pubspec.yaml`
+版本的稳定 `vX.Y.Z` tag 或 `release/vX.Y.Z` 分支。
 
-```bash
-# 创建版本 Tag
-git tag v1.0.0
-git push origin v1.0.0
-```
+工作流在构建前和发布前校验版本、SHA、CI 和已有 Release。当前入口只支持
+稳定版本，具体命令和失败恢复步骤见 [发布指南](RELEASE_GUIDE.md)。
 
 ### 构建产物
 
@@ -443,15 +442,27 @@ git push origin v1.0.0
 - 🍎 iOS IPA
 - 🐧 Linux 可执行程序
 - 🪟 Windows 可执行程序
-- 🌐 Web 应用（同时部署到 GitHub Pages）
+- 🌐 Web 应用（静态构建产物；GitHub Pages 由独立工作流部署）
 
 ### 工作流说明
 
 | 工作流 | 触发条件 | 功能 |
 |--------|--------|------|
-| CI | Push 到 main/develop 或 PR | 代码分析、测试、Debug 构建 |
-| Build Release | 推送 `v*` Tag | 多平台 Release 构建 |
-| Deploy Web | 推送 Tag 或 main 分支 | 部署 Web 版本到 GitHub Pages |
+| CI | Push 到 master/main/develop 或向这些分支提交 PR | 代码分析、测试与构建检查 |
+| Build Release | 创建或更新 `release/v*` 分支、推送 `v*` Tag，或手动运行 | 多平台 Release 构建 |
+| Deploy Web | Push 到 master 或手动运行 | 预检已有 Pages 配置，通过后构建并部署 Web |
+
+### GitHub Pages 部署条件
+
+`Deploy Web` 在构建前只读检查仓库的默认分支和 Pages 配置。仅默认分支可以
+部署，手动运行时选择其他分支或 tag 也会跳过。仓库必须已启用 GitHub Pages，
+且 **Settings → Pages → Build and deployment → Source** 已设为
+**GitHub Actions**（API 的 `build_type` 为 `workflow`）。
+
+尚未启用 Pages、没有站点配置或仍使用分支发布模式时，工作流会在运行摘要中
+说明原因，并跳过构建和部署；它不会创建站点或修改 Pages 设置。实际构建从
+Pages 配置读取站点路径，因此仓库子路径和自定义域名使用各自正确的 base href。
+发布 `v*` tag 不会自动触发这个 Pages 工作流。
 
 详细信息请参考：
 - [快速发布指南](RELEASE_GUIDE.md)

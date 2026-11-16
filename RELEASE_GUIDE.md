@@ -3,13 +3,19 @@
 本仓库从已审查、已合并且 CI 成功的 `master` 提交发布稳定版本。
 发布版本使用 `vX.Y.Z`，并与 `pubspec.yaml` 中的 `X.Y.Z+正整数构建号` 对应。
 
+仓库根目录的 `release.sh`、`release.ps1`、`release.bat` 是只读指南入口，
+统一调用 `python scripts/prepare_release.py --guide` 显示本文件。它们不再
+自动修改版本、提交代码、创建 tag 或推送分支。工作流仍使用同一校验脚本的
+默认入口检查实际发布提交。
+
 ## 1. 准备版本并合并 PR
 
 在工作分支更新 `pubspec.yaml` 和 `CHANGELOG.md`。应用版本与构建号都应高于
-已发布版本；例如本次为 `1.0.67+67`。执行相关回归测试，并提交 PR。
+已发布版本；例如本次为 `1.0.68+68`。执行相关回归测试，并提交 PR。
 全新检出需先生成补全资源：
 
 ```bash
+python -m pip install -r requirements.txt
 python scripts/build_completion_index.py
 flutter pub get
 dart run tool/build_ugoira_worker.dart
@@ -30,20 +36,20 @@ python -m unittest discover -s tests
 ### 方式 A：发布分支
 
 ```bash
-release_tag="v1.0.67"
+release_tag="v1.0.68"
 release_sha="<已通过 CI 的 master 完整提交 SHA>"
 git fetch origin master
 git branch "release/$release_tag" "$release_sha"
 git push origin "refs/heads/release/$release_tag"
 ```
 
-在 GitHub 网页或通过 Git refs API 从该 SHA 创建 `release/v1.0.67` 也会触发
+在 GitHub 网页或通过 Git refs API 从该 SHA 创建 `release/v1.0.68` 也会触发
 `Build Release`。分支创建使用 `create` 事件；后续分支更新使用 `push` 事件。
 
 ### 方式 B：直接创建版本 tag
 
 ```bash
-release_tag="v1.0.67"
+release_tag="v1.0.68"
 release_sha="<已通过 CI 的 master 完整提交 SHA>"
 git fetch origin master
 git tag "$release_tag" "$release_sha"
