@@ -4,10 +4,12 @@ import 'package:danbooru_viewer/full_screen_image_page.dart';
 import 'package:danbooru_viewer/media_image_frame.dart';
 import 'package:danbooru_viewer/media_utils.dart';
 import 'package:danbooru_viewer/post.dart';
+import 'package:danbooru_viewer/tag_blocklist.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photo_view/photo_view.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _FrameInfo extends Fake implements ui.FrameInfo {
   _FrameInfo(this.image);
@@ -209,6 +211,10 @@ void main() {
   testWidgets('full screen restores its actual zoom and pan after hiding', (
     tester,
   ) async {
+    SharedPreferences.setMockInitialValues({});
+    final blocklist = TagBlocklist();
+    await blocklist.initialize();
+    addTearDown(blocklist.dispose);
     final visible = ValueNotifier(true);
     addTearDown(visible.dispose);
     final source = _ManualProvider();
@@ -221,6 +227,7 @@ void main() {
           child: FullScreenImagePage(
             previewUrl: '',
             heroTag: 'zoom',
+            blocklist: blocklist,
             posts: [
               Post(id: 1, rating: 'g', tagString: '', fileUrl: url),
               Post(id: 2, rating: 'g', tagString: '', fileUrl: url),

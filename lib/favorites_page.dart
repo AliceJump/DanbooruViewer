@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'app_settings_page.dart';
 import 'completion_normalization.dart';
 import 'completion_service.dart';
 import 'favorites_manager.dart';
@@ -9,7 +10,10 @@ import 'gallery_grid.dart';
 import 'media_utils.dart';
 import 'post_detail_page.dart';
 import 'post.dart';
+import 'post_filter.dart';
 import 'network/app_network_service.dart';
+import 'tag_blocklist.dart';
+import 'tag_blocklist_page.dart';
 
 /// Danbooru tag category display names (0=general, 1=artist, 3=copyright,
 /// 4=character, 5=meta).
@@ -28,12 +32,18 @@ class FavoritesPage extends StatefulWidget {
   final Map<String, String> completionDisplayByValue;
   final Map<String, int> completionCategoryByValue;
   final CompletionService? completionService;
+  final FavoritesManager? manager;
+  final TagBlocklist? blocklist;
+  final AppNetworkService? networkService;
 
   const FavoritesPage({
     super.key,
     this.completionDisplayByValue = const {},
     this.completionCategoryByValue = const {},
     this.completionService,
+    this.manager,
+    this.blocklist,
+    this.networkService,
   });
 
   @override
@@ -43,7 +53,11 @@ class FavoritesPage extends StatefulWidget {
 class _FavoritesPageState extends State<FavoritesPage>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
-  final _favoritesManager = FavoritesManager();
+  late FavoritesManager _favoritesManager;
+  late AppNetworkService _networkService;
+  TagBlocklist? _blocklist;
+  TagBlocklist get _rules => _blocklist ?? TagBlocklist.instance;
+  bool _isMutating = false;
 
   // ============ Data ============
   List<Map<String, dynamic>> _favoritePosts = [];
@@ -96,7 +110,9 @@ class _FavoritesPageState extends State<FavoritesPage>
   @override
   void initState() {
     super.initState();
-    AppNetworkService.instance.addListener(_networkSettingsChanged);
+    _favoritesManager = widget.manager ?? FavoritesManager();
+    _networkService = widget.networkService ?? AppNetworkService.instance;
+    _networkService.addListener(_networkSettingsChanged);
     _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
       if (!_tabController.indexIsChanging) {
@@ -116,9 +132,46 @@ class _FavoritesPageState extends State<FavoritesPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _bindBlocklist();
+  }
+
+  void _bindBlocklist() {
+    final store = widget.blocklist ?? TagBlocklistScope.of(context);
+    if (identical(store, _blocklist)) return;
+    _blocklist?.removeListener(_blocklistChanged);
+    _blocklist = store;
+    store.addListener(_blocklistChanged);
+    // Startup owns initialization. Standalone routes can use an already-loaded
+    // injected store without starting a second preferences read here.
+  }
+
+  void _blocklistChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(covariant FavoritesPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.blocklist != widget.blocklist) _bindBlocklist();
+    if (oldWidget.networkService != widget.networkService) {
+      _networkService.removeListener(_networkSettingsChanged);
+      _networkService = widget.networkService ?? AppNetworkService.instance;
+      _networkService.addListener(_networkSettingsChanged);
+      unawaited(_loadTagPreviews(force: true));
+    }
+    if (oldWidget.manager != widget.manager) {
+      _favoritesManager = widget.manager ?? FavoritesManager();
+      unawaited(_loadData());
+    }
+  }
+
+  @override
   void dispose() {
     _previewCancelToken?.cancel();
-    AppNetworkService.instance.removeListener(_networkSettingsChanged);
+    _networkService.removeListener(_networkSettingsChanged);
+    _blocklist?.removeListener(_blocklistChanged);
     _tabController.dispose();
     _favFilterController.removeListener(_onFavFilterChanged);
     _histFilterController.removeListener(_onHistFilterChanged);
@@ -144,7 +197,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   void _extractAllTags() {
     final favSet = <String>{};
     for (final post in _favoritePosts) {
-      final tagStr = post['tag_string'] as String? ?? '';
+      final tagStr = _postTagString(post);
       if (tagStr.isNotEmpty) {
         favSet.addAll(tagStr.split(' ').where((t) => t.isNotEmpty));
       }
@@ -153,7 +206,7 @@ class _FavoritesPageState extends State<FavoritesPage>
 
     final histSet = <String>{};
     for (final post in _browsingHistory) {
-      final tagStr = post['tag_string'] as String? ?? '';
+      final tagStr = _postTagString(post);
       if (tagStr.isNotEmpty) {
         histSet.addAll(tagStr.split(' ').where((t) => t.isNotEmpty));
       }
@@ -224,6 +277,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   }
 
   Future<void> _loadData() async {
+    if (!mounted) return;
     final generation = ++_dataGeneration;
     setState(() {
       _isLoading = true;
@@ -257,10 +311,12 @@ class _FavoritesPageState extends State<FavoritesPage>
       });
       unawaited(_loadCompletionMetadata(generation, tagEntries));
       unawaited(_loadTagPreviews());
-    } catch (_) {
+    } catch (error) {
       if (mounted && generation == _dataGeneration) {
         setState(() {
-          _loadError = '无法读取收藏数据。原始数据已保留，请重试。';
+          _loadError = error is LegacyFavoritesRecoveryException
+              ? error.toString()
+              : '无法读取收藏数据。原始数据已保留，请重试。';
         });
       }
     } finally {
@@ -342,7 +398,7 @@ class _FavoritesPageState extends State<FavoritesPage>
             'limit': '8',
             'page': '1',
           });
-          final response = await AppNetworkService.instance.get(
+          final response = await _networkService.get(
             uri,
             cancelToken: cancelToken,
             timeout: const Duration(seconds: 12),
@@ -383,15 +439,22 @@ class _FavoritesPageState extends State<FavoritesPage>
   ) {
     if (filterChips.isEmpty) return posts;
     return posts.where((post) {
-      final tagString = normalizeCompletionKey(
-        post['tag_string'] as String? ?? '',
+      final tokens = _postTagString(post)
+          .split(RegExp(r'\s+'))
+          .where((tag) => tag.isNotEmpty)
+          .map(TagBlocklist.canonicalTag)
+          .toSet();
+      return filterChips.every(
+        (chip) => tokens.contains(TagBlocklist.canonicalTag(chip)),
       );
-      return filterChips.every((chip) {
-        final query = normalizeCompletionKey(chip);
-        return tagString.contains(query);
-      });
     }).toList();
   }
+
+  List<Map<String, dynamic>> _visiblePosts(List<Map<String, dynamic>> posts) =>
+      posts.where((post) => !_rules.hides(_postTagString(post))).toList();
+
+  String _postTagString(Map<String, dynamic> post) =>
+      postTagsForBlocking(Post.fromJson(post));
 
   /// 解析标签的分类：优先用补全映射，其次用收藏条目里持久化的分类。
   int? _categoryForTag(String tag) {
@@ -468,28 +531,46 @@ class _FavoritesPageState extends State<FavoritesPage>
   }
 
   // ============ 操作 ============
-  Future<void> _removePost(int postId) async {
-    await _favoritesManager.removeFavorite(postId);
-    await _loadData();
-    if (mounted) {
+  Future<void> _mutateCollection(
+    Future<void> Function() write, {
+    VoidCallback? onCommitted,
+    required String successMessage,
+  }) async {
+    if (!mounted || _isMutating) return;
+    setState(() => _isMutating = true);
+    try {
+      await write();
+      if (!mounted) return;
+      onCommitted?.call();
+      await _loadData();
+      if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('已取消收藏')));
+      ).showSnackBar(SnackBar(content: Text(successMessage)));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('更改未能保存，原有收藏和历史已保留，请重试。')));
+    } finally {
+      if (mounted) setState(() => _isMutating = false);
     }
   }
 
-  Future<void> _removeTag(String tag) async {
-    await _favoritesManager.removeFavoriteTag(tag);
-    _tagPreviewPosts.remove(tag);
-    _tagPreviewLoading.remove(tag);
-    _tagPreviewFailed.remove(tag);
-    await _loadData();
-    if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('已取消收藏标签')));
-    }
-  }
+  Future<void> _removePost(int postId) => _mutateCollection(
+    () => _favoritesManager.removeFavorite(postId),
+    successMessage: '已取消收藏',
+  );
+
+  Future<void> _removeTag(String tag) => _mutateCollection(
+    () => _favoritesManager.removeFavoriteTag(tag),
+    onCommitted: () {
+      _tagPreviewPosts.remove(tag);
+      _tagPreviewLoading.remove(tag);
+      _tagPreviewFailed.remove(tag);
+    },
+    successMessage: '已取消收藏标签',
+  );
 
   void _copyTag(String tag) {
     Clipboard.setData(ClipboardData(text: tag));
@@ -502,17 +583,19 @@ class _FavoritesPageState extends State<FavoritesPage>
     Navigator.pop(context, tag);
   }
 
-  Future<void> _clearHistory() async {
-    await _favoritesManager.clearBrowsingHistory();
-    await _loadData();
-  }
+  Future<void> _clearHistory() => _mutateCollection(
+    _favoritesManager.clearBrowsingHistory,
+    successMessage: '已清空浏览历史',
+  );
 
   // ============ 导航到详情页 ============
   Future<void> _navigateToDetail(
     List<Map<String, dynamic>> postMaps,
-    int index,
+    int selectedPostId,
   ) async {
     final posts = postMaps.map((m) => Post.fromJson(m)).toList();
+    final index = posts.indexWhere((post) => post.id == selectedPostId);
+    if (index < 0 || _rules.hides(postTagsForBlocking(posts[index]))) return;
     final result = await openPostDetailPage(
       context: context,
       posts: posts,
@@ -520,6 +603,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       completionDisplayByValue: widget.completionDisplayByValue,
       completionCategoryByValue: widget.completionCategoryByValue,
       completionService: widget.completionService,
+      blocklist: _rules,
     );
     if (!mounted) return;
     if (result != null) {
@@ -529,7 +613,12 @@ class _FavoritesPageState extends State<FavoritesPage>
     }
   }
 
-  Future<void> _navigateToDetailFromPosts(List<Post> posts, int index) async {
+  Future<void> _navigateToDetailFromPosts(
+    List<Post> posts,
+    int selectedPostId,
+  ) async {
+    final index = posts.indexWhere((post) => post.id == selectedPostId);
+    if (index < 0 || _rules.hides(postTagsForBlocking(posts[index]))) return;
     final result = await openPostDetailPage(
       context: context,
       posts: posts,
@@ -537,6 +626,7 @@ class _FavoritesPageState extends State<FavoritesPage>
       completionDisplayByValue: widget.completionDisplayByValue,
       completionCategoryByValue: widget.completionCategoryByValue,
       completionService: widget.completionService,
+      blocklist: _rules,
     );
     if (!mounted) return;
     if (result != null) {
@@ -605,8 +695,14 @@ class _FavoritesPageState extends State<FavoritesPage>
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.copy_all_outlined),
+            onPressed: () =>
+                copyCollectionBackup(context, manager: _favoritesManager),
+            tooltip: '复制收藏备份',
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _loadData,
+            onPressed: _isLoading || _isMutating ? null : _loadData,
             tooltip: '刷新',
           ),
         ],
@@ -620,9 +716,21 @@ class _FavoritesPageState extends State<FavoritesPage>
                 icon: Icons.warning_amber_outlined,
                 title: '收藏暂时无法读取',
                 subtitle: _loadError!,
-                action: FilledButton(
-                  onPressed: _loadData,
-                  child: const Text('重试'),
+                action: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    FilledButton(onPressed: _loadData, child: const Text('重试')),
+                    OutlinedButton.icon(
+                      onPressed: () => copyCollectionBackup(
+                        context,
+                        manager: _favoritesManager,
+                      ),
+                      icon: const Icon(Icons.copy_all_outlined),
+                      label: const Text('复制备份'),
+                    ),
+                  ],
                 ),
               )
             : TabBarView(
@@ -641,10 +749,13 @@ class _FavoritesPageState extends State<FavoritesPage>
   // Tab 1: 收藏的图片 - 网格布局 + 标签筛选
   // =====================================================
   Widget _buildPostsTab() {
-    final filteredPosts = _filterPosts(_favoritePosts, _favFilterChips);
+    final matchingPosts = _filterPosts(_favoritePosts, _favFilterChips);
+    final filteredPosts = _visiblePosts(matchingPosts);
+    final hiddenCount = matchingPosts.length - filteredPosts.length;
     final hasSavedPosts = _favoritePosts.isNotEmpty;
 
     return _buildCollectionLayout(
+      hiddenCount: hiddenCount,
       header: _buildSmartFilterInput(
         controller: _favFilterController,
         focusNode: _favFilterFocusNode,
@@ -668,8 +779,14 @@ class _FavoritesPageState extends State<FavoritesPage>
               icon: hasSavedPosts
                   ? Icons.filter_alt_off_outlined
                   : Icons.favorite_border,
-              title: hasSavedPosts ? '没有匹配的收藏' : '还没有收藏的图片',
-              subtitle: hasSavedPosts
+              title: hiddenCount > 0
+                  ? '收藏作品已被屏蔽'
+                  : hasSavedPosts
+                  ? '没有匹配的收藏'
+                  : '还没有收藏的图片',
+              subtitle: hiddenCount > 0
+                  ? '原始收藏仍保留。可临时显示作品或管理屏蔽规则。'
+                  : hasSavedPosts
                   ? '尝试其他标签，或清空筛选以查看全部收藏'
                   : '在图片详情页点击收藏按钮来添加收藏',
             )
@@ -688,14 +805,14 @@ class _FavoritesPageState extends State<FavoritesPage>
                   highResUrl: highResUrl,
                   heroTag: 'fav_post_$postId',
                   semanticLabel: '收藏作品 #$postId',
-                  onTap: () => _navigateToDetail(filteredPosts, index),
-                  onLongPress: () => _removePost(postId),
+                  onTap: () => _navigateToDetail(matchingPosts, postId),
+                  onLongPress: _isMutating ? null : () => _removePost(postId),
                   overlay: Positioned(
                     top: 4,
                     right: 4,
                     child: IconButton(
                       tooltip: '取消收藏作品 #$postId',
-                      onPressed: () => _removePost(postId),
+                      onPressed: _isMutating ? null : () => _removePost(postId),
                       style: IconButton.styleFrom(
                         minimumSize: const Size.square(48),
                         visualDensity: VisualDensity.standard,
@@ -718,8 +835,14 @@ class _FavoritesPageState extends State<FavoritesPage>
   Widget _buildTagsTab() {
     final rows = _groupedFavoriteTags();
     final hasTags = _favoriteTags.isNotEmpty;
+    final hiddenPreviewIds = {
+      for (final tag in _getFilteredTags())
+        for (final post in _tagPreviewPosts[tag] ?? <Post>[])
+          if (_rules.hides(postTagsForBlocking(post))) post.id,
+    };
 
     return _buildCollectionLayout(
+      hiddenCount: hiddenPreviewIds.length,
       header: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -787,7 +910,10 @@ class _FavoritesPageState extends State<FavoritesPage>
                   );
                 }
                 final tag = row as String;
-                final previewPosts = _tagPreviewPosts[tag] ?? [];
+                final rawPreviewPosts = _tagPreviewPosts[tag] ?? <Post>[];
+                final previewPosts = rawPreviewPosts
+                    .where((post) => !_rules.hides(postTagsForBlocking(post)))
+                    .toList();
                 final isLoadingPreview = _tagPreviewLoading.contains(tag);
 
                 return Card(
@@ -842,7 +968,9 @@ class _FavoritesPageState extends State<FavoritesPage>
                                   minWidth: 48,
                                   minHeight: 48,
                                 ),
-                                onPressed: () => _removeTag(tag),
+                                onPressed: _isMutating
+                                    ? null
+                                    : () => _removeTag(tag),
                                 tooltip: '取消收藏标签',
                               ),
                             ],
@@ -868,7 +996,9 @@ class _FavoritesPageState extends State<FavoritesPage>
                                 : previewPosts.isEmpty
                                 ? Center(
                                     child: Text(
-                                      '暂无预览',
+                                      rawPreviewPosts.isNotEmpty
+                                          ? '预览已被屏蔽'
+                                          : '暂无预览',
                                       style: Theme.of(context)
                                           .textTheme
                                           .bodyMedium
@@ -898,8 +1028,8 @@ class _FavoritesPageState extends State<FavoritesPage>
                                         height: 120,
                                         borderRadius: BorderRadius.circular(8),
                                         onTap: () => _navigateToDetailFromPosts(
-                                          previewPosts,
-                                          idx,
+                                          rawPreviewPosts,
+                                          post.id,
                                         ),
                                         errorIconSize: 40,
                                       );
@@ -920,10 +1050,13 @@ class _FavoritesPageState extends State<FavoritesPage>
   // Tab 3: 浏览记录 - 网格布局 + 标签筛选
   // =====================================================
   Widget _buildHistoryTab() {
-    final filteredHistory = _filterPosts(_browsingHistory, _histFilterChips);
+    final matchingHistory = _filterPosts(_browsingHistory, _histFilterChips);
+    final filteredHistory = _visiblePosts(matchingHistory);
+    final hiddenCount = matchingHistory.length - filteredHistory.length;
     final hasHistory = _browsingHistory.isNotEmpty;
 
     return _buildCollectionLayout(
+      hiddenCount: hiddenCount,
       header: _buildSmartFilterInput(
         controller: _histFilterController,
         focusNode: _histFilterFocusNode,
@@ -943,7 +1076,7 @@ class _FavoritesPageState extends State<FavoritesPage>
         onDismissSuggestions: () =>
             setState(() => _showHistSuggestions = false),
         trailing: TextButton.icon(
-          onPressed: hasHistory ? _clearHistory : null,
+          onPressed: hasHistory && !_isMutating ? _clearHistory : null,
           icon: const Icon(Icons.delete_outline, size: 20),
           label: const Text('清空浏览历史'),
           style: TextButton.styleFrom(minimumSize: const Size(48, 48)),
@@ -952,8 +1085,16 @@ class _FavoritesPageState extends State<FavoritesPage>
       content: filteredHistory.isEmpty
           ? _buildEmptyState(
               icon: hasHistory ? Icons.filter_alt_off_outlined : Icons.history,
-              title: hasHistory ? '没有匹配的浏览记录' : '还没有浏览历史',
-              subtitle: hasHistory ? '尝试其他标签，或清空筛选以查看全部记录' : '浏览图片后会自动记录',
+              title: hiddenCount > 0
+                  ? '浏览记录已被屏蔽'
+                  : hasHistory
+                  ? '没有匹配的浏览记录'
+                  : '还没有浏览历史',
+              subtitle: hiddenCount > 0
+                  ? '原始历史仍保留。可临时显示作品或管理屏蔽规则。'
+                  : hasHistory
+                  ? '尝试其他标签，或清空筛选以查看全部记录'
+                  : '浏览图片后会自动记录',
             )
           : GalleryGrid(
               itemCount: filteredHistory.length,
@@ -969,7 +1110,7 @@ class _FavoritesPageState extends State<FavoritesPage>
                   highResUrl: highResUrl,
                   heroTag: 'hist_post_$postId',
                   semanticLabel: '浏览记录作品 #$postId',
-                  onTap: () => _navigateToDetail(filteredHistory, index),
+                  onTap: () => _navigateToDetail(matchingHistory, postId),
                 );
               },
             ),
@@ -983,6 +1124,7 @@ class _FavoritesPageState extends State<FavoritesPage>
   // Keep the controls scrollable when large text or the keyboard leaves little
   // vertical space, while retaining an independently scrollable lazy gallery.
   Widget _buildCollectionLayout({
+    required int hiddenCount,
     required Widget header,
     required Widget content,
   }) {
@@ -993,7 +1135,18 @@ class _FavoritesPageState extends State<FavoritesPage>
             constraints: BoxConstraints(
               maxHeight: constraints.maxHeight * 0.55,
             ),
-            child: SingleChildScrollView(child: header),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TagBlocklistStatus(
+                    hiddenCount: hiddenCount,
+                    blocklist: _rules,
+                  ),
+                  header,
+                ],
+              ),
+            ),
           ),
           Expanded(child: content),
         ],

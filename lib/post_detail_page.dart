@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -16,8 +17,31 @@ import 'media_utils.dart';
 import 'media_video_session.dart';
 import 'network/app_network_service.dart';
 import 'post.dart';
+import 'post_filter.dart';
+import 'tag_blocklist.dart';
+import 'tag_blocklist_page.dart';
 import 'ugoira_utils.dart';
 import 'video_controls.dart';
+
+Future<void> _undoPostTagBlock(
+  ScaffoldMessengerState messenger,
+  TagBlocklist store,
+  Set<String> added, {
+  required bool wasEnabled,
+  required bool wasTemporarilyShowing,
+}) async {
+  try {
+    if (added.isNotEmpty) await store.removeTags(added);
+    if (!wasEnabled) await store.setEnabled(false);
+    if (wasTemporarilyShowing) store.setTemporarilyShow(true);
+  } catch (_) {
+    if (messenger.mounted) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('撤销未能保存，请在标签屏蔽设置中重试。')),
+      );
+    }
+  }
+}
 
 class PostDetailPage extends StatefulWidget {
   final List<Post> posts;
@@ -27,6 +51,8 @@ class PostDetailPage extends StatefulWidget {
   final CompletionService? completionService;
   final Future<bool> Function(int)? isFavoriteLookup;
   final VideoPlayerController Function(Uri)? videoControllerFactory;
+  final TagBlocklist? blocklist;
+  final FavoritesManager? favoritesManager;
 
   const PostDetailPage({
     super.key,
@@ -37,6 +63,8 @@ class PostDetailPage extends StatefulWidget {
     this.completionService,
     this.isFavoriteLookup,
     this.videoControllerFactory,
+    this.blocklist,
+    this.favoritesManager,
   });
 
   @override
@@ -50,13 +78,17 @@ Future<Object?> openPostDetailPage({
   required Map<String, String> completionDisplayByValue,
   Map<String, int> completionCategoryByValue = const {},
   CompletionService? completionService,
+  TagBlocklist? blocklist,
 }) {
+  final store = blocklist ?? TagBlocklistScope.of(context);
   if (initialIndex >= 0 && initialIndex < posts.length) {
     final post = posts[initialIndex];
-    warmPostImages(
-      previewUrl: post.previewFileUrl,
-      highResUrl: post.fileUrl ?? post.largeFileUrl,
-    );
+    if (store.loaded && !store.hides(postTagsForBlocking(post))) {
+      warmPostImages(
+        previewUrl: post.previewFileUrl,
+        highResUrl: post.fileUrl ?? post.largeFileUrl,
+      );
+    }
   }
 
   return Navigator.push(
@@ -68,6 +100,7 @@ Future<Object?> openPostDetailPage({
         completionDisplayByValue: completionDisplayByValue,
         completionCategoryByValue: completionCategoryByValue,
         completionService: completionService,
+        blocklist: store,
       ),
     ),
   );
@@ -82,26 +115,114 @@ class _PostDetailPageState extends State<PostDetailPage>
   final _commentaryCancel = NetworkCancelToken();
   late final MediaVideoSession _video;
   bool _openingFullScreen = false;
-  bool _didChangeDependenciesRun = false;
+  TagBlocklist? _blocklist;
+  List<Post> _posts = const [];
+  int? _selectedPostId;
+  int _pagerGeneration = 0;
+  bool _historyWarningShown = false;
+  bool _blockingTag = false;
   final Map<String, CompletionTagInfo> _completionMetadata = {};
   final Set<String> _requestedMetadata = {};
 
-  final _favoritesManager = FavoritesManager();
+  FavoritesManager get _favoritesManager =>
+      widget.favoritesManager ?? FavoritesManager();
+  Post? get _currentPost => _posts.elementAtOrNull(_currentIndex);
   bool _isFavorite = false;
+  bool _favoriteWritePending = false;
   int _favoriteRequestGeneration = 0;
 
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialIndex;
-    _pageController = PageController(initialPage: _currentIndex);
+    _currentIndex = 0;
+    final initial =
+        widget.initialIndex >= 0 && widget.initialIndex < widget.posts.length
+        ? widget.posts[widget.initialIndex]
+        : widget.posts.firstOrNull;
+    _selectedPostId = initial?.id;
+    _pageController = PageController();
     _video = MediaVideoSession(controllerFactory: widget.videoControllerFactory)
       ..addListener(_mediaChanged);
     WidgetsBinding.instance.addObserver(this);
     AppNetworkService.instance.addListener(_networkChanged);
-    _checkFavoriteStatus();
-    _recordCurrentPostHistory();
-    _loadTagMetadata(_currentIndex);
+  }
+
+  @override
+  void didUpdateWidget(PostDetailPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.blocklist != widget.blocklist) {
+      _bindBlocklist(widget.blocklist ?? TagBlocklistScope.of(context));
+    } else if (!identical(oldWidget.posts, widget.posts)) {
+      _applyBlocklist();
+    }
+  }
+
+  void _bindBlocklist(TagBlocklist store) {
+    if (identical(store, _blocklist)) return;
+    _blocklist?.removeListener(_applyBlocklist);
+    _blocklist = store;
+    store.addListener(_applyBlocklist);
+    _applyBlocklist();
+    unawaited(store.initialize());
+  }
+
+  void _applyBlocklist() {
+    if (!mounted || _blocklist == null) return;
+    final previous = _currentPost;
+    final filtered = filterPostList(
+      widget.posts,
+      _blocklist!,
+      selectedPostId: _selectedPostId,
+      initialIndex: widget.initialIndex,
+    );
+    final next = filtered.posts.elementAtOrNull(filtered.index);
+    final changed = previous?.id != next?.id;
+    final sourceChanged =
+        previous?.fileUrl != next?.fileUrl ||
+        previous?.largeFileUrl != next?.largeFileUrl ||
+        previous?.previewFileUrl != next?.previewFileUrl;
+    final pagesChanged = !listEquals(
+      _posts.map((post) => post.id).toList(),
+      filtered.posts.map((post) => post.id).toList(),
+    );
+    if (changed || sourceChanged) {
+      _video.pause();
+      unawaited(_video.setSource(null));
+    }
+    if (changed) _favoriteRequestGeneration++;
+    setState(() {
+      _posts = filtered.posts;
+      _currentIndex = filtered.index;
+      _selectedPostId = next?.id ?? _selectedPostId;
+      if (changed) _isFavorite = false;
+      if (pagesChanged) {
+        _pagerGeneration++;
+        _pageController.dispose();
+        _pageController = PageController(initialPage: _currentIndex);
+      }
+    });
+    if (changed && next != null) _loadCurrentPost();
+    if (!changed && sourceChanged && next != null) {
+      unawaited(_loadMediaForIndex(_currentIndex));
+    }
+  }
+
+  void _loadCurrentPost() {
+    if (_currentPost == null) return;
+    unawaited(_loadMediaForIndex(_currentIndex));
+    unawaited(_checkFavoriteStatus());
+    unawaited(_recordCurrentPostHistory());
+    unawaited(_loadTagMetadata(_currentIndex));
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || messenger?.mounted != true) return;
+      messenger!.showSnackBar(SnackBar(content: Text(message)));
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _mediaChanged() {
@@ -119,8 +240,8 @@ class _PostDetailPageState extends State<PostDetailPage>
 
   Future<void> _loadTagMetadata(int index) async {
     final service = widget.completionService;
-    if (service == null || index < 0 || index >= widget.posts.length) return;
-    final post = widget.posts[index];
+    if (service == null || index < 0 || index >= _posts.length) return;
+    final post = _posts[index];
     final tags = <String>{
       for (final text in [
         post.tagString,
@@ -132,7 +253,7 @@ class _PostDetailPageState extends State<PostDetailPage>
       ])
         if (text != null)
           ...text
-              .split(' ')
+              .split(RegExp(r'\s+'))
               .where((tag) => tag.isNotEmpty)
               .map(normalizeCompletionKey),
     }.where((tag) => !_requestedMetadata.contains(tag)).toList();
@@ -154,7 +275,8 @@ class _PostDetailPageState extends State<PostDetailPage>
         _completionMetadata[key]?.category ??
         widget.completionCategoryByValue[key];
     if (metadataCategory != null) return metadataCategory;
-    final post = widget.posts[_currentIndex];
+    final post = _currentPost;
+    if (post == null) return null;
     final groups = <int, String?>{
       0: post.tagStringGeneral,
       1: post.tagStringArtist,
@@ -164,7 +286,7 @@ class _PostDetailPageState extends State<PostDetailPage>
     };
     for (final group in groups.entries) {
       if (group.value
-              ?.split(' ')
+              ?.split(RegExp(r'\s+'))
               .any((value) => normalizeCompletionKey(value) == key) ??
           false) {
         return group.key;
@@ -174,15 +296,20 @@ class _PostDetailPageState extends State<PostDetailPage>
   }
 
   Future<void> _checkFavoriteStatus() async {
-    final currentPost = widget.posts[_currentIndex];
+    final currentPost = _currentPost;
+    if (currentPost == null) return;
     final requestGeneration = ++_favoriteRequestGeneration;
-    final isFav =
-        await (widget.isFavoriteLookup?.call(currentPost.id) ??
-            _favoritesManager.isFavorite(currentPost.id));
-    if (mounted && requestGeneration == _favoriteRequestGeneration) {
-      setState(() {
-        _isFavorite = isFav;
-      });
+    try {
+      final isFav =
+          await (widget.isFavoriteLookup?.call(currentPost.id) ??
+              _favoritesManager.isFavorite(currentPost.id));
+      if (mounted && requestGeneration == _favoriteRequestGeneration) {
+        setState(() => _isFavorite = isFav);
+      }
+    } catch (_) {
+      if (requestGeneration == _favoriteRequestGeneration) {
+        _showMessage('收藏状态无法读取，原始数据已保留。');
+      }
     }
   }
 
@@ -193,6 +320,7 @@ class _PostDetailPageState extends State<PostDetailPage>
     _video.removeListener(_mediaChanged);
     _video.dispose();
     _commentaryCancel.cancel();
+    _blocklist?.removeListener(_applyBlocklist);
     _pageController.dispose();
     super.dispose();
   }
@@ -201,18 +329,12 @@ class _PostDetailPageState extends State<PostDetailPage>
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (ModalRoute.isCurrentOf(context) == false) _video.pause();
-    if (!_didChangeDependenciesRun) {
-      _loadMediaForIndex(_currentIndex, prioritizePreview: true);
-      _didChangeDependenciesRun = true;
-    }
+    _bindBlocklist(widget.blocklist ?? TagBlocklistScope.of(context));
   }
 
-  Future<void> _loadMediaForIndex(
-    int index, {
-    bool prioritizePreview = false,
-  }) async {
-    if (_openingFullScreen || index < 0 || index >= widget.posts.length) return;
-    final post = widget.posts[index];
+  Future<void> _loadMediaForIndex(int index) async {
+    if (_openingFullScreen || index < 0 || index >= _posts.length) return;
+    final post = _posts[index];
     unawaited(_prefetchCommentary(post));
     final source = post.fileUrl ?? post.largeFileUrl;
     await _video.setSource(
@@ -225,15 +347,25 @@ class _PostDetailPageState extends State<PostDetailPage>
     );
   }
 
-  Future<void> _openFullScreen(int index) async {
-    if (_openingFullScreen) return;
+  Future<void> _openFullScreen(int postId) async {
+    if (!mounted ||
+        _openingFullScreen ||
+        !_posts.any((post) => post.id == postId)) {
+      return;
+    }
     _openingFullScreen = true;
-    // Release the detail decoder before the full-screen route takes ownership.
     _video.pause();
     await _video.setSource(null);
     if (!mounted) return;
-    final post = widget.posts[index];
-    final result = await Navigator.push<int>(
+    // Rules can change while an old decoder is still finishing disposal.
+    final visibleIndex = _posts.indexWhere((post) => post.id == postId);
+    if (visibleIndex < 0) {
+      _openingFullScreen = false;
+      unawaited(_loadMediaForIndex(_currentIndex));
+      return;
+    }
+    final post = _posts[visibleIndex];
+    final resultPostId = await Navigator.push<int>(
       context,
       MaterialPageRoute(
         builder: (context) => FullScreenImagePage(
@@ -241,25 +373,37 @@ class _PostDetailPageState extends State<PostDetailPage>
           highResUrl: post.fileUrl ?? post.largeFileUrl,
           heroTag: 'post_${post.id}',
           posts: widget.posts,
-          initialIndex: index,
+          initialIndex: widget.posts.indexWhere(
+            (candidate) => candidate.id == post.id,
+          ),
+          blocklist: _blocklist,
+          videoControllerFactory: widget.videoControllerFactory,
         ),
       ),
     );
     if (!mounted) return;
     _openingFullScreen = false;
-    if (result != null &&
-        result >= 0 &&
-        result < widget.posts.length &&
-        result != _currentIndex) {
-      _pageController.jumpToPage(result);
+    final resultIndex = _posts.indexWhere((post) => post.id == resultPostId);
+    if (resultIndex >= 0 && resultIndex != _currentIndex) {
+      if (_pageController.hasClients) {
+        _pageController.jumpToPage(resultIndex);
+      } else {
+        // A rule update may have restored the pager, but its first frame has
+        // not attached yet. Preserve the returned ID before that frame.
+        _pagerGeneration++;
+        _pageController.dispose();
+        _pageController = PageController(initialPage: resultIndex);
+        _onPageChanged(resultIndex);
+      }
     } else {
       unawaited(_loadMediaForIndex(_currentIndex));
     }
   }
 
   void _movePage(int delta) {
+    if (!_pageController.hasClients) return;
     final next = _currentIndex + delta;
-    if (next < 0 || next >= widget.posts.length) return;
+    if (next < 0 || next >= _posts.length) return;
     _pageController.animateToPage(
       next,
       duration: const Duration(milliseconds: 180),
@@ -268,84 +412,188 @@ class _PostDetailPageState extends State<PostDetailPage>
   }
 
   void _onPageChanged(int index) {
+    if (index < 0 || index >= _posts.length || index == _currentIndex) return;
+    _video.pause();
     setState(() {
       _currentIndex = index;
+      _selectedPostId = _posts[index].id;
       _isFavorite = false;
     });
-    _loadMediaForIndex(index, prioritizePreview: true);
-    _checkFavoriteStatus();
-    _recordCurrentPostHistory();
-    _loadTagMetadata(index);
+    _loadCurrentPost();
   }
 
   Future<void> _recordCurrentPostHistory() async {
-    await _favoritesManager.addBrowsingHistory(
-      widget.posts[_currentIndex].toJson(),
-    );
+    final post = _currentPost;
+    if (post == null) return;
+    try {
+      await _favoritesManager.addBrowsingHistory(post.toJson());
+      _historyWarningShown = false;
+    } catch (_) {
+      if (!_historyWarningShown) {
+        _historyWarningShown = true;
+        _showMessage('浏览历史未能保存，本次浏览仍可继续。');
+      }
+    }
   }
 
-  Future<void> _toggleFavorite() async {
-    final currentPost = widget.posts[_currentIndex];
+  Future<void> _toggleFavorite(int postId) async {
+    final currentPost = _currentPost;
+    if (!mounted ||
+        _favoriteWritePending ||
+        currentPost == null ||
+        currentPost.id != postId) {
+      return;
+    }
+    setState(() => _favoriteWritePending = true);
     final requestGeneration = ++_favoriteRequestGeneration;
-    final newState = await _favoritesManager.toggleFavorite(
-      currentPost.toJson(),
-    );
-    if (mounted && requestGeneration == _favoriteRequestGeneration) {
-      setState(() {
-        _isFavorite = newState;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(newState ? '已添加到收藏' : '已取消收藏'),
-          duration: const Duration(seconds: 1),
-        ),
+    try {
+      final newState = await _favoritesManager.toggleFavorite(
+        currentPost.toJson(),
       );
+      if (mounted && requestGeneration == _favoriteRequestGeneration) {
+        setState(() => _isFavorite = newState);
+        _showMessage(newState ? '已添加到收藏' : '已取消收藏');
+      }
+    } catch (error) {
+      _showMessage(
+        error is LegacyFavoritesRecoveryException
+            ? error.toString()
+            : '收藏未能保存，原有收藏保持不变，请重试。',
+      );
+    } finally {
+      if (mounted) setState(() => _favoriteWritePending = false);
     }
   }
 
   Future<void> _toggleFavoriteTag(String tag) async {
     final category = _categoryForTag(tag);
-    final newState = await _favoritesManager.toggleFavoriteTag(
-      tag,
-      category: category,
-    );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(newState ? '已收藏标签: $tag' : '已取消收藏标签: $tag'),
-          duration: const Duration(seconds: 1),
-        ),
+    try {
+      final newState = await _favoritesManager.toggleFavoriteTag(
+        tag,
+        category: category,
       );
+      _showMessage(newState ? '已收藏标签: $tag' : '已取消收藏标签: $tag');
+    } catch (_) {
+      _showMessage('标签收藏未能保存，原有收藏保持不变，请重试。');
     }
   }
 
-  void _copyTag(String tag) {
-    Clipboard.setData(ClipboardData(text: tag));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('已复制标签: $tag'),
-        duration: const Duration(seconds: 1),
+  Future<void> _blockTag(String tag) async {
+    final store = _blocklist;
+    if (store == null || _blockingTag) return;
+    final canonical = TagBlocklist.canonicalTag(tag);
+    final messenger = ScaffoldMessenger.of(context);
+    final wasEnabled = store.enabled;
+    final wasTemporarilyShowing = store.temporarilyShow;
+    setState(() => _blockingTag = true);
+    try {
+      final added = await store.addTags([canonical], enableFiltering: true);
+      if (!messenger.mounted) return;
+      messenger.removeCurrentSnackBar();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('已屏蔽标签：$canonical'),
+          action: added.isEmpty && wasEnabled && !wasTemporarilyShowing
+              ? null
+              : SnackBarAction(
+                  label: '撤销',
+                  onPressed: () => unawaited(
+                    _undoPostTagBlock(
+                      messenger,
+                      store,
+                      added,
+                      wasEnabled: wasEnabled,
+                      wasTemporarilyShowing: wasTemporarilyShowing,
+                    ),
+                  ),
+                ),
+        ),
+      );
+    } catch (error) {
+      if (messenger.mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              error is FormatException
+                  ? error.message
+                  : '屏蔽标签未能保存，原有规则保持不变，请重试。',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _blockingTag = false);
+    }
+  }
+
+  Widget _buildEmptyState() {
+    final store = _blocklist;
+    final loading = store == null || !store.loaded;
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            Navigator.maybePop(context),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
+          appBar: AppBar(title: const Text('作品详情')),
+          body: SafeArea(
+            child: Center(
+              child: loading
+                  ? const CircularProgressIndicator(semanticsLabel: '正在读取屏蔽规则')
+                  : SingleChildScrollView(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.filter_alt_outlined, size: 40),
+                          const SizedBox(height: 12),
+                          Text(
+                            widget.posts.isEmpty ? '此列表没有作品' : '此列表中的作品都已被标签屏蔽',
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 8),
+                          TagBlocklistStatus(
+                            hiddenCount: widget.posts.length,
+                            blocklist: store,
+                          ),
+                        ],
+                      ),
+                    ),
+            ),
+          ),
+        ),
       ),
     );
   }
 
-  void _copyLink(String url, String label) {
-    Clipboard.setData(ClipboardData(text: url));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('已复制$label'),
-        duration: const Duration(seconds: 1),
-      ),
-    );
+  Future<void> _copyTag(String tag) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: tag));
+      _showMessage('已复制标签: $tag');
+    } catch (_) {
+      _showMessage('无法写入剪贴板，请稍后重试。');
+    }
+  }
+
+  Future<void> _copyLink(String url, String label) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: url));
+      _showMessage('已复制$label');
+    } catch (_) {
+      _showMessage('无法写入剪贴板，请稍后重试。');
+    }
   }
 
   Future<void> _sharePost(Post post) async {
+    if (!mounted || !_posts.any((visible) => visible.id == post.id)) return;
     _video.pause();
     final intro = await _postIntro(post).timeout(
       const Duration(milliseconds: 1200),
       onTimeout: () => _fallbackPostIntro(post),
     );
-    if (!mounted) return;
+    if (!mounted || !_posts.any((visible) => visible.id == post.id)) return;
     final postUrl = _postUrl(post);
     final text = intro == null || intro.isEmpty
         ? postUrl
@@ -360,11 +608,13 @@ class _PostDetailPageState extends State<PostDetailPage>
             : box.localToGlobal(Offset.zero) & box.size,
       );
     } catch (_) {
-      await Clipboard.setData(ClipboardData(text: text));
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('系统分享不可用，已复制作品链接和简介。')));
+      if (!mounted || !_posts.any((visible) => visible.id == post.id)) return;
+      try {
+        await Clipboard.setData(ClipboardData(text: text));
+        _showMessage('系统分享不可用，已复制作品链接和简介。');
+      } catch (_) {
+        _showMessage('系统分享和剪贴板暂时不可用，请稍后重试。');
+      }
     }
   }
 
@@ -485,7 +735,7 @@ class _PostDetailPageState extends State<PostDetailPage>
       return const SizedBox.shrink();
     }
 
-    final tagList = tags.trim().split(' ');
+    final tagList = tags.trim().split(RegExp(r'\s+'));
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
@@ -504,17 +754,41 @@ class _PostDetailPageState extends State<PostDetailPage>
             runSpacing: 6,
             children: tagList.map((tag) {
               final displayLabel = _displayLabelForTag(tag);
-              return GestureDetector(
-                onLongPress: () => _showTagMenu(context, tag),
-                child: InputChip(
-                  label: Text(displayLabel),
-                  onPressed: () {
-                    Navigator.pop(
-                      context,
-                      SearchChip(label: displayLabel, queryValue: tag),
-                    );
-                  },
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              return ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxWidth: (MediaQuery.sizeOf(context).width - 32).clamp(
+                    80,
+                    360,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: GestureDetector(
+                        onLongPress: () => _showTagMenu(context, tag),
+                        child: Tooltip(
+                          message: tag,
+                          child: InputChip(
+                            label: Text(
+                              displayLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            onPressed: () => Navigator.pop(
+                              context,
+                              SearchChip(label: displayLabel, queryValue: tag),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '标签操作 $tag',
+                      icon: const Icon(Icons.more_horiz),
+                      onPressed: () => _showTagMenu(context, tag),
+                    ),
+                  ],
                 ),
               );
             }).toList(),
@@ -532,43 +806,63 @@ class _PostDetailPageState extends State<PostDetailPage>
   }
 
   void _showTagMenu(BuildContext context, String tag) {
-    showModalBottomSheet(
+    _video.pause();
+    showModalBottomSheet<void>(
       context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              tag,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (menuContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(menuContext).height * 0.85,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SelectableText(
+                  tag,
+                  style: Theme.of(menuContext).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  leading: const Icon(Icons.search),
+                  title: const Text('搜索此标签'),
+                  onTap: () {
+                    final navigator = Navigator.of(menuContext);
+                    navigator.pop();
+                    navigator.pop(tag);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.copy),
+                  title: const Text('复制标签'),
+                  onTap: () {
+                    Navigator.pop(menuContext);
+                    _copyTag(tag);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.favorite_border),
+                  title: const Text('收藏标签'),
+                  onTap: () {
+                    Navigator.pop(menuContext);
+                    _toggleFavoriteTag(tag);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.block),
+                  title: const Text('屏蔽此标签'),
+                  enabled: !_blockingTag,
+                  onTap: () {
+                    Navigator.pop(menuContext);
+                    _blockTag(tag);
+                  },
+                ),
+              ],
             ),
-            const SizedBox(height: 16),
-            ListTile(
-              leading: const Icon(Icons.search),
-              title: const Text('搜索此标签'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.pop(context, tag);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.copy),
-              title: const Text('复制标签'),
-              onTap: () {
-                Navigator.pop(context);
-                _copyTag(tag);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.favorite_border),
-              title: const Text('收藏标签'),
-              onTap: () {
-                Navigator.pop(context);
-                _toggleFavoriteTag(tag);
-              },
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -687,16 +981,20 @@ class _PostDetailPageState extends State<PostDetailPage>
   }
 
   Widget _buildMediaPager(double height) {
+    final generation = _pagerGeneration;
     return SizedBox(
       height: height,
       child: Stack(
         children: [
           PageView.builder(
+            key: ValueKey(_pagerGeneration),
             controller: _pageController,
-            itemCount: widget.posts.length,
-            onPageChanged: _onPageChanged,
+            itemCount: _posts.length,
+            onPageChanged: (index) {
+              if (generation == _pagerGeneration) _onPageChanged(index);
+            },
             itemBuilder: (context, index) {
-              final post = widget.posts[index];
+              final post = _posts[index];
               final original = post.fileUrl ?? post.largeFileUrl;
               final video = original != null && isVideoUrl(original);
               final source = video || isUgoiraUrl(original)
@@ -713,7 +1011,7 @@ class _PostDetailPageState extends State<PostDetailPage>
                   child: DanbooruVideoPlayer(
                     controller: controller,
                     compact: true,
-                    onOpenFullScreen: () => _openFullScreen(index),
+                    onOpenFullScreen: () => _openFullScreen(post.id),
                   ),
                 );
               } else if (video && inlineVideo && _video.error == null) {
@@ -742,12 +1040,15 @@ class _PostDetailPageState extends State<PostDetailPage>
                             children: [
                               if (inlineVideo)
                                 TextButton(
-                                  onPressed: () => _loadMediaForIndex(index),
+                                  onPressed: () {
+                                    if (_currentPost?.id == post.id) {
+                                      _loadMediaForIndex(_currentIndex);
+                                    }
+                                  },
                                   child: const Text('重试'),
                                 ),
                               OutlinedButton.icon(
-                                onPressed: () =>
-                                    openMediaExternally(context, source!),
+                                onPressed: () => _openPostExternally(post.id),
                                 icon: const Icon(Icons.open_in_new),
                                 label: const Text('外部播放'),
                               ),
@@ -783,7 +1084,7 @@ class _PostDetailPageState extends State<PostDetailPage>
                               textAlign: TextAlign.center,
                             ),
                             TextButton(
-                              onPressed: () => _openFullScreen(index),
+                              onPressed: () => _openFullScreen(post.id),
                               child: const Text('打开并重试'),
                             ),
                           ],
@@ -796,16 +1097,17 @@ class _PostDetailPageState extends State<PostDetailPage>
               if (source != null) {
                 media = TimedMediaHoldGesture(
                   media: original ?? source,
+                  canInteract: () => mounted && _currentPost?.id == post.id,
                   child: media,
                 );
               }
               return GestureDetector(
-                onTap: source == null ? null : () => _openFullScreen(index),
+                onTap: source == null ? null : () => _openFullScreen(post.id),
                 child: media,
               );
             },
           ),
-          if (widget.posts.length > 1) ...[
+          if (_posts.length > 1) ...[
             Positioned(
               left: 0,
               top: 0,
@@ -825,7 +1127,7 @@ class _PostDetailPageState extends State<PostDetailPage>
               child: Center(
                 child: IconButton.filledTonal(
                   tooltip: '下一张 (→)',
-                  onPressed: _currentIndex + 1 >= widget.posts.length
+                  onPressed: _currentIndex + 1 >= _posts.length
                       ? null
                       : () => _movePage(1),
                   icon: const Icon(Icons.chevron_right),
@@ -842,6 +1144,10 @@ class _PostDetailPageState extends State<PostDetailPage>
     return ListView(
       padding: const EdgeInsets.only(top: 16, bottom: 24),
       children: [
+        TagBlocklistStatus(
+          hiddenCount: widget.posts.length - _posts.length,
+          blocklist: _blocklist,
+        ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Text('作品信息', style: Theme.of(context).textTheme.titleMedium),
@@ -855,16 +1161,32 @@ class _PostDetailPageState extends State<PostDetailPage>
     );
   }
 
-  void _savePost(Post post) {
-    final source = post.fileUrl ?? post.largeFileUrl;
+  void _savePost(int postId) {
+    if (!mounted) return;
+    final post = _posts.where((post) => post.id == postId).firstOrNull;
+    final source = post?.fileUrl ?? post?.largeFileUrl;
     if (source == null) return;
     _video.pause();
     saveMediaToGallery(context, source);
   }
 
+  void _openPostExternally(int postId) {
+    if (!mounted) return;
+    final post = _posts.where((post) => post.id == postId).firstOrNull;
+    final source = post?.fileUrl ?? post?.largeFileUrl;
+    if (source == null) return;
+    _video.pause();
+    openMediaExternally(
+      context,
+      source,
+      canInteract: () => mounted && _posts.any((post) => post.id == postId),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final currentPostForTags = widget.posts[_currentIndex];
+    final currentPostForTags = _currentPost;
+    if (currentPostForTags == null) return _buildEmptyState();
     final orientation = MediaQuery.orientationOf(context);
     final screenSize = MediaQuery.sizeOf(context);
     final isLandscape = orientation == Orientation.landscape;
@@ -895,7 +1217,7 @@ class _PostDetailPageState extends State<PostDetailPage>
                       currentPostForTags.fileUrl == null &&
                           currentPostForTags.largeFileUrl == null
                       ? null
-                      : () => _savePost(currentPostForTags),
+                      : () => _savePost(currentPostForTags.id),
                 ),
               IconButton(
                 icon: Icon(
@@ -904,7 +1226,9 @@ class _PostDetailPageState extends State<PostDetailPage>
                       ? Theme.of(context).colorScheme.primary
                       : null,
                 ),
-                onPressed: _toggleFavorite,
+                onPressed: _favoriteWritePending
+                    ? null
+                    : () => _toggleFavorite(currentPostForTags.id),
                 tooltip: _isFavorite ? '取消收藏' : '收藏',
               ),
               if (screenSize.width >= 360)
@@ -917,7 +1241,7 @@ class _PostDetailPageState extends State<PostDetailPage>
                 PopupMenuButton<String>(
                   tooltip: '更多操作',
                   onSelected: (action) {
-                    if (action == 'save') _savePost(currentPostForTags);
+                    if (action == 'save') _savePost(currentPostForTags.id);
                     if (action == 'share') _sharePost(currentPostForTags);
                   },
                   itemBuilder: (context) => [

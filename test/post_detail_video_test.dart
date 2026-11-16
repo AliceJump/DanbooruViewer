@@ -53,6 +53,8 @@ void main() {
       ),
     );
     expect(created, 1);
+    // The media view is attached after the persisted blocklist has loaded.
+    await tester.pump();
 
     final pageWidth = tester.getSize(find.byType(PageView)).width;
     final scrollable = tester.state<ScrollableState>(
