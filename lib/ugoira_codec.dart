@@ -144,6 +144,9 @@ Uint8List mergeUgoiraBytesToGifSync(Uint8List bytes) {
     final gifFrame = frame.format == img.Format.uint16
         ? frame.convert(format: img.Format.uint8)
         : frame;
+    // image 4.8.0 computes the sample count before its small-image fallback.
+    // With its default factor 10, frames below 10 pixels train no colors.
+    encoder.samplingFactor = pixels < 10 ? 1 : 10;
     encoder.addFrame(gifFrame, duration: centi < 1 ? 1 : centi);
   }
 
