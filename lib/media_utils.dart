@@ -197,19 +197,21 @@ Future<File> cacheVideoFile(
 Future<void> openMediaExternally(
   BuildContext context,
   String url, {
+  bool Function()? canInteract,
   CacheManager? cacheManager,
 }) async {
+  if (!context.mounted || canInteract?.call() == false) return;
   try {
     final remote = remoteMediaUri(url);
     if (remote == null) throw const FormatException('媒体地址无效。');
     bool opened;
     if (kIsWeb) {
-      if (!context.mounted) return;
+      if (!context.mounted || canInteract?.call() == false) return;
       opened = await launchUrl(remote, mode: LaunchMode.externalApplication);
     } else {
       final file = await (cacheManager ?? AppCacheManager.instance)
           .getSingleFile(url);
-      if (!context.mounted) return;
+      if (!context.mounted || canInteract?.call() == false) return;
       if (defaultTargetPlatform == TargetPlatform.android) {
         final extension = remote.path.split('.').last.toLowerCase();
         final mimeType = switch (extension) {
@@ -242,7 +244,7 @@ Future<void> openMediaExternally(
       throw const MediaSaveException('没有找到能够打开此文件的外部播放器。');
     }
   } catch (error) {
-    if (!context.mounted) return;
+    if (!context.mounted || canInteract?.call() == false) return;
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(formatMediaSaveError(error))));
@@ -546,11 +548,13 @@ class PostThumbnailTile extends StatelessWidget {
 class TimedMediaHoldGesture extends StatefulWidget {
   final String media;
   final Widget child;
+  final bool Function()? canInteract;
 
   const TimedMediaHoldGesture({
     super.key,
     required this.media,
     required this.child,
+    this.canInteract,
   });
 
   @override
@@ -560,6 +564,7 @@ class TimedMediaHoldGesture extends StatefulWidget {
 class _TimedMediaHoldGestureState extends State<TimedMediaHoldGesture> {
   Timer? _dragTimer;
   bool _didStartDrag = false;
+  bool get _canInteract => mounted && (widget.canInteract?.call() ?? true);
 
   @override
   void dispose() {
@@ -570,10 +575,12 @@ class _TimedMediaHoldGestureState extends State<TimedMediaHoldGesture> {
   void _startHoldTimer() {
     _dragTimer?.cancel();
     _didStartDrag = false;
-    if (!supportsNativeMediaDrag) return;
+    if (!_canInteract || !supportsNativeMediaDrag) return;
     _dragTimer = Timer(const Duration(seconds: 1), () {
       _didStartDrag = true;
-      if (mounted) startDrag(context, widget.media);
+      if (_canInteract) {
+        startDrag(context, widget.media, canInteract: widget.canInteract);
+      }
     });
   }
 
@@ -582,7 +589,7 @@ class _TimedMediaHoldGestureState extends State<TimedMediaHoldGesture> {
         !supportsNativeMediaDrag ||
         (_dragTimer?.isActive == true && !_didStartDrag);
     _dragTimer?.cancel();
-    if (shouldSave) {
+    if (shouldSave && _canInteract) {
       saveMediaToGallery(context, widget.media);
     }
   }
@@ -607,8 +614,17 @@ Future<File> getCachedFile(String url, {int retries = 2}) async {
 /// 触发原生拖拽
 /// [context] 用于 SnackBar 提示错误
 /// [mediaUrl] 图片或视频 URL
-Future<void> startDrag(BuildContext context, String media) async {
-  if (media.isEmpty || !supportsNativeMediaDrag) return;
+Future<void> startDrag(
+  BuildContext context,
+  String media, {
+  bool Function()? canInteract,
+}) async {
+  if (media.isEmpty ||
+      !supportsNativeMediaDrag ||
+      !context.mounted ||
+      canInteract?.call() == false) {
+    return;
+  }
 
   final type = isVideoUrl(media) ? "video" : "image";
   String filePath;
@@ -624,6 +640,7 @@ Future<void> startDrag(BuildContext context, String media) async {
       filePath = media;
     }
 
+    if (!context.mounted || canInteract?.call() == false) return;
     final started = await DragHelper.startDrag(filePath, type: type);
     if (!started) throw const MediaSaveException('系统未能开始拖拽，请使用保存按钮。');
   } catch (e) {

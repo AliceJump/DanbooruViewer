@@ -112,6 +112,37 @@ void main() {
   );
 
   testWidgets(
+    'hiding a post during download prevents external playback while the route remains mounted',
+    (tester) async {
+      final context = await _context(tester);
+      final pending = Completer<File>();
+      final cache = _CachedMedia(pending.future);
+      var visible = true;
+      final open = openMediaExternally(
+        context,
+        'https://example.test/video.mp4',
+        cacheManager: cache,
+        canInteract: () => visible,
+      );
+      visible = false;
+      pending.complete(file);
+      await tester.pump();
+      await open;
+      expect(context.mounted, isTrue);
+      expect(calls, isEmpty);
+      await openMediaExternally(
+        context,
+        'https://example.test/video.mp4',
+        cacheManager: cache,
+        canInteract: () => visible,
+      );
+      expect(cache.urls, hasLength(1));
+      expect(tester.takeException(), isNull);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
+  );
+
+  testWidgets(
     'leaving while downloading prevents launching another app',
     (tester) async {
       final context = await _context(tester);

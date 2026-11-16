@@ -1,6 +1,23 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'storage/reliable_preferences.dart';
+
+class FavoritesDataException implements Exception {
+  const FavoritesDataException(this.collection);
+  final String collection;
+
+  @override
+  String toString() => '$collection数据无法读取，原始数据已保留。';
+}
+
+class LegacyFavoritesRecoveryException extends FavoritesDataException {
+  const LegacyFavoritesRecoveryException() : super('旧版收藏');
+
+  @override
+  String toString() => '旧版收藏仅保存作品编号，缺少作品详情。原始编号已保留，请先复制收藏备份。';
+}
+
 class FavoritesManager {
   static const String _favoritesKey = 'favorite_posts';
   static const String _favoritePostsFullKey = 'favorite_posts_full';
@@ -13,7 +30,12 @@ class FavoritesManager {
   factory FavoritesManager() => _instance;
   FavoritesManager._internal();
 
+  FavoritesManager.forTesting(SharedPreferences preferences)
+    : _prefs = preferences;
+
   SharedPreferences? _prefs;
+  ReliablePreferences? _storage;
+  Map<String, Object> _values = {};
   Future<void> _mutationTail = Future<void>.value();
 
   Future<T> _mutate<T>(Future<T> Function() action) {
@@ -28,32 +50,133 @@ class FavoritesManager {
 
   Future<void> _ensureInitialized() async {
     _prefs ??= await SharedPreferences.getInstance();
+    _storage ??= ReliablePreferences.forInstance(_prefs!);
+    _values = await _storage!.readAll();
   }
+
+  /// Explicit recovery/refresh for a user's retry after a storage error.
+  /// Ordinary reads keep using the shared confirmed snapshot.
+  Future<void> reload() => _mutate(() async {
+    await _ensureInitialized();
+    await _storage!.recover();
+    _values = await _storage!.readAll(refresh: true);
+  });
+
+  List<dynamic> _readList(String key, String collection) {
+    try {
+      final raw = _values[key] as String?;
+      if (raw == null) return [];
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) throw const FormatException();
+      return decoded;
+    } catch (_) {
+      throw FavoritesDataException(collection);
+    }
+  }
+
+  List<Map<String, dynamic>> _readPosts(String key, String collection) {
+    final values = _readList(key, collection);
+    const textFields = [
+      'rating',
+      'tag_string',
+      'file_url',
+      'large_file_url',
+      'preview_file_url',
+      'tag_string_general',
+      'tag_string_artist',
+      'tag_string_character',
+      'tag_string_copyright',
+      'tag_string_meta',
+      'source',
+      'viewed_at',
+    ];
+    const numberFields = ['image_width', 'image_height'];
+    final posts = <Map<String, dynamic>>[];
+    for (final item in values) {
+      if (item is! Map ||
+          item['id'] is! int ||
+          textFields.any((key) => item[key] != null && item[key] is! String) ||
+          numberFields.any((key) => item[key] != null && item[key] is! int)) {
+        throw FavoritesDataException(collection);
+      }
+      posts.add(Map<String, dynamic>.from(item));
+    }
+    return posts;
+  }
+
+  Future<void> _saveString(String key, String value) =>
+      _storage!.setString(key, value);
+
+  Future<void> _removePreference(String key) => _storage!.remove(key);
+
+  /// Preserve exact raw values, including damaged JSON, for recovery.
+  /// This deliberately excludes network settings and cached commentary.
+  Future<String> exportBackupJson() => _mutate(() async {
+    await _ensureInitialized();
+    // An uncertain native write cannot be read back from disk through reload.
+    // Preserve the last confirmed raw values and identify pending recovery.
+    _values = await _storage!.readAll(refresh: true);
+    const keys = [
+      _favoritesKey,
+      _favoritePostsFullKey,
+      _favoriteTagsKey,
+      _favoriteTagsV2Key,
+      _browsingHistoryKey,
+      'tag_blocklist_v1',
+    ];
+    return const JsonEncoder.withIndent('  ').convert({
+      'format': 'danbooru-viewer-raw-backup',
+      'version': 1,
+      'created_at': DateTime.now().toUtc().toIso8601String(),
+      if (_storage!.recoveryRequired)
+        'recovery_keys': _storage!.recoveryKeys.toList()..sort(),
+      'values': {
+        for (final key in keys)
+          if (_values.containsKey(key)) key: _values[key],
+      },
+    });
+  });
 
   // ========== 图片收藏功能（完整数据） ==========
 
   /// 获取所有收藏图片的完整数据
-  Future<List<Map<String, dynamic>>> getFavoritePostsFull() async {
+  Future<List<Map<String, dynamic>>> getFavoritePostsFull() =>
+      _mutate(_readFavoritePostsFull);
+
+  Future<List<Map<String, dynamic>>> _readFavoritePostsFull() async {
     await _ensureInitialized();
-    final jsonString = _prefs!.getString(_favoritePostsFullKey);
-    if (jsonString == null) return [];
-    final List<dynamic> decoded = jsonDecode(jsonString);
-    return decoded.cast<Map<String, dynamic>>();
+    if (!_values.containsKey(_favoritePostsFullKey)) {
+      // A nonempty legacy ID list is the only authoritative record here. It
+      // cannot be replaced by an empty/full list without losing old favorites.
+      final ids = await _readFavoritePostIds();
+      if (ids.isNotEmpty) throw const LegacyFavoritesRecoveryException();
+      return [];
+    }
+    return _readPosts(_favoritePostsFullKey, '收藏图片');
   }
 
   /// 获取所有收藏的图片ID（旧格式兼容）
-  Future<List<int>> getFavoritePostIds() async {
+  Future<List<int>> getFavoritePostIds() => _mutate(_readFavoritePostIds);
+
+  Future<List<int>> _readFavoritePostIds() async {
     await _ensureInitialized();
-    final jsonString = _prefs!.getString(_favoritesKey);
-    if (jsonString == null) return [];
-    final List<dynamic> decoded = jsonDecode(jsonString);
+    if (_values.containsKey(_favoritePostsFullKey)) {
+      return _readPosts(
+        _favoritePostsFullKey,
+        '收藏图片',
+      ).map((post) => post['id'] as int).toList();
+    }
+    final decoded = _readList(_favoritesKey, '收藏编号');
+    if (decoded.any((id) => id is! int)) {
+      throw const FavoritesDataException('收藏编号');
+    }
     return decoded.cast<int>();
   }
 
   /// 检查图片是否已收藏
   Future<bool> isFavorite(int postId) async {
-    final favorites = await getFavoritePostsFull();
-    return favorites.any((item) => item['id'] == postId);
+    final favorites = await getFavoritePostIds();
+    return favorites.contains(postId);
   }
 
   /// 添加收藏（存储完整数据）
@@ -62,7 +185,7 @@ class FavoritesManager {
     if (postId == null) return Future<void>.value();
 
     return _mutate(() async {
-      final fullFavorites = await getFavoritePostsFull();
+      final fullFavorites = await _readFavoritePostsFull();
       fullFavorites.removeWhere((item) => item['id'] == postId);
       fullFavorites.insert(0, postJson);
       await _saveFavorites(fullFavorites);
@@ -72,7 +195,7 @@ class FavoritesManager {
   /// 移除收藏
   Future<void> removeFavorite(int postId) {
     return _mutate(() async {
-      final fullFavorites = await getFavoritePostsFull();
+      final fullFavorites = await _readFavoritePostsFull();
       fullFavorites.removeWhere((item) => item['id'] == postId);
       await _saveFavorites(fullFavorites);
     });
@@ -83,7 +206,7 @@ class FavoritesManager {
     final postId = postJson['id'];
     if (postId == null) return Future<bool>.value(false);
     return _mutate(() async {
-      final favorites = await getFavoritePostsFull();
+      final favorites = await _readFavoritePostsFull();
       final wasFavorite = favorites.any((item) => item['id'] == postId);
       favorites.removeWhere((item) => item['id'] == postId);
       if (!wasFavorite) favorites.insert(0, postJson);
@@ -93,21 +216,27 @@ class FavoritesManager {
   }
 
   Future<void> _saveFavorites(List<Map<String, dynamic>> favorites) async {
-    await _saveFavoritePostsFull(favorites);
     final idList = favorites.map((e) => e['id'] as int).toList();
-    await _saveFavoriteIds(idList);
+    await _saveFavoritePostsFull(favorites);
+    try {
+      // Full records are authoritative. A legacy mirror failure must not
+      // report a committed toggle as failed and invite a reversing retry.
+      await _saveFavoriteIds(idList);
+    } catch (_) {
+      // IDs are derived from full records on the next read.
+    }
   }
 
   Future<void> _saveFavoritePostsFull(
     List<Map<String, dynamic>> favorites,
   ) async {
     await _ensureInitialized();
-    await _prefs!.setString(_favoritePostsFullKey, jsonEncode(favorites));
+    await _saveString(_favoritePostsFullKey, jsonEncode(favorites));
   }
 
   Future<void> _saveFavoriteIds(List<int> ids) async {
     await _ensureInitialized();
-    await _prefs!.setString(_favoritesKey, jsonEncode(ids));
+    await _saveString(_favoritesKey, jsonEncode(ids));
   }
 
   // ========== 标签收藏功能 ==========
@@ -131,21 +260,29 @@ class FavoritesManager {
     await _ensureInitialized();
 
     // 优先读新格式
-    final v2 = _prefs!.getString(_favoriteTagsV2Key);
-    if (v2 != null) {
-      final List<dynamic> decoded = jsonDecode(v2);
-      return decoded
-          .whereType<Map>()
-          .map((item) => item.map((k, v) => MapEntry(k.toString(), v)))
-          .toList();
+    if (_values.containsKey(_favoriteTagsV2Key)) {
+      final decoded = _readList(_favoriteTagsV2Key, '收藏标签');
+      final entries = <Map<String, dynamic>>[];
+      for (final item in decoded) {
+        if (item is! Map ||
+            item['tag'] is! String ||
+            (item['tag'] as String).trim().isEmpty ||
+            (item['category'] != null && item['category'] is! int)) {
+          throw const FavoritesDataException('收藏标签');
+        }
+        entries.add(Map<String, dynamic>.from(item));
+      }
+      return entries;
     }
 
     // 旧格式：纯字符串列表，迁移为带分类条目（category 由调用方补全）
-    final legacy = _prefs!.getString(_favoriteTagsKey);
-    if (legacy == null) return [];
-    final List<dynamic> decoded = jsonDecode(legacy);
+    if (!_values.containsKey(_favoriteTagsKey)) return [];
+    final decoded = _readList(_favoriteTagsKey, '收藏标签');
+    if (decoded.any((tag) => tag is! String || tag.trim().isEmpty)) {
+      throw const FavoritesDataException('收藏标签');
+    }
     final entries = decoded
-        .whereType<String>()
+        .cast<String>()
         .map((tag) => <String, dynamic>{'tag': tag})
         .toList();
     // 迁移到新格式存储
@@ -216,17 +353,15 @@ class FavoritesManager {
     List<Map<String, dynamic>> entries,
   ) async {
     await _ensureInitialized();
-    await _prefs!.setString(_favoriteTagsV2Key, jsonEncode(entries));
+    await _saveString(_favoriteTagsV2Key, jsonEncode(entries));
   }
 
-  Future<List<Map<String, dynamic>>> getBrowsingHistory() async {
+  Future<List<Map<String, dynamic>>> getBrowsingHistory() =>
+      _mutate(_readBrowsingHistory);
+
+  Future<List<Map<String, dynamic>>> _readBrowsingHistory() async {
     await _ensureInitialized();
-    final jsonString = _prefs!.getString(_browsingHistoryKey);
-    if (jsonString == null) return [];
-    final List<dynamic> decoded = jsonDecode(jsonString);
-    return decoded.whereType<Map>().map((item) {
-      return item.map((key, value) => MapEntry(key.toString(), value));
-    }).toList();
+    return _readPosts(_browsingHistoryKey, '浏览历史');
   }
 
   Future<void> addBrowsingHistory(Map<String, dynamic> postJson) {
@@ -234,7 +369,7 @@ class FavoritesManager {
     if (postId == null) return Future<void>.value();
 
     return _mutate(() async {
-      final history = await getBrowsingHistory();
+      final history = await _readBrowsingHistory();
       history.removeWhere((item) => item['id'] == postId);
       history.insert(0, {
         ...postJson,
@@ -248,13 +383,13 @@ class FavoritesManager {
   Future<void> clearBrowsingHistory() {
     return _mutate(() async {
       await _ensureInitialized();
-      await _prefs!.remove(_browsingHistoryKey);
+      await _removePreference(_browsingHistoryKey);
     });
   }
 
   Future<void> _saveBrowsingHistory(List<Map<String, dynamic>> history) async {
     await _ensureInitialized();
-    await _prefs!.setString(_browsingHistoryKey, jsonEncode(history));
+    await _saveString(_browsingHistoryKey, jsonEncode(history));
   }
 
   // ========== 分享简介缓存 ==========
@@ -264,26 +399,27 @@ class FavoritesManager {
   static String _commentaryKey(int postId) => 'post_commentary_$postId';
 
   /// 读取缓存的简介；未缓存过返回 null。
-  Future<String?> getCachedCommentary(int postId) async {
+  Future<String?> getCachedCommentary(int postId) => _mutate(() async {
     await _ensureInitialized();
-    return _prefs!.getString(_commentaryKey(postId));
-  }
+    return _values[_commentaryKey(postId)] as String?;
+  });
 
   /// 保存简介到缓存。
-  Future<void> setCachedCommentary(int postId, String intro) async {
-    await _ensureInitialized();
-    await _prefs!.setString(_commentaryKey(postId), intro);
-  }
+  Future<void> setCachedCommentary(int postId, String intro) =>
+      _mutate(() async {
+        await _ensureInitialized();
+        await _saveString(_commentaryKey(postId), intro);
+      });
 
   /// 清空所有收藏（用于测试或重置）
   Future<void> clearAllFavorites() {
     return _mutate(() async {
       await _ensureInitialized();
-      await _prefs!.remove(_favoritesKey);
-      await _prefs!.remove(_favoritePostsFullKey);
-      await _prefs!.remove(_favoriteTagsKey);
-      await _prefs!.remove(_favoriteTagsV2Key);
-      await _prefs!.remove(_browsingHistoryKey);
+      await _removePreference(_favoritesKey);
+      await _removePreference(_favoritePostsFullKey);
+      await _removePreference(_favoriteTagsKey);
+      await _removePreference(_favoriteTagsV2Key);
+      await _removePreference(_browsingHistoryKey);
     });
   }
 }

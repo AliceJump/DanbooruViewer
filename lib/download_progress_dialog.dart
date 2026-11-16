@@ -14,7 +14,7 @@ typedef MediaSaver =
       void Function(int received, int? total)? onProgress,
     });
 
-enum _DownloadState { pending, downloading, saved, failed, cancelled }
+enum _DownloadState { pending, downloading, saved, failed, cancelled, skipped }
 
 class _DownloadItem {
   _DownloadItem(this.post);
@@ -31,10 +31,15 @@ class DownloadProgressDialog extends StatefulWidget {
     super.key,
     required this.posts,
     this.saveMedia,
+    this.canSave,
   });
 
   final List<Post> posts;
   final MediaSaver? saveMedia;
+
+  /// Rechecked before every pending/retried item, including after an earlier
+  /// download awaited a network request. Already-started writes are not undone.
+  final bool Function(Post post)? canSave;
 
   @override
   State<DownloadProgressDialog> createState() => _DownloadProgressDialogState();
@@ -50,9 +55,13 @@ class _DownloadProgressDialogState extends State<DownloadProgressDialog> {
   int get _saved =>
       _items.where((item) => item.state == _DownloadState.saved).length;
   Set<int> get _unfinished => _items
-      .where((item) => item.state != _DownloadState.saved)
+      .where(
+        (item) => item.state != _DownloadState.saved && _canSave(item.post),
+      )
       .map((item) => item.post.id)
       .toSet();
+
+  bool _canSave(Post post) => widget.canSave?.call(post) ?? true;
 
   @override
   void initState() {
@@ -89,6 +98,13 @@ class _DownloadProgressDialogState extends State<DownloadProgressDialog> {
     for (final item in _items) {
       if (!mounted || _cancelRequested) break;
       if (item.state == _DownloadState.saved) continue;
+      if (!_canSave(item.post)) {
+        setState(() {
+          item.state = _DownloadState.skipped;
+          item.message = '作品已隐藏，未开始保存。';
+        });
+        continue;
+      }
       setState(() {
         item.state = _DownloadState.downloading;
         _progress = null;
@@ -154,6 +170,7 @@ class _DownloadProgressDialogState extends State<DownloadProgressDialog> {
     _DownloadState.saved => '已保存',
     _DownloadState.failed => '保存失败',
     _DownloadState.cancelled => '已取消',
+    _DownloadState.skipped => '已跳过',
   };
 
   @override
@@ -205,6 +222,8 @@ class _DownloadProgressDialogState extends State<DownloadProgressDialog> {
                             ? Icons.check_circle_outline
                             : item.state == _DownloadState.failed
                             ? Icons.error_outline
+                            : item.state == _DownloadState.skipped
+                            ? Icons.skip_next_outlined
                             : Icons.downloading_outlined,
                       ),
                       title: Text('#${item.post.id} · ${_label(item.state)}'),

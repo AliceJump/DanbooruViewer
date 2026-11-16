@@ -1,14 +1,20 @@
 import 'package:danbooru_viewer/full_screen_image_page.dart';
 import 'package:danbooru_viewer/post.dart';
+import 'package:danbooru_viewer/tag_blocklist.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   for (final brightness in Brightness.values) {
     testWidgets(
       'full screen closes, pages with keyboard and fits short $brightness viewport',
       (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        final store = TagBlocklist();
+        await store.initialize();
+        addTearDown(store.dispose);
         tester.view.resetPhysicalSize();
         tester.view.physicalSize = const Size(320, 300);
         tester.view.devicePixelRatio = 1;
@@ -18,7 +24,7 @@ void main() {
           Post(id: 1, rating: 'g', tagString: ''),
           Post(id: 2, rating: 'g', tagString: ''),
         ];
-        int? returnedIndex;
+        int? returnedPostId;
         await tester.pumpWidget(
           MaterialApp(
             theme: ThemeData(brightness: brightness),
@@ -33,13 +39,14 @@ void main() {
                 body: Center(
                   child: FilledButton(
                     onPressed: () async {
-                      returnedIndex = await Navigator.push<int>(
+                      returnedPostId = await Navigator.push<int>(
                         context,
                         MaterialPageRoute(
                           builder: (_) => FullScreenImagePage(
                             previewUrl: '',
                             heroTag: 'test',
                             posts: posts,
+                            blocklist: store,
                           ),
                         ),
                       );
@@ -63,7 +70,7 @@ void main() {
         await tester.sendKeyEvent(LogicalKeyboardKey.escape);
         await tester.pumpAndSettle();
         expect(find.text('打开'), findsOneWidget);
-        expect(returnedIndex, 1);
+        expect(returnedPostId, 2);
         expect(tester.takeException(), isNull);
       },
     );

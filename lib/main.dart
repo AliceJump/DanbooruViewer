@@ -8,7 +8,9 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 import 'app_theme.dart';
+import 'app_settings_page.dart';
 import 'post.dart';
+import 'post_filter.dart';
 import 'completion_normalization.dart';
 import 'completion_service.dart';
 import 'gallery_controls.dart';
@@ -16,14 +18,18 @@ import 'gallery_grid.dart';
 import 'download_progress_dialog.dart';
 import 'media_utils.dart';
 import 'network/app_network_service.dart';
-import 'network/network_settings_page.dart';
+import 'tag_blocklist.dart';
+import 'tag_blocklist_page.dart';
 
 export 'completion_models.dart' show SearchCompletionSuggestion;
 export 'post.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await AppNetworkService.instance.initialize();
+  await Future.wait([
+    AppNetworkService.instance.initialize(),
+    TagBlocklist.instance.initialize(),
+  ]);
   runApp(const MyApp());
 }
 
@@ -55,20 +61,24 @@ class SearchChip {
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key, this.completionService});
+  const MyApp({super.key, this.completionService, this.blocklist});
 
   final CompletionService? completionService;
+  final TagBlocklist? blocklist;
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Danbooru Viewer',
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
-      themeMode: ThemeMode.system,
-      home: MyHomePage(
+    return TagBlocklistScope(
+      blocklist: blocklist ?? TagBlocklist.instance,
+      child: MaterialApp(
         title: 'Danbooru Viewer',
-        completionService: completionService,
+        theme: AppTheme.light(),
+        darkTheme: AppTheme.dark(),
+        themeMode: ThemeMode.system,
+        home: MyHomePage(
+          title: 'Danbooru Viewer',
+          completionService: completionService,
+        ),
       ),
     );
   }
@@ -80,10 +90,12 @@ class MyHomePage extends StatefulWidget {
     required this.title,
     this.fetchPosts,
     this.completionService,
+    this.saveMedia,
   });
 
   final String title;
   final Future<http.Response> Function(Uri)? fetchPosts;
+  final MediaSaver? saveMedia;
 
   /// This page owns and disposes the supplied service, including test services.
   /// Child routes share it without taking ownership.
@@ -99,6 +111,9 @@ class _MyHomePageState extends State<MyHomePage> {
   final FocusNode _pageFocusNode = FocusNode(debugLabel: 'gallery');
   final ScrollController _scrollController = ScrollController();
   List<Post> _posts = [];
+  List<Post> _visiblePosts = [];
+  TagBlocklist _blocklist = TagBlocklist.instance;
+  bool _listeningToBlocklist = false;
   List<SearchCompletionSuggestion> _visibleSuggestions = [];
   late final CompletionService _completionService;
   List<SearchCompletionSuggestion> _bootstrapSuggestions = [];
@@ -157,8 +172,39 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final store = TagBlocklistScope.of(context);
+    if (_listeningToBlocklist && identical(store, _blocklist)) return;
+    if (_listeningToBlocklist) {
+      _blocklist.removeListener(_blocklistChanged);
+    }
+    _blocklist = store;
+    _blocklist.addListener(_blocklistChanged);
+    _listeningToBlocklist = true;
+    _refreshVisiblePosts();
+  }
+
+  void _refreshVisiblePosts() {
+    _visiblePosts = _posts
+        .where((post) => !_blocklist.hides(postTagsForBlocking(post)))
+        .toList();
+    final visibleIds = _visiblePosts.map((post) => post.id).toSet();
+    final hadSelection = _selectedItems.isNotEmpty;
+    _selectedItems.removeWhere((id) => !visibleIds.contains(id));
+    if (hadSelection && _selectedItems.isEmpty) _isMultiSelectMode = false;
+  }
+
+  void _blocklistChanged() {
+    if (mounted) setState(_refreshVisiblePosts);
+  }
+
+  @override
   void dispose() {
     _postsCancelToken?.cancel();
+    if (_listeningToBlocklist) {
+      _blocklist.removeListener(_blocklistChanged);
+    }
     AppNetworkService.instance.removeListener(_networkSettingsChanged);
     _cancelCompletionQuery();
     unawaited(_disposeCompletionService());
@@ -413,6 +459,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _enterMultiSelectMode(int postId) {
+    if (!_visiblePosts.any((post) => post.id == postId)) return;
     setState(() {
       _isMultiSelectMode = true;
       _selectedItems.add(postId);
@@ -427,6 +474,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _toggleSelection(int postId) {
+    if (!_visiblePosts.any((post) => post.id == postId)) return;
     setState(() {
       if (_selectedItems.contains(postId)) {
         _selectedItems.remove(postId);
@@ -453,11 +501,16 @@ class _MyHomePageState extends State<MyHomePage> {
       final unfinished = await showDialog<Set<int>>(
         context: context,
         barrierDismissible: false,
-        builder: (context) => DownloadProgressDialog(posts: itemsToDownload),
+        builder: (context) => DownloadProgressDialog(
+          posts: itemsToDownload,
+          saveMedia: widget.saveMedia,
+          canSave: (post) =>
+              mounted && _visiblePosts.any((visible) => visible.id == post.id),
+        ),
       );
       if (!mounted) return;
       if (unfinished != null) {
-        final available = _posts.map((post) => post.id).toSet();
+        final available = _visiblePosts.map((post) => post.id).toSet();
         setState(() {
           _selectedItems
             ..clear()
@@ -491,7 +544,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   List<Post> _selectedPosts() {
     final postsById = <int, Post>{};
-    for (final post in _posts) {
+    for (final post in _visiblePosts) {
       if (_selectedItems.contains(post.id)) {
         postsById.putIfAbsent(post.id, () => post);
       }
@@ -544,7 +597,8 @@ class _MyHomePageState extends State<MyHomePage> {
     final requestGeneration = isLoadMore
         ? _requestGeneration
         : ++_requestGeneration;
-    final requestPage = isLoadMore ? _page + 1 : 1;
+    var requestPage = isLoadMore ? _page + 1 : 1;
+    var appendResults = isLoadMore;
     // Pagination and refresh belong to the visible gallery, even while a new
     // query is being edited in the input field.
     if (!isLoadMore && !isRefresh) _activeQueryTags = _queryTags();
@@ -556,6 +610,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _failedLoadMore = false;
       if (!isLoadMore && !isRefresh) {
         _posts = [];
+        _visiblePosts = [];
         _page = 1;
         _hasMorePosts = true;
         _selectedItems.clear();
@@ -568,47 +623,65 @@ class _MyHomePageState extends State<MyHomePage> {
     }
 
     try {
-      final uri = Uri.https('danbooru.donmai.us', '/posts.json', {
-        'tags': requestTags,
-        'limit': '100',
-        'page': '$requestPage',
-      });
-      final response = widget.fetchPosts == null
-          ? await AppNetworkService.instance.get(uri, cancelToken: cancelToken)
-          : await widget.fetchPosts!(uri).timeout(const Duration(seconds: 25));
-      if (!mounted || requestGeneration != _requestGeneration) return;
-      if (response.statusCode != 200) {
-        _recordPostsError(switch (response.statusCode) {
-          401 || 403 => '服务器拒绝访问（HTTP ${response.statusCode}），请检查站点权限或访问限制。',
-          429 => '请求过于频繁（HTTP 429），请稍后再试。',
-          _ => '请求失败（HTTP ${response.statusCode}），请稍后重试。',
-        }, isLoadMore: isLoadMore);
-        return;
-      }
-      final List<dynamic> postsJson = json.decode(response.body);
-      final newPosts = postsJson.map((json) => Post.fromJson(json)).toList();
-      setState(() {
-        if (isLoadMore) {
-          final knownIds = _posts.map((post) => post.id).toSet();
-          _posts.addAll(newPosts.where((post) => knownIds.add(post.id)));
-        } else {
-          _posts = newPosts;
+      // A filtered page is still a real server page. Look ahead at most three
+      // pages per action, then offer an explicit continuation instead of an
+      // unbounded request loop when every result matches the local blocklist.
+      for (var fetchedPages = 0; fetchedPages < 3; fetchedPages++) {
+        final uri = Uri.https('danbooru.donmai.us', '/posts.json', {
+          'tags': requestTags,
+          'limit': '100',
+          'page': '$requestPage',
+        });
+        final response = widget.fetchPosts == null
+            ? await AppNetworkService.instance.get(
+                uri,
+                cancelToken: cancelToken,
+              )
+            : await widget.fetchPosts!(uri).timeout(
+                const Duration(seconds: 25),
+              );
+        if (!mounted || requestGeneration != _requestGeneration) return;
+        if (response.statusCode != 200) {
+          _recordPostsError(switch (response.statusCode) {
+            401 || 403 => '服务器拒绝访问（HTTP ${response.statusCode}），请检查站点权限或访问限制。',
+            429 => '请求过于频繁（HTTP 429），请稍后再试。',
+            _ => '请求失败（HTTP ${response.statusCode}），请稍后重试。',
+          }, isLoadMore: appendResults);
+          return;
         }
-        _page = requestPage;
-        _hasMorePosts = newPosts.isNotEmpty;
-        final visibleIds = _posts.map((post) => post.id).toSet();
-        _selectedItems.removeWhere((id) => !visibleIds.contains(id));
-        if (_selectedItems.isEmpty) _isMultiSelectMode = false;
-      });
+        final List<dynamic> postsJson = json.decode(response.body);
+        final newPosts = postsJson.map((json) => Post.fromJson(json)).toList();
+        var addedVisible = false;
+        setState(() {
+          if (!appendResults) _posts = [];
+          final knownIds = _posts.map((post) => post.id).toSet();
+          final added = newPosts
+              .where((post) => knownIds.add(post.id))
+              .toList();
+          _posts.addAll(added);
+          addedVisible = added.any(
+            (post) => !_blocklist.hides(postTagsForBlocking(post)),
+          );
+          _page = requestPage;
+          _hasMorePosts = newPosts.isNotEmpty;
+          _refreshVisiblePosts();
+        });
+        if (!_hasMorePosts || !_blocklist.isFiltering || addedVisible) break;
+        appendResults = true;
+        requestPage++;
+      }
     } on NetworkCancelledException {
       // A newer query, a proxy change or route disposal owns the next result.
     } on TimeoutException {
       if (mounted && requestGeneration == _requestGeneration) {
-        _recordPostsError('连接超时，请检查网络后重试。', isLoadMore: isLoadMore);
+        _recordPostsError('连接超时，请检查网络后重试。', isLoadMore: appendResults);
       }
     } catch (error) {
       if (mounted && requestGeneration == _requestGeneration) {
-        _recordPostsError(networkErrorMessage(error), isLoadMore: isLoadMore);
+        _recordPostsError(
+          networkErrorMessage(error),
+          isLoadMore: appendResults,
+        );
       }
     } finally {
       if (mounted && requestGeneration == _requestGeneration) {
@@ -655,12 +728,17 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
-  void _navigateToDetail(int index) async {
-    if (_isMultiSelectMode) return;
+  void _navigateToDetail(int postId) async {
+    if (_isMultiSelectMode || !_visiblePosts.any((post) => post.id == postId)) {
+      return;
+    }
+    final rawIndex = _posts.indexWhere((post) => post.id == postId);
+    if (rawIndex < 0) return;
     final result = await openPostDetailPage(
       context: context,
       posts: _posts,
-      initialIndex: index,
+      initialIndex: rawIndex,
+      blocklist: _blocklist,
       completionDisplayByValue: _completionDisplayByInsertValue,
       completionCategoryByValue: _completionCategoryByInsertValue,
       completionService: _completionService,
@@ -700,10 +778,12 @@ class _MyHomePageState extends State<MyHomePage> {
       actions: [
         IconButton(
           icon: const Icon(Icons.settings_outlined),
-          tooltip: '网络设置',
+          tooltip: '设置',
           onPressed: () => Navigator.push<void>(
             context,
-            MaterialPageRoute(builder: (_) => const NetworkSettingsPage()),
+            MaterialPageRoute(
+              builder: (_) => AppSettingsPage(blocklist: _blocklist),
+            ),
           ),
         ),
         IconButton(
@@ -713,6 +793,7 @@ class _MyHomePageState extends State<MyHomePage> {
               context,
               MaterialPageRoute(
                 builder: (context) => FavoritesPage(
+                  blocklist: _blocklist,
                   completionDisplayByValue: _completionDisplayByInsertValue,
                   completionCategoryByValue: _completionCategoryByInsertValue,
                   completionService: _completionService,
@@ -937,7 +1018,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Widget _buildGallery() {
-    if (_posts.isEmpty) {
+    if (_visiblePosts.isEmpty) {
       if (_isLoading) {
         return const GalleryEmptyState(
           icon: Icons.photo_library_outlined,
@@ -958,6 +1039,23 @@ class _MyHomePageState extends State<MyHomePage> {
           ),
         );
       }
+      if (_posts.isNotEmpty && _blocklist.isFiltering) {
+        return GalleryEmptyState(
+          icon: Icons.block,
+          title: '当前作品均被屏蔽',
+          subtitle: _hasMorePosts
+              ? '已加载 ${_posts.length} 项。可以继续加载，或临时显示被屏蔽的作品。'
+              : '已加载的 ${_posts.length} 项均命中屏蔽标签，已到最后一页。',
+          action: _hasMorePosts
+              ? FilledButton.icon(
+                  key: const ValueKey('continue_filtered_pages'),
+                  onPressed: () => _fetchPosts(isLoadMore: true),
+                  icon: const Icon(Icons.expand_more),
+                  label: const Text('继续加载'),
+                )
+              : null,
+        );
+      }
       return GalleryEmptyState(
         icon: Icons.image_search_outlined,
         title: '暂无结果',
@@ -970,9 +1068,9 @@ class _MyHomePageState extends State<MyHomePage> {
     return GalleryGrid(
       controller: _scrollController,
       onRefresh: () => _fetchPosts(isRefresh: true),
-      itemCount: _posts.length,
+      itemCount: _visiblePosts.length,
       itemBuilder: (context, index) {
-        final post = _posts[index];
+        final post = _visiblePosts[index];
         final isSelected = _selectedItems.contains(post.id);
         return PostThumbnailTile(
           key: ValueKey('post_${post.id}'),
@@ -985,7 +1083,7 @@ class _MyHomePageState extends State<MyHomePage> {
             if (_isMultiSelectMode) {
               _toggleSelection(post.id);
             } else {
-              _navigateToDetail(index);
+              _navigateToDetail(post.id);
             }
           },
           onLongPress: () {
@@ -1008,7 +1106,7 @@ class _MyHomePageState extends State<MyHomePage> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxHeight < 240;
-        final showFeedback = _postsError != null && _posts.isNotEmpty;
+        final showFeedback = _postsError != null && _visiblePosts.isNotEmpty;
         return Column(
           children: [
             ConstrainedBox(
@@ -1027,19 +1125,35 @@ class _MyHomePageState extends State<MyHomePage> {
                     if (!showFeedback || !compact)
                       GallerySectionHeader(
                         compact: compact,
-                        count: _posts.length,
+                        count: _visiblePosts.length,
                         isLoading: _isLoading,
                         onRefresh: () => _fetchPosts(isRefresh: true),
-                        onSelect: _posts.isEmpty || _isMultiSelectMode
+                        onSelect: _visiblePosts.isEmpty || _isMultiSelectMode
                             ? null
                             : () => setState(() => _isMultiSelectMode = true),
+                      ),
+                    TagBlocklistStatus(
+                      blocklist: _blocklist,
+                      hiddenCount: _posts.length - _visiblePosts.length,
+                    ),
+                    if (_visiblePosts.isNotEmpty &&
+                        _hasMorePosts &&
+                        !_isLoading &&
+                        _postsError == null)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          onPressed: () => _fetchPosts(isLoadMore: true),
+                          icon: const Icon(Icons.expand_more),
+                          label: const Text('加载更多'),
+                        ),
                       ),
                   ],
                 ),
               ),
             ),
             Expanded(child: _buildGallery()),
-            if (_isLoading && _posts.isNotEmpty)
+            if (_isLoading && _visiblePosts.isNotEmpty)
               const LinearProgressIndicator(minHeight: 2),
           ],
         );

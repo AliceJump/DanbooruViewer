@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
+import 'package:video_player/video_player.dart';
 
 import 'media_image_frame.dart';
 import 'media_utils.dart';
@@ -10,14 +11,21 @@ import 'media_video_session.dart';
 import 'network/app_cache_manager.dart';
 import 'network/app_network_service.dart';
 import 'post.dart';
+import 'post_filter.dart';
+import 'tag_blocklist.dart';
+import 'tag_blocklist_page.dart';
 import 'video_controls.dart';
 
+/// When [posts] is provided, the route returns the selected post ID, not a page
+/// index. Filtering may change indexes while this route is open.
 class FullScreenImagePage extends StatefulWidget {
   final String previewUrl;
   final String? highResUrl;
   final String heroTag;
   final List<Post>? posts;
   final int initialIndex;
+  final TagBlocklist? blocklist;
+  final VideoPlayerController Function(Uri)? videoControllerFactory;
   final MediaImageProviderLoader? imageProviderLoader;
 
   const FullScreenImagePage({
@@ -27,6 +35,8 @@ class FullScreenImagePage extends StatefulWidget {
     required this.heroTag,
     this.posts,
     this.initialIndex = 0,
+    this.blocklist,
+    this.videoControllerFactory,
     this.imageProviderLoader,
   });
 
@@ -37,7 +47,11 @@ class FullScreenImagePage extends StatefulWidget {
 class _FullScreenImagePageState extends State<FullScreenImagePage>
     with WidgetsBindingObserver {
   late int _index;
-  final _video = MediaVideoSession();
+  late final MediaVideoSession _video;
+  TagBlocklist? _blocklist;
+  List<Post> _posts = const [];
+  int? _selectedPostId;
+  bool _hasLoaded = false;
   ImageProvider? _imageProvider;
   ImageProvider? _previewProvider;
   MediaImageFrame? _originalFrame;
@@ -49,27 +63,95 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
   bool _loading = true;
   int _generation = 0;
 
-  Post? get _post => widget.posts?.elementAtOrNull(_index);
+  Post? get _post => _posts.elementAtOrNull(_index);
   String? get _preview =>
       _post?.previewFileUrl ??
       (widget.posts == null && widget.previewUrl.isNotEmpty
           ? widget.previewUrl
           : null);
-  String? get _source => _post == null
+  String? get _source => widget.posts == null
       ? widget.highResUrl ?? _preview
-      : _post!.fileUrl ?? _post!.largeFileUrl ?? _preview;
+      : _post?.fileUrl ?? _post?.largeFileUrl ?? _preview;
   bool get _isVideo => _source != null && isVideoUrl(_source!);
-  int get _count => widget.posts?.length ?? 1;
+  int get _count => widget.posts == null ? 1 : _posts.length;
+  bool get _emptyPostList => widget.posts != null && _posts.isEmpty;
+  bool get _inlineVideo =>
+      supportsInlineVideo || widget.videoControllerFactory != null;
   String get _heroTag => _post == null ? widget.heroTag : 'post_${_post!.id}';
 
   @override
   void initState() {
     super.initState();
-    _index = widget.initialIndex;
+    _index = 0;
+    final raw = widget.posts;
+    final initial = raw == null
+        ? null
+        : widget.initialIndex >= 0 && widget.initialIndex < raw.length
+        ? raw[widget.initialIndex]
+        : raw.firstOrNull;
+    _selectedPostId = initial?.id;
+    _video = MediaVideoSession(
+      controllerFactory: widget.videoControllerFactory,
+    );
     WidgetsBinding.instance.addObserver(this);
     _video.addListener(_mediaChanged);
     AppNetworkService.instance.addListener(_reload);
-    _load();
+    if (widget.posts == null) _load();
+  }
+
+  @override
+  void didUpdateWidget(FullScreenImagePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.blocklist != widget.blocklist) {
+      _bindBlocklist(widget.blocklist ?? TagBlocklistScope.of(context));
+    } else if (!identical(oldWidget.posts, widget.posts)) {
+      _applyBlocklist();
+    } else if (widget.posts == null &&
+        (widget.previewUrl != oldWidget.previewUrl ||
+            widget.highResUrl != oldWidget.highResUrl)) {
+      _load();
+    }
+  }
+
+  void _bindBlocklist(TagBlocklist store) {
+    if (identical(store, _blocklist)) return;
+    _blocklist?.removeListener(_applyBlocklist);
+    _blocklist = store;
+    store.addListener(_applyBlocklist);
+    _applyBlocklist();
+    unawaited(store.initialize());
+  }
+
+  void _applyBlocklist() {
+    final store = _blocklist;
+    final raw = widget.posts;
+    if (!mounted || store == null || raw == null) return;
+    final previous = _post;
+    final filtered = filterPostList(
+      raw,
+      store,
+      selectedPostId: _selectedPostId,
+      initialIndex: widget.initialIndex,
+    );
+    final next = filtered.posts.elementAtOrNull(filtered.index);
+    final changed = previous?.id != next?.id;
+    final sourceChanged =
+        previous?.fileUrl != next?.fileUrl ||
+        previous?.largeFileUrl != next?.largeFileUrl ||
+        previous?.previewFileUrl != next?.previewFileUrl;
+    if (changed || sourceChanged) {
+      _video.pause();
+      unawaited(_video.setSource(null));
+      // A new rule store may still be loading, so _load is not guaranteed to
+      // run below. Release hidden images immediately, even for identical URLs.
+      _invalidateImages();
+    }
+    setState(() {
+      _posts = filtered.posts;
+      _index = filtered.index;
+      _selectedPostId = next?.id ?? _selectedPostId;
+    });
+    if (store.loaded && (changed || sourceChanged || !_hasLoaded)) _load();
   }
 
   void _mediaChanged() {
@@ -80,6 +162,9 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (ModalRoute.isCurrentOf(context) == false) _video.pause();
+    if (widget.posts != null) {
+      _bindBlocklist(widget.blocklist ?? TagBlocklistScope.of(context));
+    }
   }
 
   @override
@@ -89,12 +174,10 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
 
   @override
   void dispose() {
-    _generation++;
-    _cancelPendingImageFrames();
-    _originalFrame?.dispose();
-    _previewFrame?.dispose();
+    _invalidateImages();
     WidgetsBinding.instance.removeObserver(this);
     AppNetworkService.instance.removeListener(_reload);
+    _blocklist?.removeListener(_applyBlocklist);
     _video.removeListener(_mediaChanged);
     _video.dispose();
     super.dispose();
@@ -105,6 +188,21 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
       frame.dispose();
     }
     _pendingImageFrames.clear();
+  }
+
+  void _invalidateImages() {
+    _generation++;
+    _cancelPendingImageFrames();
+    _originalFrame?.dispose();
+    _previewFrame?.dispose();
+    _originalFrame = null;
+    _previewFrame = null;
+    _imageProvider = null;
+    _previewProvider = null;
+    _loadedSource = null;
+    _loadedPreview = null;
+    _imageError = null;
+    _loading = false;
   }
 
   void _reload() {
@@ -129,6 +227,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
   }
 
   void _load() {
+    _hasLoaded = true;
     final generation = ++_generation;
     final source = _source;
     final preview = _preview;
@@ -152,7 +251,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     });
     unawaited(
       _video.setSource(
-        _isVideo && supportsInlineVideo ? source : null,
+        _isVideo && _inlineVideo ? source : null,
         revision: AppNetworkService.instance.revision,
       ),
     );
@@ -218,16 +317,39 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     final next = _index + delta;
     if (next < 0 || next >= _count) return;
     _video.pause();
+    _invalidateImages();
     _index = next;
+    _selectedPostId = _post?.id;
     _load();
   }
 
   void _close() {
     _video.pause();
-    Navigator.pop(context, _index);
+    Navigator.pop(context, _post?.id);
+  }
+
+  bool _canInteract(int? postId, String source) =>
+      mounted && !_emptyPostList && _post?.id == postId && _source == source;
+
+  void _saveSource(int? postId, String source) {
+    if (!_canInteract(postId, source)) return;
+    _video.pause();
+    saveMediaToGallery(context, source);
+  }
+
+  void _openSourceExternally(int? postId, String source) {
+    if (!_canInteract(postId, source)) return;
+    _video.pause();
+    openMediaExternally(
+      context,
+      source,
+      canInteract: () => _canInteract(postId, source),
+    );
   }
 
   Widget _error(String message, {VoidCallback? retry, bool external = false}) {
+    final postId = _post?.id;
+    final source = _source;
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -247,9 +369,9 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
               children: [
                 if (retry != null)
                   FilledButton(onPressed: retry, child: const Text('重试')),
-                if (external && _source != null)
+                if (external && source != null)
                   OutlinedButton.icon(
-                    onPressed: () => openMediaExternally(context, _source!),
+                    onPressed: () => _openSourceExternally(postId, source),
                     icon: const Icon(Icons.open_in_new),
                     label: const Text('外部播放'),
                   ),
@@ -265,7 +387,7 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     _originalFrame?.handoff();
     _previewFrame?.handoff();
     if (_isVideo) {
-      if (!supportsInlineVideo) {
+      if (!_inlineVideo) {
         return _error('当前平台使用外部播放器播放视频。媒体会先通过当前网络设置下载。', external: true);
       }
       final controller = _video.controller;
@@ -335,9 +457,67 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
     );
   }
 
+  void _manageBlocklist() {
+    final store = _blocklist;
+    if (store == null) return;
+    _video.pause();
+    Navigator.push<void>(
+      context,
+      MaterialPageRoute(builder: (_) => TagBlocklistPage(blocklist: store)),
+    );
+  }
+
+  Widget _filteredEmptyState() {
+    final store = _blocklist;
+    if (store == null || !store.loaded) {
+      return const Center(
+        child: CircularProgressIndicator(semanticsLabel: '正在读取屏蔽规则'),
+      );
+    }
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.filter_alt_outlined,
+              color: Colors.white70,
+              size: 40,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              widget.posts!.isEmpty ? '此列表没有作品' : '此列表中的作品都已被标签屏蔽',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                if (store.isFiltering && widget.posts!.isNotEmpty)
+                  FilledButton(
+                    onPressed: () => store.setTemporarilyShow(true),
+                    child: const Text('临时显示'),
+                  ),
+                OutlinedButton(
+                  onPressed: _manageBlocklist,
+                  child: const Text('管理屏蔽'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final source = _source;
+    final postId = _post?.id;
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.escape): _close,
@@ -366,22 +546,32 @@ class _FullScreenImagePageState extends State<FullScreenImagePage>
                 overflow: TextOverflow.ellipsis,
               ),
               actions: [
+                if (widget.posts != null)
+                  IconButton(
+                    tooltip: '管理标签屏蔽',
+                    icon: const Icon(Icons.filter_alt_outlined),
+                    onPressed: _manageBlocklist,
+                  ),
                 IconButton(
                   tooltip: '保存原图或视频',
                   onPressed: source == null
                       ? null
-                      : () {
-                          _video.pause();
-                          saveMediaToGallery(context, source);
-                        },
+                      : () => _saveSource(postId, source),
                   icon: const Icon(Icons.download_outlined),
                 ),
               ],
             ),
             body: SafeArea(
-              child: source == null
+              child: _emptyPostList
+                  ? _filteredEmptyState()
+                  : source == null
                   ? _media()
-                  : TimedMediaHoldGesture(media: source, child: _media()),
+                  : TimedMediaHoldGesture(
+                      key: ValueKey((postId, source)),
+                      media: source,
+                      canInteract: () => _canInteract(postId, source),
+                      child: _media(),
+                    ),
             ),
             bottomNavigationBar: _count <= 1
                 ? null
