@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -30,24 +29,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.tag_db import db
+from scripts.batch_sync_tags import create_session, safe_get
 
 BASE = "https://danbooru.donmai.us"
 CATEGORIES = [0, 1, 3, 4, 5]  # general, artist, copyright, character, meta
 CATEGORY_NAMES = {0: "general", 1: "artist", 3: "copyright", 4: "character", 5: "meta"}
 PAGE_SIZE = 1000  # Danbooru API hard limit (verified: limit=2000 still returns 1000)
-
-request_semaphore = threading.Semaphore(3)  # max concurrent HTTP requests
-
-
-def create_session(verify_ssl: bool = True) -> requests.Session:
-    session = requests.Session()
-    session.headers.update({"User-Agent": "DanbooruTagInspector/1.0"})
-    session.verify = verify_ssl
-    proxy = "http://127.0.0.1:10808"
-    if proxy:
-        session.proxies.update({"http": proxy, "https": proxy})
-    return session
-
 
 def fetch_page(
     session: requests.Session,
@@ -59,24 +46,11 @@ def fetch_page(
     if cursor_id is not None:
         params["search[id_lt]"] = cursor_id
 
-    for retry in range(max_retries):
-        try:
-            with request_semaphore:
-                resp = session.get(f"{BASE}/tags.json", params=params, timeout=30)
-            if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 0)) or 2 ** (retry + 1)
-                print(f"[429] Rate limited. Sleeping {wait}s...")
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException:
-            if retry >= max_retries - 1:
-                raise
-            wait = 2 ** (retry + 1)
-            print(f"[RETRY] category={category} cursor={cursor_id} in {wait}s...")
-            time.sleep(wait)
-    return []
+    response = safe_get(
+        session, f"{BASE}/tags.json", params=params,
+        timeout=30, max_retries=max_retries,
+    )
+    return response.json()
 
 
 def sync_category(
@@ -98,7 +72,13 @@ def sync_category(
     while True:
         if limit > 0 and total >= limit:
             break
-        tags = fetch_page(session, category, cursor)
+        try:
+            tags = fetch_page(session, category, cursor)
+        except Exception:
+            # Retain completed pages below the batch threshold, but do not
+            # turn a failed request (or failed flush) into a successful scan.
+            flush()
+            raise
         if not tags:
             break
 
@@ -156,6 +136,7 @@ def main():
     session = create_session(not args.no_verify_ssl)
     grand_total = 0
     results = {}
+    failed = 0
 
     print(f"Fetching {len(args.categories)} categories with up to {args.workers} concurrent requests...")
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
@@ -173,10 +154,12 @@ def main():
                 print(f"  ✓ {name}: {count} tags")
             except Exception as exc:
                 print(f"  ✗ {name} failed: {exc}")
+                failed += 1
 
     print(f"\nDone. Total tags upserted: {grand_total:,}")
     print(f"tags table now has {db.count_tags():,} rows.")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

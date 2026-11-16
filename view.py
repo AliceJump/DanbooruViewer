@@ -13,12 +13,15 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from pprint import pprint
 import argparse
 import json
 import sys
+import tempfile
 import time
+from urllib.parse import quote
 
 import requests
 
@@ -149,6 +152,22 @@ def set_request_rate(rate_per_sec: float):
     request_semaphore = request_limiter
 
 
+def retry_after_seconds(value: str | None, retry: int) -> float:
+    """Accept Retry-After delta seconds or an HTTP date, with safe fallback."""
+    fallback = 2 ** (retry + 1)
+    if not value:
+        return fallback
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        try:
+            deadline = parsedate_to_datetime(value)
+            seconds = (deadline - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+    return max(0, seconds)
+
+
 def get_json(path: str, **params):
     max_retries = params.pop("max_retries", 5)
 
@@ -173,7 +192,7 @@ def get_json(path: str, **params):
 
             if response.status_code == 429 and retry < max_retries - 1:
                 retry_after = response.headers.get("Retry-After")
-                wait_time = int(retry_after) if retry_after else 2 ** (retry + 1)
+                wait_time = retry_after_seconds(retry_after, retry)
                 log(f"  [REQ] GET {path} -> 429 (retry {retry+1}/{max_retries}, sleep {wait_time}s, {dt:.2f}s)")
                 time.sleep(wait_time)
                 continue
@@ -230,16 +249,43 @@ def compact_sync_payload(payload: dict) -> dict:
     }
 
 
+def _publish_json_text(path: Path, payload_text: str):
+    """Publish complete bytes without modifying a reader's existing inode."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=".tag-json-", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload_text)
+        # Close before replace: Windows can reject renaming an open file.
+        for attempt in range(6):
+            try:
+                temporary.replace(path)
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.1 * (attempt + 1))
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def save_sync_data(tag: str, payload: dict):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
 
     path = cache_path(tag)
     payload_text = json.dumps(compact_sync_payload(payload), ensure_ascii=False, indent=2)
-    path.write_text(payload_text, encoding="utf-8")
+    _publish_json_text(path, payload_text)
 
     asset_path = ASSET_DIR / f"{slugify_tag(tag)}.json"
-    asset_path.write_text(payload_text, encoding="utf-8")
+    _publish_json_text(asset_path, payload_text)
 
     return path
 
@@ -264,7 +310,7 @@ def save_sync_metadata(metadata: dict):
     """Save sync metadata."""
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = get_sync_metadata_path()
-    path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    _publish_json_text(path, json.dumps(metadata, ensure_ascii=False, indent=2))
 
 
 def check_needs_sync(tag: str, max_age_hours: int = 24) -> bool:
@@ -396,8 +442,10 @@ def sync_data(tag: str = DEFAULT_TAG, *, persist_files: bool = True):
     log(f"  [TAG] id={tag_info.get('id')} category={tag_info.get('category')} posts={tag_info.get('post_count')}")
 
     try:
-        wiki = get_json(f"/wiki_pages/{tag}.json")
-    except requests.HTTPError:
+        wiki = get_json(f"/wiki_pages/{quote(tag, safe='')}.json")
+    except requests.HTTPError as exc:
+        if exc.response is None or exc.response.status_code != 404:
+            raise
         wiki = None
 
     aliases = get_json(

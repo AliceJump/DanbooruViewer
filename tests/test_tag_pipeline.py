@@ -10,7 +10,7 @@ import view
 from scripts import tag_pipeline
 from scripts import batch_sync_tags
 from scripts.batch_sync_tags import TagRecord
-from scripts.tag_db import TagDB
+from scripts.tag_db import QueueClaim, TagDB
 
 
 class FakeDB:
@@ -115,6 +115,7 @@ class TagPipelineConsumerTest(unittest.TestCase):
     def setUp(self):
         self.db = MagicMock()
         self.db.get_sync_status.return_value = None
+        self.claim = QueueClaim(1, "test", None, "test-lease")
         self.patches = [
             patch.object(tag_pipeline, "db", self.db),
             patch.object(tag_pipeline, "log"),
@@ -127,43 +128,49 @@ class TagPipelineConsumerTest(unittest.TestCase):
     def test_successful_stored_tag_is_skipped_with_point_lookup(self):
         self.db.get_sync_status.return_value = {"status": "success"}
         self.db.has_tag.return_value = True
+        self.db.complete_claim.return_value = "skipped"
 
-        result = tag_pipeline.sync_queue_tag((1, "test", None), force=False)
+        result = tag_pipeline.sync_queue_tag(self.claim, force=False)
 
         self.assertEqual(result, ("skipped", 1))
         self.db.list_sync_status.assert_not_called()
         tag_pipeline.view.sync_data.assert_not_called()
+        self.db.complete_claim.assert_called_once_with(self.claim, "skipped")
 
     def test_success_status_without_tag_is_resynced(self):
         self.db.get_sync_status.return_value = {"status": "success"}
         self.db.has_tag.return_value = False
+        self.db.complete_claim.return_value = "synced"
 
-        result = tag_pipeline.sync_queue_tag((1, "test", None), force=False)
+        result = tag_pipeline.sync_queue_tag(self.claim, force=False)
 
         self.assertEqual(result, ("synced", 1))
         tag_pipeline.view.sync_data.assert_called_once_with(
             "test", persist_files=False,
         )
-        self.db.upsert_tag.assert_called_once_with({"tag": "test"})
-        self.db.set_sync_status.assert_called_once()
-        self.assertEqual(self.db.set_sync_status.call_args.args[:2], ("test", "success"))
+        self.db.complete_claim.assert_called_once_with(self.claim, "synced", payload={"tag": "test"})
+        self.db.upsert_tag.assert_not_called()
+        self.db.set_sync_status.assert_not_called()
 
     def test_failed_db_write_does_not_mark_tag_as_success(self):
-        self.db.upsert_tag.side_effect = RuntimeError("disk full")
+        self.db.complete_claim.side_effect = RuntimeError("disk full")
+        with self.assertRaisesRegex(RuntimeError, "disk full"):
+            tag_pipeline.sync_queue_tag(self.claim, force=False)
+        self.db.complete_claim.assert_called_once()
+        self.db.set_sync_status.assert_not_called()
 
-        result = tag_pipeline.sync_queue_tag((1, "test", None), force=False)
-
-        self.assertEqual(result, ("failed", 1))
-        self.assertEqual(self.db.set_sync_status.call_args.args[:2], ("test", "failed"))
-
-    def test_fifth_failure_blocks_future_retries(self):
+    def test_network_failure_uses_the_same_guarded_completion(self):
         self.db.get_sync_status.return_value = {"status": "failed", "failures": 4}
-        self.db.upsert_tag.side_effect = RuntimeError("write failed")
+        tag_pipeline.view.sync_data.side_effect = RuntimeError("request failed")
+        self.db.complete_claim.return_value = "blocked"
 
-        result = tag_pipeline.sync_queue_tag((1, "test", None), force=False)
+        result = tag_pipeline.sync_queue_tag(self.claim, force=False)
 
         self.assertEqual(result, ("blocked", 1))
-        self.assertEqual(self.db.set_sync_status.call_args.args[:2], ("test", "blocked"))
+        self.db.complete_claim.assert_called_once_with(
+            self.claim, "failed", error="request failed", max_failures=5,
+        )
+        self.db.set_sync_status.assert_not_called()
 
 
 class TagDBQueueTest(unittest.TestCase):

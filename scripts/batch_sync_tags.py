@@ -61,10 +61,8 @@ CACHE = {
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 metadata_lock = threading.Lock()
-# Shared with view.request_semaphore so ALL HTTP requests (both sync_data and
-# list-page fetches) are throttled by a single global concurrency cap of 3.
-# Two independent Semaphore(3)s let concurrency reach 6 and trigger 429s.
-request_semaphore = view.request_semaphore
+# Resolve view.request_limiter at request time so --rate applies to list
+# requests too, after set_request_rate replaces the limiter.
 
 
 class TagRecord(NamedTuple):
@@ -218,10 +216,12 @@ def create_session(verify_ssl: bool = True) -> requests.Session:
 def safe_get(session: requests.Session, url: str, *, max_retries: int = 5, **kwargs):
     for retry in range(max_retries):
         try:
-            with request_semaphore:
+            with view.request_limiter:
                 resp = session.get(url, **kwargs)
             if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", 0)) or 2 ** (retry + 1)
+                if retry >= max_retries - 1:
+                    resp.raise_for_status()
+                wait = view.retry_after_seconds(resp.headers.get("Retry-After"), retry)
                 log(f"[429] Rate limited. Sleeping {wait}s...")
                 time.sleep(wait)
                 continue
@@ -344,13 +344,9 @@ def iter_incremental_tags(cursor: dict, **kw) -> Iterator[TagRecord]:
 def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
     tag = record.name
     try:
-        if tag in ctx.success and not ctx.args.force:
-            log(f"[CACHE SKIP] {tag}")
-            return "skipped", record
-
         if not ctx.args.force:
             needs = view.check_needs_sync(tag, max_age_hours=ctx.args.max_age)
-            if not needs:
+            if not needs and db.has_tag(tag):
                 log(f"[SKIP] {tag}")
                 with ctx.lock:
                     ctx.success.add(tag)
@@ -363,7 +359,7 @@ def sync_tag(record: TagRecord, ctx: SyncContext) -> tuple[str, TagRecord]:
                     )
                 return "skipped", record
 
-        if tag in ctx.blocked:
+        if tag in ctx.blocked and not ctx.args.force:
             log(f"[DO NOT RETRY] {tag}")
             return "blocked", record
 
@@ -778,14 +774,7 @@ def main():
     args = parse_args()
     session = create_session(not args.no_verify_ssl)
     if not verify_network(session):
-        if not args.no_verify_ssl:
-            print("[WARN] SSL verification failed.\n[INFO] Retrying with SSL disabled...")
-            session = create_session(False)
-            if not verify_network(session):
-                sys.exit(1)
-            args.no_verify_ssl = True
-        else:
-            sys.exit(1)
+        sys.exit(1)
     view.session = session
     view.set_request_rate(args.rate)
     print(f"Global request rate: {args.rate} req/s")
