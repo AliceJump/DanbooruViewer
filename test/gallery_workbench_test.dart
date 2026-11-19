@@ -32,6 +32,7 @@ Future<void> _pumpWorkbench(
   double textScale = 1,
   bool dark = false,
   bool disableAnimations = true,
+  EdgeInsets safePadding = EdgeInsets.zero,
 }) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = size;
@@ -44,6 +45,7 @@ Future<void> _pumpWorkbench(
         data: MediaQuery.of(context).copyWith(
           textScaler: TextScaler.linear(textScale),
           disableAnimations: disableAnimations,
+          padding: safePadding,
         ),
         child: child!,
       ),
@@ -415,6 +417,43 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('small consecutive scroll steps accumulate into chrome changes', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(375, 812),
+    );
+    var gesture = await tester.startGesture(
+      tester.getCenter(find.byType(GridView)),
+    );
+    for (var step = 0; step < 10; step++) {
+      await gesture.moveBy(const Offset(0, -10));
+      await tester.pump(const Duration(milliseconds: 16));
+      if (step < 4) {
+        expect(find.byType(TextField).hitTestable(), findsOneWidget);
+      }
+    }
+    await tester.pump(const Duration(milliseconds: 250));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+
+    gesture = await tester.startGesture(
+      tester.getCenter(find.byType(GridView)),
+    );
+    for (var step = 0; step < 6; step++) {
+      await gesture.moveBy(const Offset(0, 10));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await tester.pump(const Duration(milliseconds: 250));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('mobile search toggle preserves draft and gallery position', (
     tester,
   ) async {
@@ -573,6 +612,7 @@ void main() {
     await _dragGalleryWithoutFling(tester, -180);
 
     expect(find.text('1 已选择'), findsOneWidget);
+    expect(find.byTooltip('展开搜索与筛选').hitTestable(), findsOneWidget);
     expect(find.byTooltip('退出多选').hitTestable(), findsOneWidget);
     expect(find.byTooltip('下载选中作品').hitTestable(), findsOneWidget);
     await tester.sendKeyEvent(LogicalKeyboardKey.escape);
@@ -684,6 +724,71 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('touch scrolling retains focus on a keyboard-focused toolbar', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(375, 812),
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    final refreshIcon = find.descendant(
+      of: find.widgetWithIcon(IconButton, Icons.refresh),
+      matching: find.byIcon(Icons.refresh),
+    );
+    final refreshFocus = Focus.of(tester.element(refreshIcon));
+    refreshFocus.requestFocus();
+    await tester.pumpAndSettle();
+    expect(refreshFocus.hasFocus, isTrue);
+    expect(FocusManager.instance.highlightMode, FocusHighlightMode.traditional);
+
+    await _dragGalleryWithoutFling(tester, -180);
+
+    expect(FocusManager.instance.highlightMode, FocusHighlightMode.touch);
+    expect(refreshFocus.hasFocus, isTrue);
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(find.byTooltip('刷新作品').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('safe-area breakpoint keeps mobile search restore reachable', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(980, 812),
+      safePadding: const EdgeInsets.symmetric(horizontal: 12),
+    );
+    await tester.tap(find.byTooltip('收起搜索与筛选'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+
+    // The window reaches the desktop breakpoint, but its safe content width
+    // is still 976: search, toolbar, and shortcuts must all stay in agreement.
+    tester.view.physicalSize = const Size(1000, 812);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('展开搜索与筛选').hitTestable(), findsOneWidget);
+    await tester.tap(find.byTooltip('展开搜索与筛选'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+
+    await tester.tap(find.byTooltip('收起搜索与筛选'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+    await _focusSearch(tester);
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+      isTrue,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
     'resizing a collapsed gallery preserves a reachable search draft',
     (tester) async {
@@ -767,6 +872,29 @@ void main() {
     expect(requestedPages, ['1', '2']);
     await tester.pump(const Duration(seconds: 1));
     expect(find.byType(TextField).hitTestable(), findsNothing);
+    expect(requestedPages, ['1', '2']);
+
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        kind: PointerDeviceKind.mouse,
+        position: tester.getCenter(find.byType(GridView)),
+        scrollDelta: const Offset(0, -1),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+    expect(find.byTooltip('展开搜索与筛选').hitTestable(), findsOneWidget);
+    expect(requestedPages, ['1', '2']);
+
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        kind: PointerDeviceKind.mouse,
+        position: tester.getCenter(find.byType(GridView)),
+        scrollDelta: const Offset(0, -40),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
     expect(requestedPages, ['1', '2']);
     expect(tester.takeException(), isNull);
   });

@@ -117,6 +117,8 @@ class _MyHomePageState extends State<MyHomePage> {
     debugLabel: 'gallery actions',
   );
   final ScrollController _scrollController = ScrollController();
+  // Derived from the page's available width, shared by every chrome decision.
+  bool _narrowLayout = true;
   bool _mobileChromeCollapsed = false;
   double _lastGalleryOffset = 0;
   double _chromeScrollTravel = 0;
@@ -248,15 +250,14 @@ class _MyHomePageState extends State<MyHomePage> {
     final delta = position.pixels - _lastGalleryOffset;
     _lastGalleryOffset = position.pixels;
     final direction = position.userScrollDirection;
-    final keyboardControlFocused =
-        FocusManager.instance.highlightMode == FocusHighlightMode.traditional &&
-        (_searchRegionFocusNode.hasFocus || _galleryActionsFocusNode.hasFocus);
+    final controlFocused =
+        _searchRegionFocusNode.hasFocus || _galleryActionsFocusNode.hasFocus;
     final canCollapse =
-        MediaQuery.sizeOf(context).width < 1000 &&
+        _narrowLayout &&
         !MediaQuery.accessibleNavigationOf(context) &&
         !_searchFocusNode.hasFocus &&
         !_showSuggestions &&
-        !keyboardControlFocused;
+        !controlFocused;
 
     // Only the gallery's actual user scroll drives the chrome. Layout
     // corrections, programmatic jumps and edge bounce must not reverse it.
@@ -291,9 +292,21 @@ class _MyHomePageState extends State<MyHomePage> {
     }
   }
 
+  bool _handleGalleryMetrics(ScrollMetricsNotification notification) {
+    if (notification.depth == 0 &&
+        notification.metrics.axis == Axis.vertical &&
+        _scrollController.hasClients &&
+        _scrollController.position.pixels != _lastGalleryOffset) {
+      // Viewport changes can silently clamp the position without notifying the
+      // controller. Do not count that correction as the next user's gesture.
+      // Ordinary metrics updates keep the accumulated user travel intact.
+      _resetChromeScrollTravel();
+    }
+    return false;
+  }
+
   void _focusSearch() {
-    final needsReveal =
-        _mobileChromeCollapsed && MediaQuery.sizeOf(context).width < 1000;
+    final needsReveal = _mobileChromeCollapsed && _narrowLayout;
     _setMobileChromeCollapsed(false);
     if (!needsReveal) {
       _searchFocusNode.requestFocus();
@@ -1205,40 +1218,43 @@ class _MyHomePageState extends State<MyHomePage> {
             : null,
       );
     }
-    return GalleryGrid(
-      controller: _scrollController,
-      onRefresh: () => _fetchPosts(isRefresh: true),
-      itemCount: _visiblePosts.length,
-      itemBuilder: (context, index) {
-        final post = _visiblePosts[index];
-        final isSelected = _selectedItems.contains(post.id);
-        return PostThumbnailTile(
-          key: ValueKey('post_${post.id}'),
-          previewUrl: post.previewFileUrl,
-          highResUrl: post.fileUrl ?? post.largeFileUrl,
-          heroTag: 'post_${post.id}',
-          semanticLabel: '作品 ${post.id}',
-          selected: _isMultiSelectMode ? isSelected : null,
-          onTap: () {
-            if (_isMultiSelectMode) {
-              _toggleSelection(post.id);
-            } else {
-              _navigateToDetail(post.id);
-            }
-          },
-          onLongPress: () {
-            if (!_isMultiSelectMode) _enterMultiSelectMode(post.id);
-          },
-          overlay: isSelected
-              ? Container(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.scrim.withValues(alpha: 0.5),
-                  child: const Icon(Icons.check_circle, color: Colors.white),
-                )
-              : null,
-        );
-      },
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: _handleGalleryMetrics,
+      child: GalleryGrid(
+        controller: _scrollController,
+        onRefresh: () => _fetchPosts(isRefresh: true),
+        itemCount: _visiblePosts.length,
+        itemBuilder: (context, index) {
+          final post = _visiblePosts[index];
+          final isSelected = _selectedItems.contains(post.id);
+          return PostThumbnailTile(
+            key: ValueKey('post_${post.id}'),
+            previewUrl: post.previewFileUrl,
+            highResUrl: post.fileUrl ?? post.largeFileUrl,
+            heroTag: 'post_${post.id}',
+            semanticLabel: '作品 ${post.id}',
+            selected: _isMultiSelectMode ? isSelected : null,
+            onTap: () {
+              if (_isMultiSelectMode) {
+                _toggleSelection(post.id);
+              } else {
+                _navigateToDetail(post.id);
+              }
+            },
+            onLongPress: () {
+              if (!_isMultiSelectMode) _enterMultiSelectMode(post.id);
+            },
+            overlay: isSelected
+                ? Container(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.scrim.withValues(alpha: 0.5),
+                    child: const Icon(Icons.check_circle, color: Colors.white),
+                  )
+                : null,
+          );
+        },
+      ),
     );
   }
 
@@ -1266,6 +1282,7 @@ class _MyHomePageState extends State<MyHomePage> {
                       collapsed: narrow && _mobileChromeCollapsed,
                       child: Focus(
                         focusNode: _galleryActionsFocusNode,
+                        skipTraversal: true,
                         child: Column(
                           children: [
                             if (!showFeedback || !compact)
@@ -1311,7 +1328,17 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final narrow = MediaQuery.sizeOf(context).width < 1000;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth =
+            constraints.maxWidth - MediaQuery.paddingOf(context).horizontal;
+        _narrowLayout = availableWidth < 1000;
+        return _buildPage(narrow: _narrowLayout);
+      },
+    );
+  }
+
+  Widget _buildPage({required bool narrow}) {
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyF, control: true):
@@ -1337,7 +1364,7 @@ class _MyHomePageState extends State<MyHomePage> {
               top: false,
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  final expanded = constraints.maxWidth >= 1000;
+                  final expanded = !narrow;
                   final panel = _buildSearchPanel(expanded: expanded);
                   if (expanded) {
                     return Row(
@@ -1363,6 +1390,7 @@ class _MyHomePageState extends State<MyHomePage> {
                         collapsed: _mobileChromeCollapsed,
                         child: Focus(
                           focusNode: _searchRegionFocusNode,
+                          skipTraversal: true,
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [

@@ -45,7 +45,8 @@ overflow. Flutter 3.38.9 remains the project runtime.
 | `GalleryEmptyState` | Scrollable loading, empty and failed states with an optional action |
 | `PostThumbnailTile` | Pointer/keyboard interaction and selection semantics, including missing previews |
 
-At widths below 1000 logical pixels, search starts above the gallery with compact
+At available widths below 1000 logical pixels (after horizontal safe-area
+insets), search starts above the gallery with compact
 padding and a single-line results toolbar. Its height is bounded and it can
 scroll independently when the keyboard or large system text leaves little room.
 After 64 logical pixels of downward gallery travel, the search panel and results
@@ -57,7 +58,10 @@ toggle reveals controls without resetting the gallery or opening the keyboard.
 Manual pagination shares the results toolbar instead of occupying a separate
 fixed row. Request errors remain visible even while controls are collapsed.
 
-Search drafts, tag chips and scroll position survive both transitions. Only the
+Search drafts and tag chips survive both transitions. The gallery preserves its
+scroll offset while it remains within the new layout's valid range. If expanding
+the viewport reduces the maximum offset below the old position, Flutter clamps
+the gallery to its new end. Only the
 gallery's user scrolling affects the header; scrolling suggestions, filters or
 selected tags does not. Text input, completion interactions and keyboard focus
 within controls keep them visible. Ctrl/Cmd+F first reveals the editor, then
