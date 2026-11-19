@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:danbooru_viewer/app_theme.dart';
 import 'package:danbooru_viewer/main.dart';
 import 'package:danbooru_viewer/media_utils.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -30,6 +31,8 @@ Future<void> _pumpWorkbench(
   Size size = const Size(800, 700),
   double textScale = 1,
   bool dark = false,
+  bool disableAnimations = true,
+  EdgeInsets safePadding = EdgeInsets.zero,
 }) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = size;
@@ -41,7 +44,8 @@ Future<void> _pumpWorkbench(
       builder: (context, child) => MediaQuery(
         data: MediaQuery.of(context).copyWith(
           textScaler: TextScaler.linear(textScale),
-          disableAnimations: true,
+          disableAnimations: disableAnimations,
+          padding: safePadding,
         ),
         child: child!,
       ),
@@ -64,6 +68,21 @@ Future<void> _focusSearch(
   await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
   await tester.sendKeyUpEvent(modifier);
   await tester.pump();
+}
+
+Future<void> _dragGalleryWithoutFling(
+  WidgetTester tester,
+  double distance,
+) async {
+  final gesture = await tester.startGesture(
+    tester.getCenter(find.byType(GridView)),
+  );
+  await gesture.moveBy(Offset(0, distance));
+  // Stop the finger before lifting it so inertia does not turn a small
+  // direction change into a second, much longer gesture.
+  await tester.pump(const Duration(milliseconds: 250));
+  await gesture.up();
+  await tester.pumpAndSettle();
 }
 
 void main() {
@@ -324,6 +343,561 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('mobile scrolling gives images space and restores controls', (
+    tester,
+  ) async {
+    var requests = 0;
+    await _pumpWorkbench(
+      tester,
+      (_) async {
+        requests++;
+        return _posts(count: 100);
+      },
+      size: const Size(375, 812),
+      disableAnimations: false,
+    );
+    final initialHeight = tester.getSize(find.byType(GridView)).height;
+    final controller = tester
+        .widget<GridView>(find.byType(GridView))
+        .controller!;
+
+    await _dragGalleryWithoutFling(tester, -180);
+
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+    expect(find.byTooltip('展开搜索与筛选').hitTestable(), findsOneWidget);
+    expect(
+      tester.getSize(find.byType(GridView)).height,
+      greaterThan(initialHeight + 100),
+    );
+    expect(
+      tester.widget<GridView>(find.byType(GridView)).controller,
+      same(controller),
+    );
+    expect(requests, 1);
+
+    await _dragGalleryWithoutFling(tester, 90);
+
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(find.byTooltip('收起搜索与筛选').hitTestable(), findsOneWidget);
+    expect(
+      tester.getSize(find.byType(GridView)).height,
+      closeTo(initialHeight, 1),
+    );
+    expect(requests, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('small gallery reversals do not flicker mobile controls', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(375, 812),
+    );
+    await _dragGalleryWithoutFling(tester, -180);
+    final collapsedHeight = tester.getSize(find.byType(GridView)).height;
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(GridView)),
+    );
+    for (final distance in [22.0, -12.0, 12.0, -12.0, 12.0]) {
+      await gesture.moveBy(Offset(0, distance));
+      await tester.pump(const Duration(milliseconds: 30));
+      expect(find.byType(TextField).hitTestable(), findsNothing);
+      expect(
+        tester.getSize(find.byType(GridView)).height,
+        closeTo(collapsedHeight, 1),
+      );
+    }
+    await tester.pump(const Duration(milliseconds: 250));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('small consecutive scroll steps accumulate into chrome changes', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(375, 812),
+    );
+    var gesture = await tester.startGesture(
+      tester.getCenter(find.byType(GridView)),
+    );
+    for (var step = 0; step < 10; step++) {
+      await gesture.moveBy(const Offset(0, -10));
+      await tester.pump(const Duration(milliseconds: 16));
+      if (step < 4) {
+        expect(find.byType(TextField).hitTestable(), findsOneWidget);
+      }
+    }
+    await tester.pump(const Duration(milliseconds: 250));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+
+    gesture = await tester.startGesture(
+      tester.getCenter(find.byType(GridView)),
+    );
+    for (var step = 0; step < 6; step++) {
+      await gesture.moveBy(const Offset(0, 10));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await tester.pump(const Duration(milliseconds: 250));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('mobile search toggle preserves draft and gallery position', (
+    tester,
+  ) async {
+    final requests = <Uri>[];
+    await _pumpWorkbench(tester, (uri) async {
+      requests.add(uri);
+      return _posts(count: 100);
+    }, size: const Size(375, 812));
+    await tester.enterText(find.byType(TextField), 'landscape');
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'unsubmitted_draft');
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    await _dragGalleryWithoutFling(tester, -220);
+
+    final controller = tester
+        .widget<GridView>(find.byType(GridView))
+        .controller!;
+    final position = controller.offset;
+    final requestCount = requests.length;
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.textContaining('landscape'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byType(AppBar),
+        matching: find.textContaining('unsubmitted_draft'),
+      ),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('mobile_search_toggle')));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(controller.offset, closeTo(position, 1));
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.text,
+      'unsubmitted_draft',
+    );
+    expect(find.widgetWithText(InputChip, 'landscape'), findsOneWidget);
+    expect(requests, hasLength(requestCount));
+    expect(requests.last.queryParameters['tags'], 'landscape');
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final modifier in [
+    LogicalKeyboardKey.controlLeft,
+    LogicalKeyboardKey.metaLeft,
+  ]) {
+    testWidgets('${modifier.keyLabel}+F reveals a collapsed mobile search', (
+      tester,
+    ) async {
+      await _pumpWorkbench(
+        tester,
+        (_) async => _posts(count: 100),
+        size: const Size(375, 812),
+      );
+      await _dragGalleryWithoutFling(tester, -180);
+      expect(find.byType(TextField).hitTestable(), findsNothing);
+
+      await _focusSearch(tester, modifier: modifier);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(TextField).hitTestable(), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+        isTrue,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final (name, size) in [
+    ('phone', const Size(375, 812)),
+    ('desktop', const Size(1440, 900)),
+  ]) {
+    testWidgets('expanded $name search shortcut focuses without a new frame', (
+      tester,
+    ) async {
+      await _pumpWorkbench(tester, (_) async => _posts(), size: size);
+      await tester.pumpAndSettle();
+      final focusNode = tester
+          .widget<TextField>(find.byType(TextField))
+          .focusNode!;
+      expect(focusNode.hasFocus, isFalse);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      // An idle window has no scheduled frame. Search must not wait for an
+      // unrelated animation or pointer event before requesting focus.
+      await tester.idle();
+
+      expect(focusNode.hasFocus, isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('gallery wheel scrolling keeps an active search editor visible', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(375, 812),
+    );
+    await tester.enterText(find.byType(TextField), 'draft_query');
+    await tester.pumpAndSettle();
+    final controller = tester
+        .widget<GridView>(find.byType(GridView))
+        .controller!;
+
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        kind: PointerDeviceKind.mouse,
+        position: tester.getCenter(find.byType(GridView)),
+        scrollDelta: const Offset(0, 180),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.offset, greaterThan(0));
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+      isTrue,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('collapsing mobile controls retains the selected work', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(375, 812),
+    );
+    await tester.longPress(_post(1));
+    await tester.pumpAndSettle();
+    expect(find.text('1 已选择'), findsOneWidget);
+
+    await _dragGalleryWithoutFling(tester, -180);
+
+    expect(find.text('1 已选择'), findsOneWidget);
+    expect(find.byTooltip('展开搜索与筛选').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('退出多选').hitTestable(), findsOneWidget);
+    expect(find.byTooltip('下载选中作品').hitTestable(), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('退出多选'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'scrolling completion suggestions does not collapse the gallery',
+    (tester) async {
+      await _pumpWorkbench(
+        tester,
+        (_) async => _posts(count: 100),
+        size: const Size(375, 812),
+        service: FakeCompletionService(
+          onBootstrap: () async => [
+            for (var index = 0; index < 30; index++)
+              SearchCompletionSuggestion(
+                value: 'landscape_$index',
+                insertValue: 'landscape_$index',
+                source: 'tag',
+                score: 30 - index,
+                category: 0,
+              ),
+          ],
+        ),
+      );
+      await _focusSearch(tester);
+      await tester.pumpAndSettle();
+      final gallery = find.byType(GridView);
+      final initialHeight = tester.getSize(gallery).height;
+      final controller = tester.widget<GridView>(gallery).controller!;
+
+      await tester.drag(find.byType(ListView), const Offset(0, -160));
+      await tester.pumpAndSettle();
+
+      final suggestionsScroll = tester.state<ScrollableState>(
+        find.descendant(
+          of: find.byType(ListView),
+          matching: find.byType(Scrollable),
+        ),
+      );
+      expect(suggestionsScroll.position.pixels, greaterThan(0));
+      expect(controller.offset, 0);
+      expect(tester.getSize(gallery).height, closeTo(initialHeight, 1));
+      expect(find.byType(TextField).hitTestable(), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+        isTrue,
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('short dark large-text screen can reclaim space without motion', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(320, 300),
+      textScale: 2,
+      dark: true,
+    );
+    final initialHeight = tester.getSize(find.byType(GridView)).height;
+    final toggle = find.byKey(const ValueKey('mobile_search_toggle'));
+    expect(toggle.hitTestable(), findsOneWidget);
+    expect(tester.getSize(toggle).width, greaterThanOrEqualTo(48));
+    expect(tester.getSize(toggle).height, greaterThanOrEqualTo(48));
+
+    await tester.tap(toggle);
+    await tester.pump();
+
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+    expect(
+      tester.getSize(find.byType(GridView)).height,
+      greaterThan(initialHeight + 50),
+    );
+    expect(toggle.hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(toggle);
+    await tester.pump();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop gallery scrolling keeps the search sidebar available', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(1440, 900),
+      dark: true,
+    );
+    final fieldRect = tester.getRect(find.byType(TextField));
+    final gridRect = tester.getRect(find.byType(GridView));
+
+    await _dragGalleryWithoutFling(tester, -180);
+
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(tester.getRect(find.byType(TextField)), fieldRect);
+    expect(tester.getRect(find.byType(GridView)), gridRect);
+    expect(find.byKey(const ValueKey('mobile_search_toggle')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('touch scrolling retains focus on a keyboard-focused toolbar', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(375, 812),
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    final refreshIcon = find.descendant(
+      of: find.widgetWithIcon(IconButton, Icons.refresh),
+      matching: find.byIcon(Icons.refresh),
+    );
+    final refreshFocus = Focus.of(tester.element(refreshIcon));
+    refreshFocus.requestFocus();
+    await tester.pumpAndSettle();
+    expect(refreshFocus.hasFocus, isTrue);
+    expect(FocusManager.instance.highlightMode, FocusHighlightMode.traditional);
+
+    await _dragGalleryWithoutFling(tester, -180);
+
+    expect(FocusManager.instance.highlightMode, FocusHighlightMode.touch);
+    expect(refreshFocus.hasFocus, isTrue);
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(find.byTooltip('刷新作品').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('safe-area breakpoint keeps mobile search restore reachable', (
+    tester,
+  ) async {
+    await _pumpWorkbench(
+      tester,
+      (_) async => _posts(count: 100),
+      size: const Size(980, 812),
+      safePadding: const EdgeInsets.symmetric(horizontal: 12),
+    );
+    await tester.tap(find.byTooltip('收起搜索与筛选'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+
+    // The window reaches the desktop breakpoint, but its safe content width
+    // is still 976: search, toolbar, and shortcuts must all stay in agreement.
+    tester.view.physicalSize = const Size(1000, 812);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('展开搜索与筛选').hitTestable(), findsOneWidget);
+    await tester.tap(find.byTooltip('展开搜索与筛选'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+
+    await tester.tap(find.byTooltip('收起搜索与筛选'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+    await _focusSearch(tester);
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).focusNode!.hasFocus,
+      isTrue,
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'resizing a collapsed gallery preserves a reachable search draft',
+    (tester) async {
+      var requests = 0;
+      await _pumpWorkbench(tester, (_) async {
+        requests++;
+        return _posts(count: 100);
+      }, size: const Size(375, 812));
+      await tester.enterText(find.byType(TextField), 'kept_draft');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      await _dragGalleryWithoutFling(tester, -180);
+      expect(find.byType(TextField).hitTestable(), findsNothing);
+
+      tester.view.physicalSize = const Size(1440, 900);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(TextField).hitTestable(), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        'kept_draft',
+      );
+      expect(find.byKey(const ValueKey('mobile_search_toggle')), findsNothing);
+      expect(tester.takeException(), isNull);
+
+      tester.view.physicalSize = const Size(375, 812);
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('展开搜索与筛选').hitTestable(), findsOneWidget);
+      await tester.tap(find.byTooltip('展开搜索与筛选'));
+      await tester.pumpAndSettle();
+      expect(find.byType(TextField).hitTestable(), findsOneWidget);
+      await tester.tap(find.byType(TextField));
+      await tester.pumpAndSettle();
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.controller!.text, 'kept_draft');
+      expect(field.focusNode!.hasFocus, isTrue);
+      expect(requests, 1);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('resizing chrome at the loaded end does not reopen or fetch', (
+    tester,
+  ) async {
+    final requestedPages = <String?>[];
+    await _pumpWorkbench(
+      tester,
+      (uri) async {
+        final page = uri.queryParameters['page'];
+        requestedPages.add(page);
+        return page == '1' ? _posts(count: 12) : http.Response('[]', 200);
+      },
+      size: const Size(375, 812),
+      disableAnimations: false,
+    );
+    await _dragGalleryWithoutFling(tester, -2000);
+    expect(requestedPages, ['1', '2']);
+    final controller = tester
+        .widget<GridView>(find.byType(GridView))
+        .controller!;
+    final toggle = find.byKey(const ValueKey('mobile_search_toggle'));
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    controller.jumpTo(controller.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    final expandedEnd = controller.offset;
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+
+    expect(controller.offset, lessThan(expandedEnd));
+    expect(controller.offset, closeTo(controller.position.maxScrollExtent, 1));
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+    expect(find.byTooltip('展开搜索与筛选').hitTestable(), findsOneWidget);
+    expect(requestedPages, ['1', '2']);
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+    expect(requestedPages, ['1', '2']);
+
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        kind: PointerDeviceKind.mouse,
+        position: tester.getCenter(find.byType(GridView)),
+        scrollDelta: const Offset(0, -1),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsNothing);
+    expect(find.byTooltip('展开搜索与筛选').hitTestable(), findsOneWidget);
+    expect(requestedPages, ['1', '2']);
+
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        kind: PointerDeviceKind.mouse,
+        position: tester.getCenter(find.byType(GridView)),
+        scrollDelta: const Offset(0, -40),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
+    expect(requestedPages, ['1', '2']);
+    expect(tester.takeException(), isNull);
+  });
 
   for (final (name, size, dark) in [
     ('small phone', const Size(375, 812), false),

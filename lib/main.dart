@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:danbooru_viewer/favorites_page.dart';
 import 'package:danbooru_viewer/post_detail_page.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
@@ -109,7 +110,20 @@ class _MyHomePageState extends State<MyHomePage> {
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
   final FocusNode _pageFocusNode = FocusNode(debugLabel: 'gallery');
+  final FocusNode _searchRegionFocusNode = FocusNode(
+    debugLabel: 'search controls',
+  );
+  final FocusNode _galleryActionsFocusNode = FocusNode(
+    debugLabel: 'gallery actions',
+  );
   final ScrollController _scrollController = ScrollController();
+  // Derived from the page's available width, shared by every chrome decision.
+  bool _narrowLayout = true;
+  bool _mobileChromeCollapsed = false;
+  double _lastGalleryOffset = 0;
+  double _chromeScrollTravel = 0;
+  ScrollDirection _chromeScrollDirection = ScrollDirection.idle;
+  String _activeQuerySummary = '全部作品';
   List<Post> _posts = [];
   List<Post> _visiblePosts = [];
   TagBlocklist _blocklist = TagBlocklist.instance;
@@ -157,15 +171,7 @@ class _MyHomePageState extends State<MyHomePage> {
     AppNetworkService.instance.addListener(_networkSettingsChanged);
     _searchController.addListener(_refreshCompletionSuggestions);
     _searchFocusNode.addListener(_handleSearchFocusChanged);
-    _scrollController.addListener(() {
-      if (_scrollController.position.pixels ==
-              _scrollController.position.maxScrollExtent &&
-          !_isLoading &&
-          _hasMorePosts &&
-          _postsError == null) {
-        _fetchPosts(isLoadMore: true);
-      }
-    });
+    _scrollController.addListener(_handleGalleryScroll);
     // 启动时加载一次空搜索
     _fetchPosts();
     _loadCompletionSuggestions();
@@ -213,12 +219,127 @@ class _MyHomePageState extends State<MyHomePage> {
     _searchController.dispose();
     _searchFocusNode.dispose();
     _pageFocusNode.dispose();
+    _searchRegionFocusNode.dispose();
+    _galleryActionsFocusNode.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
   void _networkSettingsChanged() {
     if (mounted) unawaited(_fetchPosts(isRefresh: true));
+  }
+
+  void _resetChromeScrollTravel() {
+    _chromeScrollTravel = 0;
+    _chromeScrollDirection = ScrollDirection.idle;
+    _lastGalleryOffset = _scrollController.hasClients
+        ? _scrollController.position.pixels
+        : 0;
+  }
+
+  void _setMobileChromeCollapsed(bool collapsed) {
+    _resetChromeScrollTravel();
+    if (_mobileChromeCollapsed != collapsed) {
+      setState(() => _mobileChromeCollapsed = collapsed);
+    }
+  }
+
+  void _handleGalleryScroll() {
+    if (!mounted || !_scrollController.hasClients) return;
+    final position = _scrollController.position;
+    final delta = position.pixels - _lastGalleryOffset;
+    _lastGalleryOffset = position.pixels;
+    final direction = position.userScrollDirection;
+    final controlFocused =
+        _searchRegionFocusNode.hasFocus || _galleryActionsFocusNode.hasFocus;
+    final canCollapse =
+        _narrowLayout &&
+        !MediaQuery.accessibleNavigationOf(context) &&
+        !_searchFocusNode.hasFocus &&
+        !_showSuggestions &&
+        !controlFocused;
+
+    // Only the gallery's actual user scroll drives the chrome. Layout
+    // corrections, programmatic jumps and edge bounce must not reverse it.
+    if (!canCollapse ||
+        position.outOfRange ||
+        !position.isScrollingNotifier.value ||
+        direction == ScrollDirection.idle ||
+        (direction == ScrollDirection.reverse && delta <= 0) ||
+        (direction == ScrollDirection.forward && delta >= 0)) {
+      _resetChromeScrollTravel();
+    } else {
+      if (direction != _chromeScrollDirection) {
+        _chromeScrollTravel = 0;
+        _chromeScrollDirection = direction;
+      }
+      _chromeScrollTravel += delta.abs();
+      if (direction == ScrollDirection.reverse &&
+          position.pixels >= 64 &&
+          _chromeScrollTravel >= 64) {
+        _setMobileChromeCollapsed(true);
+      } else if (direction == ScrollDirection.forward &&
+          (_chromeScrollTravel >= 32 || position.pixels <= 8)) {
+        _setMobileChromeCollapsed(false);
+      }
+    }
+
+    if (position.pixels == position.maxScrollExtent &&
+        !_isLoading &&
+        _hasMorePosts &&
+        _postsError == null) {
+      _fetchPosts(isLoadMore: true);
+    }
+  }
+
+  bool _handleGalleryMetrics(ScrollMetricsNotification notification) {
+    if (notification.depth == 0 &&
+        notification.metrics.axis == Axis.vertical &&
+        _scrollController.hasClients &&
+        _scrollController.position.pixels != _lastGalleryOffset) {
+      // Viewport changes can silently clamp the position without notifying the
+      // controller. Do not count that correction as the next user's gesture.
+      // Ordinary metrics updates keep the accumulated user travel intact.
+      _resetChromeScrollTravel();
+    }
+    return false;
+  }
+
+  void _focusSearch() {
+    final needsReveal = _mobileChromeCollapsed && _narrowLayout;
+    _setMobileChromeCollapsed(false);
+    if (!needsReveal) {
+      _searchFocusNode.requestFocus();
+      return;
+    }
+    // Hidden controls are excluded from focus until the expanded tree builds.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchFocusNode.requestFocus();
+    });
+  }
+
+  Widget _buildMobileSearchToggle() {
+    return Semantics(
+      expanded: !_mobileChromeCollapsed,
+      child: IconButton(
+        key: const ValueKey('mobile_search_toggle'),
+        tooltip: _mobileChromeCollapsed ? '展开搜索与筛选' : '收起搜索与筛选',
+        icon: Icon(
+          _mobileChromeCollapsed ? Icons.search : Icons.keyboard_arrow_up,
+        ),
+        onPressed: () {
+          if (!_mobileChromeCollapsed) {
+            _searchFocusNode.unfocus();
+            _cancelCompletionQuery();
+            setState(() {
+              _showSuggestions = false;
+              _isQueryPending = false;
+            });
+          }
+          _setMobileChromeCollapsed(!_mobileChromeCollapsed);
+        },
+      ),
+    );
   }
 
   Future<void> _disposeCompletionService() async {
@@ -261,6 +382,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void _handleSearchFocusChanged() {
     if (!mounted) return;
     if (_searchFocusNode.hasFocus) {
+      _setMobileChromeCollapsed(false);
       _refreshCompletionSuggestions();
     } else {
       _cancelCompletionQuery();
@@ -601,7 +723,19 @@ class _MyHomePageState extends State<MyHomePage> {
     var appendResults = isLoadMore;
     // Pagination and refresh belong to the visible gallery, even while a new
     // query is being edited in the input field.
-    if (!isLoadMore && !isRefresh) _activeQueryTags = _queryTags();
+    if (!isLoadMore && !isRefresh) {
+      _activeQueryTags = _queryTags();
+      final summary = [
+        ..._searchChips.map((chip) => chip.label),
+        if (_searchController.text.trim().isNotEmpty)
+          _searchController.text.trim(),
+        ...ratingOptions.entries
+            .where((entry) => entry.value)
+            .map((entry) => entry.key),
+      ].join(' · ');
+      _activeQuerySummary = summary.isEmpty ? '全部作品' : summary;
+      _resetChromeScrollTravel();
+    }
     final requestTags = _activeQueryTags;
 
     setState(() {
@@ -609,6 +743,7 @@ class _MyHomePageState extends State<MyHomePage> {
       _postsError = null;
       _failedLoadMore = false;
       if (!isLoadMore && !isRefresh) {
+        _mobileChromeCollapsed = false;
         _posts = [];
         _visiblePosts = [];
         _page = 1;
@@ -747,35 +882,52 @@ class _MyHomePageState extends State<MyHomePage> {
     _handleSearchResult(result);
   }
 
-  AppBar _buildDefaultAppBar() {
+  AppBar _buildDefaultAppBar({required bool narrow}) {
+    final hiddenCount = _posts.length - _visiblePosts.length;
+    final summary =
+        '${_visiblePosts.length} 张 · $_activeQuerySummary'
+        '${hiddenCount > 0 ? ' · 已屏蔽 $hiddenCount 张' : ''}';
     return AppBar(
-      title: Row(
-        children: [
-          ExcludeSemantics(
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                borderRadius: BorderRadius.circular(10),
+      title: narrow
+          ? Tooltip(
+              message: _mobileChromeCollapsed ? summary : widget.title,
+              child: Text(
+                _mobileChromeCollapsed ? summary : widget.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: _mobileChromeCollapsed
+                    ? Theme.of(context).textTheme.titleSmall
+                    : null,
               ),
-              child: Icon(
-                Icons.grid_view_rounded,
-                size: 20,
-                color: Theme.of(context).colorScheme.onPrimaryContainer,
-              ),
+            )
+          : Row(
+              children: [
+                ExcludeSemantics(
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primaryContainer,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(
+                      Icons.grid_view_rounded,
+                      size: 20,
+                      color: Theme.of(context).colorScheme.onPrimaryContainer,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    widget.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
             ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              widget.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
       actions: [
+        if (narrow) _buildMobileSearchToggle(),
         IconButton(
           icon: const Icon(Icons.settings_outlined),
           tooltip: '设置',
@@ -808,7 +960,7 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
-  AppBar _buildMultiSelectAppBar() {
+  AppBar _buildMultiSelectAppBar({required bool narrow}) {
     return AppBar(
       leading: IconButton(
         icon: const Icon(Icons.close),
@@ -821,6 +973,7 @@ class _MyHomePageState extends State<MyHomePage> {
         overflow: TextOverflow.ellipsis,
       ),
       actions: [
+        if (narrow) _buildMobileSearchToggle(),
         IconButton(
           tooltip: '下载选中作品',
           icon: const Icon(Icons.download),
@@ -1065,44 +1218,47 @@ class _MyHomePageState extends State<MyHomePage> {
             : null,
       );
     }
-    return GalleryGrid(
-      controller: _scrollController,
-      onRefresh: () => _fetchPosts(isRefresh: true),
-      itemCount: _visiblePosts.length,
-      itemBuilder: (context, index) {
-        final post = _visiblePosts[index];
-        final isSelected = _selectedItems.contains(post.id);
-        return PostThumbnailTile(
-          key: ValueKey('post_${post.id}'),
-          previewUrl: post.previewFileUrl,
-          highResUrl: post.fileUrl ?? post.largeFileUrl,
-          heroTag: 'post_${post.id}',
-          semanticLabel: '作品 ${post.id}',
-          selected: _isMultiSelectMode ? isSelected : null,
-          onTap: () {
-            if (_isMultiSelectMode) {
-              _toggleSelection(post.id);
-            } else {
-              _navigateToDetail(post.id);
-            }
-          },
-          onLongPress: () {
-            if (!_isMultiSelectMode) _enterMultiSelectMode(post.id);
-          },
-          overlay: isSelected
-              ? Container(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.scrim.withValues(alpha: 0.5),
-                  child: const Icon(Icons.check_circle, color: Colors.white),
-                )
-              : null,
-        );
-      },
+    return NotificationListener<ScrollMetricsNotification>(
+      onNotification: _handleGalleryMetrics,
+      child: GalleryGrid(
+        controller: _scrollController,
+        onRefresh: () => _fetchPosts(isRefresh: true),
+        itemCount: _visiblePosts.length,
+        itemBuilder: (context, index) {
+          final post = _visiblePosts[index];
+          final isSelected = _selectedItems.contains(post.id);
+          return PostThumbnailTile(
+            key: ValueKey('post_${post.id}'),
+            previewUrl: post.previewFileUrl,
+            highResUrl: post.fileUrl ?? post.largeFileUrl,
+            heroTag: 'post_${post.id}',
+            semanticLabel: '作品 ${post.id}',
+            selected: _isMultiSelectMode ? isSelected : null,
+            onTap: () {
+              if (_isMultiSelectMode) {
+                _toggleSelection(post.id);
+              } else {
+                _navigateToDetail(post.id);
+              }
+            },
+            onLongPress: () {
+              if (!_isMultiSelectMode) _enterMultiSelectMode(post.id);
+            },
+            overlay: isSelected
+                ? Container(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.scrim.withValues(alpha: 0.5),
+                    child: const Icon(Icons.check_circle, color: Colors.white),
+                  )
+                : null,
+          );
+        },
+      ),
     );
   }
 
-  Widget _buildGalleryPane() {
+  Widget _buildGalleryPane({bool narrow = false}) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxHeight < 240;
@@ -1122,32 +1278,41 @@ class _MyHomePageState extends State<MyHomePage> {
                         onRetry: _retryPosts,
                         compact: compact,
                       ),
-                    if (!showFeedback || !compact)
-                      GallerySectionHeader(
-                        compact: compact,
-                        count: _visiblePosts.length,
-                        isLoading: _isLoading,
-                        onRefresh: () => _fetchPosts(isRefresh: true),
-                        onSelect: _visiblePosts.isEmpty || _isMultiSelectMode
-                            ? null
-                            : () => setState(() => _isMultiSelectMode = true),
-                      ),
-                    TagBlocklistStatus(
-                      blocklist: _blocklist,
-                      hiddenCount: _posts.length - _visiblePosts.length,
-                    ),
-                    if (_visiblePosts.isNotEmpty &&
-                        _hasMorePosts &&
-                        !_isLoading &&
-                        _postsError == null)
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton.icon(
-                          onPressed: () => _fetchPosts(isLoadMore: true),
-                          icon: const Icon(Icons.expand_more),
-                          label: const Text('加载更多'),
+                    GalleryChromeRegion(
+                      collapsed: narrow && _mobileChromeCollapsed,
+                      child: Focus(
+                        focusNode: _galleryActionsFocusNode,
+                        skipTraversal: true,
+                        child: Column(
+                          children: [
+                            if (!showFeedback || !compact)
+                              GallerySectionHeader(
+                                compact: narrow || compact,
+                                count: _visiblePosts.length,
+                                isLoading: _isLoading,
+                                onRefresh: () => _fetchPosts(isRefresh: true),
+                                onSelect:
+                                    _visiblePosts.isEmpty || _isMultiSelectMode
+                                    ? null
+                                    : () => setState(
+                                        () => _isMultiSelectMode = true,
+                                      ),
+                                onLoadMore:
+                                    _visiblePosts.isNotEmpty &&
+                                        _hasMorePosts &&
+                                        !_isLoading &&
+                                        _postsError == null
+                                    ? () => _fetchPosts(isLoadMore: true)
+                                    : null,
+                              ),
+                            TagBlocklistStatus(
+                              blocklist: _blocklist,
+                              hiddenCount: _posts.length - _visiblePosts.length,
+                            ),
+                          ],
                         ),
                       ),
+                    ),
                   ],
                 ),
               ),
@@ -1163,12 +1328,23 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth =
+            constraints.maxWidth - MediaQuery.paddingOf(context).horizontal;
+        _narrowLayout = availableWidth < 1000;
+        return _buildPage(narrow: _narrowLayout);
+      },
+    );
+  }
+
+  Widget _buildPage({required bool narrow}) {
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyF, control: true):
-            _searchFocusNode.requestFocus,
+            _focusSearch,
         const SingleActivator(LogicalKeyboardKey.keyF, meta: true):
-            _searchFocusNode.requestFocus,
+            _focusSearch,
         const SingleActivator(LogicalKeyboardKey.escape):
             _dismissSearchOrSelection,
       },
@@ -1182,13 +1358,13 @@ class _MyHomePageState extends State<MyHomePage> {
           },
           child: Scaffold(
             appBar: _isMultiSelectMode
-                ? _buildMultiSelectAppBar()
-                : _buildDefaultAppBar(),
+                ? _buildMultiSelectAppBar(narrow: narrow)
+                : _buildDefaultAppBar(narrow: narrow),
             body: SafeArea(
               top: false,
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  final expanded = constraints.maxWidth >= 1000;
+                  final expanded = !narrow;
                   final panel = _buildSearchPanel(expanded: expanded);
                   if (expanded) {
                     return Row(
@@ -1210,14 +1386,26 @@ class _MyHomePageState extends State<MyHomePage> {
                   }
                   return Column(
                     children: [
-                      ConstrainedBox(
-                        constraints: BoxConstraints(
-                          maxHeight: constraints.maxHeight * 0.46,
+                      GalleryChromeRegion(
+                        collapsed: _mobileChromeCollapsed,
+                        child: Focus(
+                          focusNode: _searchRegionFocusNode,
+                          skipTraversal: true,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  maxHeight: constraints.maxHeight * 0.46,
+                                ),
+                                child: SingleChildScrollView(child: panel),
+                              ),
+                              const Divider(height: 1),
+                            ],
+                          ),
                         ),
-                        child: SingleChildScrollView(child: panel),
                       ),
-                      const Divider(),
-                      Expanded(child: _buildGalleryPane()),
+                      Expanded(child: _buildGalleryPane(narrow: true)),
                     ],
                   );
                 },

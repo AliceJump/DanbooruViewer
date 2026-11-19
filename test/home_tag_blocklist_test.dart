@@ -331,7 +331,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('0 已选择'), findsOneWidget);
 
-    await tester.tap(find.text('加载更多'));
+    await tester.tap(find.byTooltip('加载更多'));
     await tester.pumpAndSettle();
     expect(requestedPages, [1, 2]);
     expect(visibleIds(tester), ['post_1', 'post_2']);
