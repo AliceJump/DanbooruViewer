@@ -45,9 +45,27 @@ overflow. Flutter 3.38.9 remains the project runtime.
 | `GalleryEmptyState` | Scrollable loading, empty and failed states with an optional action |
 | `PostThumbnailTile` | Pointer/keyboard interaction and selection semantics, including missing previews |
 
-At widths below 1000 logical pixels, search stays above the gallery. Its height
-is bounded and it can scroll independently when the keyboard or large system
-text leaves little room. At 1000 pixels and wider, a 320-pixel sidebar holds
+At widths below 1000 logical pixels, search starts above the gallery with compact
+padding and a single-line results toolbar. Its height is bounded and it can
+scroll independently when the keyboard or large system text leaves little room.
+After 64 logical pixels of downward gallery travel, the search panel and results
+toolbar collapse; 32 pixels of upward travel, or returning to the top, restores
+them. Direction changes reset the travel threshold to prevent flicker. The
+existing app bar keeps a 48-pixel search toggle, collection/settings actions,
+and a summary of the committed query and visible count while collapsed. The
+toggle reveals controls without resetting the gallery or opening the keyboard.
+Manual pagination shares the results toolbar instead of occupying a separate
+fixed row. Request errors remain visible even while controls are collapsed.
+
+Search drafts, tag chips and scroll position survive both transitions. Only the
+gallery's user scrolling affects the header; scrolling suggestions, filters or
+selected tags does not. Text input, completion interactions and keyboard focus
+within controls keep them visible. Ctrl/Cmd+F first reveals the editor, then
+focuses it. Hidden controls are excluded from pointer, keyboard and accessibility
+interaction. Reduced-motion preferences disable the transition; accessible
+navigation keeps automatic hiding off and retains the explicit toggle.
+
+At 1000 pixels and wider, a 320-pixel sidebar holds
 search and filters beside the gallery. The gallery uses its remaining width to
 choose columns. Its header and error area share a bounded scrollable region so
 short windows keep a visible image grid.

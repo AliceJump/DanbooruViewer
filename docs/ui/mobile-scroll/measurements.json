@@ -1,0 +1,32 @@
+[
+  {
+    "name": "phone-light-expanded",
+    "galleryHeight": 575.0,
+    "scrollOffset": 0.0
+  },
+  {
+    "name": "phone-light-collapsed",
+    "galleryHeight": 756.0,
+    "scrollOffset": 430.0
+  },
+  {
+    "name": "small-phone-light-expanded",
+    "galleryHeight": 331.0,
+    "scrollOffset": 0.0
+  },
+  {
+    "name": "small-phone-light-collapsed",
+    "galleryHeight": 512.0,
+    "scrollOffset": 430.0
+  },
+  {
+    "name": "landscape-dark-large-text-expanded",
+    "galleryHeight": 81.56,
+    "scrollOffset": 0.0
+  },
+  {
+    "name": "landscape-dark-large-text-collapsed",
+    "galleryHeight": 264.0,
+    "scrollOffset": 410.0
+  }
+]

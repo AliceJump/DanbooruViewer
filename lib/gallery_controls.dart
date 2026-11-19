@@ -1,5 +1,42 @@
 import 'package:flutter/material.dart';
 
+/// Keeps search state mounted while returning its space to the gallery.
+class GalleryChromeRegion extends StatelessWidget {
+  const GalleryChromeRegion({
+    super.key,
+    required this.collapsed,
+    required this.child,
+  });
+
+  final bool collapsed;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 1, end: collapsed ? 0 : 1),
+      duration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : Duration(milliseconds: collapsed ? 160 : 200),
+      curve: Curves.easeOutCubic,
+      child: ExcludeFocus(
+        excluding: collapsed,
+        child: ExcludeSemantics(
+          excluding: collapsed,
+          child: IgnorePointer(ignoring: collapsed, child: child),
+        ),
+      ),
+      builder: (context, factor, child) => ClipRect(
+        child: Align(
+          alignment: Alignment.topCenter,
+          heightFactor: factor,
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 /// Search stays independent from the completion engine and gallery requests.
 class GallerySearchPanel extends StatelessWidget {
   const GallerySearchPanel({
@@ -32,7 +69,9 @@ class GallerySearchPanel extends StatelessWidget {
     final theme = Theme.of(context);
     return TextFieldTapRegion(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: expanded
+            ? const EdgeInsets.all(16)
+            : const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
@@ -131,6 +170,7 @@ class GallerySectionHeader extends StatelessWidget {
     required this.isLoading,
     required this.onRefresh,
     required this.onSelect,
+    this.onLoadMore,
     this.compact = false,
   });
 
@@ -138,6 +178,7 @@ class GallerySectionHeader extends StatelessWidget {
   final bool isLoading;
   final VoidCallback onRefresh;
   final VoidCallback? onSelect;
+  final VoidCallback? onLoadMore;
   final bool compact;
 
   @override
@@ -173,6 +214,12 @@ class GallerySectionHeader extends StatelessWidget {
             onPressed: isLoading ? null : onRefresh,
             icon: const Icon(Icons.refresh),
           ),
+          if (onLoadMore != null)
+            IconButton(
+              tooltip: '加载更多',
+              onPressed: onLoadMore,
+              icon: const Icon(Icons.expand_more),
+            ),
         ],
       ),
     );
