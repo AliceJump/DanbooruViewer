@@ -496,6 +496,34 @@ void main() {
     });
   }
 
+  for (final (name, size) in [
+    ('phone', const Size(375, 812)),
+    ('desktop', const Size(1440, 900)),
+  ]) {
+    testWidgets('expanded $name search shortcut focuses without a new frame', (
+      tester,
+    ) async {
+      await _pumpWorkbench(tester, (_) async => _posts(), size: size);
+      await tester.pumpAndSettle();
+      final focusNode = tester
+          .widget<TextField>(find.byType(TextField))
+          .focusNode!;
+      expect(focusNode.hasFocus, isFalse);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      // An idle window has no scheduled frame. Search must not wait for an
+      // unrelated animation or pointer event before requesting focus.
+      await tester.idle();
+
+      expect(focusNode.hasFocus, isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('gallery wheel scrolling keeps an active search editor visible', (
     tester,
   ) async {

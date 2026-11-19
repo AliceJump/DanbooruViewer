@@ -292,7 +292,13 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   void _focusSearch() {
+    final needsReveal =
+        _mobileChromeCollapsed && MediaQuery.sizeOf(context).width < 1000;
     _setMobileChromeCollapsed(false);
+    if (!needsReveal) {
+      _searchFocusNode.requestFocus();
+      return;
+    }
     // Hidden controls are excluded from focus until the expanded tree builds.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _searchFocusNode.requestFocus();
